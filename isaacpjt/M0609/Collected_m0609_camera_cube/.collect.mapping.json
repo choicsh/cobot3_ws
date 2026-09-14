@@ -5,127 +5,127 @@
             "source_url": "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.1/Isaac/Props/Blocks/Materials/Textures/basic_block_red1_BaseColor.png",
             "source_hash": "4db56ef97b7cedfac8ad8c7223e75ef75914d91c",
             "target_url": "./omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.1/Isaac/Props/Blocks/Materials/Textures/basic_block_red1_BaseColor.png",
-            "target_hash": "b237598168423e42248654c4b8e8641d1da5da4b"
+            "target_hash": "dec346da2f291cc416a06201d8ca713bddbdd566"
         },
         {
             "source_url": "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.1/Isaac/Props/Blocks/Materials/Textures/basic_block_red1_Normal.png",
             "source_hash": "12c425ec65816a5f1dd7064b778ad5f0902e5f8b",
             "target_url": "./omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.1/Isaac/Props/Blocks/Materials/Textures/basic_block_red1_Normal.png",
-            "target_hash": "4c79bbda1913dcdeb74160261322b1b4d0b69b44"
+            "target_hash": "2b681e9d8084c122e31a8258ac929d8ce951194c"
         },
         {
             "source_url": "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.1/Isaac/Props/Blocks/Materials/Textures/basic_block_red1_Roughness.png",
             "source_hash": "10fa8db731082150bbad6b34354cdfe476df5ab3",
             "target_url": "./omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.1/Isaac/Props/Blocks/Materials/Textures/basic_block_red1_Roughness.png",
-            "target_hash": "3bf681aae9015901e6b69a46aa3f4b6cfdc87aef"
+            "target_hash": "13c9d0d0770e208ca4c16a66d9b3fcc6b20df165"
         },
         {
-            "source_url": "/home/rokey/cobot3_ws/isaacpjt/M0609/Collected_m0609_camera/SubUSDs/materials/Aluminum_Anodized.mdl",
-            "source_hash": "411c1f5f606b504ef52d98be6337020d777ec703",
-            "target_url": "./SubUSDs/materials/Aluminum_Anodized.mdl",
-            "target_hash": "806a8f13fb8dfe2fdcf27f4efbf25d12d9090b00"
+            "source_url": "/home/rokey/cobot3_ws/isaacpjt/M0609/Collected_m0609_camera/omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.1/Isaac/Materials/Base/Metals/Aluminum_Anodized.mdl",
+            "source_hash": "0d5efb6e95fce07e48bd747c10985b834cfafa9d",
+            "target_url": "./omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.1/Isaac/Materials/Base/Metals/Aluminum_Anodized.mdl",
+            "target_hash": "fd7c0143609762b487cd0fbaec47b7d001794e88"
         },
         {
-            "source_url": "/home/rokey/cobot3_ws/isaacpjt/M0609/Collected_m0609_camera/SubUSDs/materials/Aluminum_Cast.mdl",
-            "source_hash": "de95b808923c9c63afd23252cf30d12e61582644",
-            "target_url": "./SubUSDs/materials/Aluminum_Cast.mdl",
-            "target_hash": "b2b533989006e5366ba093a45528258aeb2e38b9"
+            "source_url": "/home/rokey/cobot3_ws/isaacpjt/M0609/Collected_m0609_camera/omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.1/Isaac/Materials/Base/Metals/Aluminum_Cast.mdl",
+            "source_hash": "18cb50e4599e0d76a07efc2b34426698760cbeb3",
+            "target_url": "./omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.1/Isaac/Materials/Base/Metals/Aluminum_Cast.mdl",
+            "target_hash": "12b55e1c1832b20413ab7418752ffb76aa6c4b30"
         },
         {
-            "source_url": "/home/rokey/cobot3_ws/isaacpjt/M0609/Collected_m0609_camera/SubUSDs/materials/Plastic_ABS.mdl",
-            "source_hash": "5264428a1dd8cd48e249edf0a19f87e28272a8c5",
-            "target_url": "./SubUSDs/materials/Plastic_ABS.mdl",
-            "target_hash": "368899a647454626b46b53d33d84afab19271e83"
+            "source_url": "/home/rokey/cobot3_ws/isaacpjt/M0609/Collected_m0609_camera/omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.1/Isaac/Materials/Base/Plastics/Plastic_ABS.mdl",
+            "source_hash": "1b16d25b4e82f90fc95eb846743a7b0cc1fcbc4c",
+            "target_url": "./omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.1/Isaac/Materials/Base/Plastics/Plastic_ABS.mdl",
+            "target_hash": "8bec15477800f67e7c55f0dcbc3ab6c128837359"
         },
         {
-            "source_url": "/home/rokey/cobot3_ws/isaacpjt/M0609/Collected_m0609_camera/SubUSDs/textures/Aluminum_Anodized_BaseColor.png",
-            "source_hash": "be8a62867a9a22cccf884e6312217d4d9cc041d3",
-            "target_url": "./SubUSDs/textures/Aluminum_Anodized_BaseColor.png",
-            "target_hash": "70087a5415326477eeda7ffa7ec997890b123a4a"
+            "source_url": "/home/rokey/cobot3_ws/isaacpjt/M0609/Collected_m0609_camera/omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.1/Isaac/Materials/Base/Metals/Aluminum_Anodized/Aluminum_Anodized_BaseColor.png",
+            "source_hash": "3484ddb81d520f1c1ae292499b5165de2f39004b",
+            "target_url": "./omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.1/Isaac/Materials/Base/Metals/Aluminum_Anodized/Aluminum_Anodized_BaseColor.png",
+            "target_hash": "1ad0009571f015ea837ac70dc2e0b7a10f8d2b66"
         },
         {
-            "source_url": "/home/rokey/cobot3_ws/isaacpjt/M0609/Collected_m0609_camera/SubUSDs/textures/Aluminum_Cast_BaseColor.png",
-            "source_hash": "1abf63af96aa2d4db21b399071068c8623102c39",
-            "target_url": "./SubUSDs/textures/Aluminum_Cast_BaseColor.png",
-            "target_hash": "7b63e29785d156869a823293b09038b5dc62ac9f"
+            "source_url": "/home/rokey/cobot3_ws/isaacpjt/M0609/Collected_m0609_camera/omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.1/Isaac/Materials/Base/Metals/Aluminum_Cast/Aluminum_Cast_BaseColor.png",
+            "source_hash": "6a7c1f6b1aaa8920b82b90d5f3f2dd13f51e0c7b",
+            "target_url": "./omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.1/Isaac/Materials/Base/Metals/Aluminum_Cast/Aluminum_Cast_BaseColor.png",
+            "target_hash": "5ed0c8ac563e6b13759a16b20d657711f5c4e3b0"
         },
         {
-            "source_url": "/home/rokey/cobot3_ws/isaacpjt/M0609/Collected_m0609_camera/SubUSDs/textures/Aluminum_Anodized_ORM.png",
-            "source_hash": "7afdb825f42d3071bede1d10912c990d593cf0f7",
-            "target_url": "./SubUSDs/textures/Aluminum_Anodized_ORM.png",
-            "target_hash": "15a6d2327d8f34ba522d3f3f2af9b391caf66569"
+            "source_url": "/home/rokey/cobot3_ws/isaacpjt/M0609/Collected_m0609_camera/omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.1/Isaac/Materials/Base/Metals/Aluminum_Anodized/Aluminum_Anodized_ORM.png",
+            "source_hash": "aef164ae1089f83c0b97be8e0cc0eda3a2c7012c",
+            "target_url": "./omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.1/Isaac/Materials/Base/Metals/Aluminum_Anodized/Aluminum_Anodized_ORM.png",
+            "target_hash": "473d1f320f2566bdfdb0bced26a1ad82ebd96788"
         },
         {
-            "source_url": "/home/rokey/cobot3_ws/isaacpjt/M0609/Collected_m0609_camera/SubUSDs/textures/Aluminum_Cast_ORM.png",
-            "source_hash": "915a30de4f96832430790ea2ca71ac1107e97370",
-            "target_url": "./SubUSDs/textures/Aluminum_Cast_ORM.png",
-            "target_hash": "d3a218efb07f43984f6a35982bd4da37e5dcb955"
+            "source_url": "/home/rokey/cobot3_ws/isaacpjt/M0609/Collected_m0609_camera/omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.1/Isaac/Materials/Base/Metals/Aluminum_Cast/Aluminum_Cast_ORM.png",
+            "source_hash": "69595beb135fbf040313f7172edb13b6328a4e6a",
+            "target_url": "./omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.1/Isaac/Materials/Base/Metals/Aluminum_Cast/Aluminum_Cast_ORM.png",
+            "target_hash": "6a0729fe1d9667e6de19214d83f8c1866a9a59ca"
         },
         {
-            "source_url": "/home/rokey/cobot3_ws/isaacpjt/M0609/Collected_m0609_camera/SubUSDs/textures/Aluminum_Anodized_Normal.png",
-            "source_hash": "6d29983be2ced3f83cf82060b1813b7d93e85c93",
-            "target_url": "./SubUSDs/textures/Aluminum_Anodized_Normal.png",
-            "target_hash": "9b5b88c71dd053a14f1145474958a6c77929f6ab"
+            "source_url": "/home/rokey/cobot3_ws/isaacpjt/M0609/Collected_m0609_camera/omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.1/Isaac/Materials/Base/Metals/Aluminum_Anodized/Aluminum_Anodized_Normal.png",
+            "source_hash": "71bfe5d0aa4bb40d113f2b4f04d4234aabc21335",
+            "target_url": "./omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.1/Isaac/Materials/Base/Metals/Aluminum_Anodized/Aluminum_Anodized_Normal.png",
+            "target_hash": "8f68be7e7fb0c3754aa3125e0beae4b163a2b411"
         },
         {
-            "source_url": "/home/rokey/cobot3_ws/isaacpjt/M0609/Collected_m0609_camera/SubUSDs/textures/Aluminum_Cast_N.png",
-            "source_hash": "49c3d05e0554f32fc8c955749858352be7157f06",
-            "target_url": "./SubUSDs/textures/Aluminum_Cast_N.png",
-            "target_hash": "162a90d7d1d9f84c68aa7afe2b009f02b412f9af"
+            "source_url": "/home/rokey/cobot3_ws/isaacpjt/M0609/Collected_m0609_camera/omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.1/Isaac/Materials/Base/Metals/Aluminum_Cast/Aluminum_Cast_N.png",
+            "source_hash": "3bbad6f7b6f4a52afe596aa901916a63cc136723",
+            "target_url": "./omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.1/Isaac/Materials/Base/Metals/Aluminum_Cast/Aluminum_Cast_N.png",
+            "target_hash": "1ab808e1433901a4f92d0d39395a3854ca248b9f"
         },
         {
             "source_url": "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.1/Isaac/Props/Blocks/Materials/Textures/basic_block_blue1_BaseColor.png",
             "source_hash": "9cb5e178e9259285653baf5f5b681a3c60d5fade",
             "target_url": "./omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.1/Isaac/Props/Blocks/Materials/Textures/basic_block_blue1_BaseColor.png",
-            "target_hash": "778b3b416cc9553314ff2d7d85111400ac186c98"
+            "target_hash": "27e97254e7b0d4dc640f7a1a307ec0d2dd7fc193"
         },
         {
             "source_url": "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.1/Isaac/Props/Blocks/Materials/Textures/basic_block_blue1_Normal.png",
             "source_hash": "3e6b7e1b476e06372a23960d025869b904728e4a",
             "target_url": "./omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.1/Isaac/Props/Blocks/Materials/Textures/basic_block_blue1_Normal.png",
-            "target_hash": "bd962fb6970f658d8831d9f1c335225659957490"
+            "target_hash": "2631e8ff7c5d92ab397a489f7d969dd9c9543ea0"
         },
         {
             "source_url": "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.1/Isaac/Props/Blocks/Materials/Textures/basic_block_blue1_Roughness.png",
             "source_hash": "11f3ff753b75648cb92f7cbec70a5adcdc5bbf1d",
             "target_url": "./omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.1/Isaac/Props/Blocks/Materials/Textures/basic_block_blue1_Roughness.png",
-            "target_hash": "869985ac70c85e7468df3e011ee0fa1f7ce06344"
+            "target_hash": "bcb4c0c358d7ecc53e86c8a4bb1e739f8486b101"
         },
         {
             "source_url": "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.1/Isaac/Props/Blocks/Materials/Textures/basic_block_green1_BaseColor.png",
             "source_hash": "e297a55bfb1fcbb216c5cde829b3e6b1806e4692",
             "target_url": "./omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.1/Isaac/Props/Blocks/Materials/Textures/basic_block_green1_BaseColor.png",
-            "target_hash": "9911b9a930b3f4b9d5773974fb913205bafc9a06"
+            "target_hash": "a27de4a5ea11c933345f416ee9b7ff28d8ddac85"
         },
         {
             "source_url": "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.1/Isaac/Props/Blocks/Materials/Textures/basic_block_green1_Normal.png",
             "source_hash": "3057de6d66f6109c1f2ecf77d7dce306eb8fe213",
             "target_url": "./omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.1/Isaac/Props/Blocks/Materials/Textures/basic_block_green1_Normal.png",
-            "target_hash": "81a59daca2f42e2c582c970f856c11758c2ac14e"
+            "target_hash": "270cd233f56d5e30398b21bdf9ccf43e5d1d1f85"
         },
         {
             "source_url": "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.1/Isaac/Props/Blocks/Materials/Textures/basic_block_green1_Roughness.png",
             "source_hash": "b1dedfaad28ce0b7c2519fcb1a1002afcf31a68b",
             "target_url": "./omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.1/Isaac/Props/Blocks/Materials/Textures/basic_block_green1_Roughness.png",
-            "target_hash": "f3d3fbeedc3551ee4a258e7f6efff638211b65e8"
+            "target_hash": "287336fd9d752ccca7d6ae0e6fd679fae7763d56"
         },
         {
             "source_url": "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.1/Isaac/Props/Blocks/Materials/Textures/basic_block_yellow_BaseColor.png",
             "source_hash": "4709c7d11bfc086fe4302793fd23c8c477862a95",
             "target_url": "./omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.1/Isaac/Props/Blocks/Materials/Textures/basic_block_yellow_BaseColor.png",
-            "target_hash": "00487094ce8edbe4a9443c7a1a248154d8b456ef"
+            "target_hash": "51697206195c76efcc010dbd0321d39a7c70de2f"
         },
         {
             "source_url": "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.1/Isaac/Props/Blocks/Materials/Textures/basic_block_yellow_Normal.png",
             "source_hash": "7f361823d85bc96c54cbeeabc2ba6a810d2e8a1d",
             "target_url": "./omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.1/Isaac/Props/Blocks/Materials/Textures/basic_block_yellow_Normal.png",
-            "target_hash": "9efd75e37ecbf980935942de358319f40554db8f"
+            "target_hash": "28392a3b82b5f1acc7ca54e00d0cba7b379ae59c"
         },
         {
             "source_url": "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.1/Isaac/Props/Blocks/Materials/Textures/basic_block_yellow_Roughness.png",
             "source_hash": "b3419897ec7413751ed44e972bdd8686e47e66a3",
             "target_url": "./omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.1/Isaac/Props/Blocks/Materials/Textures/basic_block_yellow_Roughness.png",
-            "target_hash": "0f55e0007c3ba65fe0190894e85d3a2b6bf1498b"
+            "target_hash": "ed64524cfdb82f56ed561eec69874dec2c61606a"
         }
     ]
 }
