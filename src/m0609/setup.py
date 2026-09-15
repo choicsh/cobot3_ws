@@ -1,3 +1,5 @@
+"""Set up the m0609 ROS 2 Python package."""
+
 from setuptools import find_packages, setup
 
 package_name = 'm0609'
@@ -24,6 +26,7 @@ setup(
     },
     entry_points={
         'console_scripts': [
+            'm0609_color_detector = m0609.m0609_color_detector:main',
         ],
     },
 )
