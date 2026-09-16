@@ -1,10 +1,10 @@
 """
-TCP 오프셋 — 손가락 끝을 목표 좌표로 보내기
+그리퍼 제어 — 열고 닫기
 
-    isaac_python 2_ik_tcp.py
+    isaac_python 3_gripper.py
 
-IK 는 link_6(손목 플랜지)까지만 안다.
-실제 파지 지점인 손가락 패드 끝으로 보내려면 오프셋을 보정해야 한다.
+팔은 IK 로, 그리퍼는 ParallelGripper 로 각각 제어한다.
+IK 는 URDF 만 보므로 그리퍼 관절을 모른다.
 """
 
 from isaacsim import SimulationApp
@@ -19,6 +19,7 @@ import omni.usd
 from pxr import Usd, UsdGeom, UsdPhysics
 
 from isaacsim.core.api import World
+from isaacsim.robot.manipulators.grippers import ParallelGripper
 from isaacsim.robot.manipulators.manipulators import SingleManipulator
 from isaacsim.robot_motion.motion_generation import (
     LulaKinematicsSolver,
@@ -66,25 +67,39 @@ READY_JOINTS_DEG = [0.0, 0.0, 90.0, 0.0, 90.0, 0.0]
 
 
 # ══════════════════════════════════════════════════════════════
+#  그리퍼 설정
+# ══════════════════════════════════════════════════════════════
+# finger_joint 가 구동 관절이고 나머지 5개는 Mimic 으로 따라온다
+# 두 번째 이름은 ParallelGripper 가 요구하는 형식상 필요하다
+GRIPPER_JOINTS = ["finger_joint", "right_inner_knuckle_joint"]
+# ParallelGripper 이름 자체에서 알 수 있듯 다 관절 gipper 임. 우리가 사용하는 그리퍼는 끝에 손가락 관절만 있는 gripper
+# 즉 ParallelGripper 내부에서 요규하는대로, 뒷부분은 이름만 넣어주는 것 뿐.
+# 그럼 왜 ParallelGripper 모듈이 필요한가? -> 아래 ParallelGripper 모듈에서 추가 설명.
+
+# finger_joint 절대 목표값. 한계는 0.0 ~ 약 1.18
+GRIPPER_OPEN_POS  = 0.0
+GRIPPER_CLOSE_POS = 0.8
+# GRIPPER_CLOSE_POS = 1.18
+
+# 열기와 닫기를 반복하는 주기 (스텝)
+CYCLE_STEPS = 180
+
+
+# ══════════════════════════════════════════════════════════════
 #  TCP 오프셋
 # ══════════════════════════════════════════════════════════════
 # link_6 로컬 좌표계에서 손가락 패드 끝까지의 거리 (실측)
 #   손가락 패드 범위  0.13632 ~ 0.19671
 #   링크 원점 0.14155 는 관절 위치이지 파지면이 아니다
-# FINGER_PAD_TIP_Z = 0.19671
-# FINGER_PAD_TIP_Z = 0
-# FINGER_PAD_TIP_Z = 0.14155
 FINGER_PAD_TIP_Z = 0.19671
-
 TCP_OFFSET = np.array([0.0, 0.0, FINGER_PAD_TIP_Z])
 
 
 # ══════════════════════════════════════════════════════════════
 #  목표
 # ══════════════════════════════════════════════════════════════
-# 손가락 끝을 보낼 위치. USD 안 빨간 큐브의 상단면
-#   큐브 상단 [0.25, 0.10, 0.05]
-# TARGET_TCP = np.array([0.55, 0.10, 0.30])
+# 손가락 끝을 보낼 위치. 큐브 상단면보다 10cm 위 (허공에서 개폐 확인)
+# TARGET_TCP = np.array([0.25, 0.10, 0.15])
 TARGET_TCP = np.array([0.25, 0.10, 0.05])
 
 # 접근 방향 — 툴(link_6 로컬 +Z)이 어디를 향할지
@@ -100,6 +115,7 @@ APPROACH_PITCH_DEG = 0.0
 
 # 툴축 회전 — 접근 방향은 그대로, 손가락(로컬 +X)만 돌아간다
 GRIPPER_YAW_DEG = 0.0
+
 
 # ══════════════════════════════════════════════════════════════
 #  회전 유틸
@@ -156,17 +172,17 @@ def quat_to_matrix(q):
 # ══════════════════════════════════════════════════════════════
 #  TCP 변환
 # ══════════════════════════════════════════════════════════════
-# link6=플렌지는 본인 기준 좌표계를 가지고 있으므로, 여기에 grapper의 길이를 반영하여 world 좌표로의 상호 변환이 필요.
-def tcp_to_flange(tcp_pos, quat): #world 좌표를 플렌지 좌표로, 이때 그래퍼 길이는 플렌지가 회전한 만큼을 반영되어야 함.
+def tcp_to_flange(tcp_pos, quat):
     """
     손가락 끝 목표를 플랜지 목표로 바꾼다.
+
     오프셋은 link_6 로컬 좌표이므로 목표 자세만큼 회전시킨 뒤 빼야 한다.
     """
     R = quat_to_matrix(quat)
     return np.array(tcp_pos) - R @ TCP_OFFSET
 
 
-def get_tcp_pose(robot): #플렌지 좌표를 world 좌표로, 마찬가지로 그래퍼 길이는 플렌지가 회전한 만큼을 반영되어야 함.
+def get_tcp_pose(robot):
     """현재 플랜지 pose 로부터 손가락 끝의 월드 위치를 구한다"""
     pos, quat = robot.end_effector.get_world_pose()
     return pos + quat_to_matrix(quat) @ TCP_OFFSET
@@ -222,20 +238,49 @@ def setup_arm_drives():
 
 
 def register_robot(world):
-    """로봇을 Articulation 으로 등록한다"""
+    """로봇과 그리퍼를 Articulation 으로 등록한다"""
     ee_path = find_prim_path(ROBOT_PRIM_PATH, EE_LINK_NAME)
     if ee_path is None:
         raise RuntimeError(f"'{EE_LINK_NAME}' not found under {ROBOT_PRIM_PATH}")
+
+    # action_deltas 를 None 으로 두면 forward() 가 절대 위치를 명령한다
+    gripper = ParallelGripper(
+        end_effector_prim_path=ee_path,
+        joint_prim_names=GRIPPER_JOINTS,
+        joint_opened_positions=np.array([GRIPPER_OPEN_POS] * 2),
+        joint_closed_positions=np.array([GRIPPER_CLOSE_POS] * 2),
+        action_deltas=None,
+    )
+    # ParallelGripper 는 robot 에 추가해 주기 위한 함수형 URDF 로 보면됨.
+    # 그리퍼를 신경쓰지 않았음. = 제어하지 않았음
+    # 그런데 제어를 하려고 보니, URDF 가 존재하는 로봇팔은 IK 를 이용해서 제어를 함.
+    # 그리퍼는? URDF 가 없는데?
+    # 그래서 함수를 통해서 제어. = ParallelGripper 사용
+    # 좀 더 명확하게는 ArticulationKinematicsSolver 을 통해 시뮬레이션을 수행하기 위해 필요한
+    # 각 관절의 좌표값 중 로봇팔은 IK 값, 그리퍼는 ParallelGripper 를 통해 계산된 값 인 것.
+    # 따라서 아래 robot에 추가된 robot을 ArticulationKinematicsSolver 에서 사용할 수 있음.
 
     robot = world.scene.add(
         SingleManipulator(
             prim_path=ROBOT_PRIM_PATH,
             name="m0609_robot",
             end_effector_prim_path=ee_path,
+            gripper=gripper,
         )
     )
     print(f"   EE frame     {ee_path}")
     return robot
+
+
+def init_gripper(robot, world):
+    """그리퍼는 Articulation 초기화 이후에 따로 초기화한다"""
+    robot.gripper.initialize(
+        physics_sim_view=world.physics_sim_view,
+        articulation_apply_action_func=robot.apply_action,
+        get_joint_positions_func=robot.get_joint_positions,
+        set_joint_positions_func=robot.set_joint_positions,
+        dof_names=robot.dof_names,
+    )
 
 
 def set_ready_pose(robot):
@@ -310,6 +355,25 @@ def print_target_info(target_quat, flange_target):
     print(f"   shoulder d   {dist:.4f} / {SPEC_REACH}   {reachable}")
 
 
+def print_dof_info(robot):
+    """어떤 관절이 몇 번인지 확인한다"""
+    section("DOF")
+    for i, name in enumerate(robot.dof_names):
+        tag = "arm" if name in ARM_JOINTS else "gripper"
+        print(f"   [{i:2d}] {name:28s} {tag}")
+    print()
+    print(f"   finger index {robot.get_dof_index('finger_joint')}")
+    print(f"   num_dof      {robot.num_dof}")
+
+
+def print_gripper_state(robot, command):
+    """명령값과 실제값, Mimic 관절 전체를 함께 본다"""
+    q = robot.get_joint_positions()
+    actual = q[robot.get_dof_index("finger_joint")]
+    print(f"   gripper {command:5s}   finger {actual:+.4f}")
+    print(f"   dof[6:12] {vec(q[6:12], 4)}")
+
+
 def print_status(robot, solved):
     """플랜지와 손가락 끝을 함께 찍는다"""
     if not solved:
@@ -339,10 +403,12 @@ def main():
 
     world.reset()
     robot.initialize()
+    init_gripper(robot, world)
     set_ready_pose(robot)
     for _ in range(30):
         world.step(render=True)
-    print(f"   num_dof      {robot.num_dof}")
+
+    print_dof_info(robot)
 
     section("SOLVER")
     ik_solver = create_ik_solver(robot)
@@ -369,10 +435,12 @@ def main():
         if is_playing and not was_playing:
             world.reset()
             robot.initialize()
+            init_gripper(robot, world)
             set_ready_pose(robot)
             step = 0
 
         if is_playing:
+            # 팔 — IK
             action, solved = ik_solver.compute_inverse_kinematics(
                 target_position=flange_target,
                 target_orientation=target_quat,
@@ -380,8 +448,13 @@ def main():
             if solved:
                 robot.apply_action(action)
 
+            # 그리퍼 — 주기적으로 열고 닫는다
+            command = "close" if (step // CYCLE_STEPS) % 2 == 1 else "open"
+            robot.apply_action(robot.gripper.forward(action=command))
+
             if step % LOG_INTERVAL == 0:
                 print_status(robot, solved)
+                print_gripper_state(robot, command)
             step += 1
 
         was_playing = is_playing

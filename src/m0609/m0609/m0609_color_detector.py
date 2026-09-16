@@ -18,8 +18,8 @@ from sensor_msgs.msg import Image
 from std_msgs.msg import Int32
 
 
-IMAGE_TOPIC = '/m0609/wrist_camera/image_raw'
-COLOR_TOPIC = '/m0609/color_id'
+IMAGE_TOPIC = '/rgb'
+COLOR_TOPIC = '/color_id'
 
 
 class M0609ColorDetector(Node):

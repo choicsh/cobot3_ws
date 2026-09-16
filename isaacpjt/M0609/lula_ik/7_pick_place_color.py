@@ -5,10 +5,15 @@ and runs exactly one simulated Pick & Place mission.  This file does not call a
 real robot, controller, gripper driver, or Doosan ROS service.
 """
 
+import os
+import traceback
+
 from isaacsim import SimulationApp
 
 
-simulation_app = SimulationApp({'headless': False})
+simulation_app = SimulationApp({
+    'headless': os.environ.get('ISAAC_HEADLESS', '0') == '1',
+})
 
 # The ROS 2 bridge must be enabled immediately after SimulationApp is created.
 from isaacsim.core.utils.extensions import enable_extension
@@ -51,8 +56,8 @@ DESCRIPTION_PATH = str(M0609_DIR / 'descriptor/m0609_description.yaml')
 
 
 # ROS 2 contract
-IMAGE_TOPIC = '/m0609/wrist_camera/image_raw'
-COLOR_TOPIC = '/m0609/color_id'
+IMAGE_TOPIC = '/rgb'
+COLOR_TOPIC = '/color_id'
 CAMERA_FREQUENCY = 15.0
 CAMERA_RESOLUTION = (640, 480)
 COLOR_MAX_AGE_SEC = 2.0
@@ -375,11 +380,11 @@ def disable_legacy_red_blocks(stage):
         if imageable:
             imageable.MakeInvisible()
         for descendant in Usd.PrimRange(prim):
-            collision = UsdPhysics.CollisionAPI.Get(descendant)
-            if collision:
+            if descendant.HasAPI(UsdPhysics.CollisionAPI):
+                collision = UsdPhysics.CollisionAPI(descendant)
                 collision.GetCollisionEnabledAttr().Set(False)
-            rigid_body = UsdPhysics.RigidBodyAPI.Get(descendant)
-            if rigid_body:
+            if descendant.HasAPI(UsdPhysics.RigidBodyAPI):
+                rigid_body = UsdPhysics.RigidBodyAPI(descendant)
                 rigid_body.GetRigidBodyEnabledAttr().Set(False)
         disabled.append(prim_path(prim))
     for path in disabled:
@@ -615,6 +620,8 @@ class WristImagePublisher:
         self._period = 1.0 / CAMERA_FREQUENCY
         self._last_publish = 0.0
         self._last_warning = 0.0
+        self._capture_path = os.environ.get('ISAAC_CAPTURE_RGB')
+        self._captured = False
 
     def publish_if_due(self):
         now = time.monotonic()
@@ -639,6 +646,10 @@ class WristImagePublisher:
             else:
                 rgb = np.clip(rgb, 0, 255).astype(np.uint8)
         rgb = np.ascontiguousarray(rgb)
+        if self._capture_path and not self._captured:
+            np.save(self._capture_path, rgb)
+            self._captured = True
+            print(f'   rgb capture   {self._capture_path}.npy')
 
         message = Image()
         message.header.stamp = self._ros_node.get_clock().now().to_msg()
@@ -770,6 +781,7 @@ def print_status(robot, solved, fsm, target_tcp):
 
 def main():
     ros_node = None
+    failure = None
     try:
         rclpy.init()
         ros_node = PcARosNode()
@@ -795,6 +807,39 @@ def main():
             GRIPPER_YAW_DEG,
         )
 
+        scan_tcp = np.array([
+            task.mission['pick_xy'][0],
+            task.mission['pick_xy'][1],
+            APPROACH_HEIGHT,
+        ])
+        scan_action, scan_solved = ik_solver.compute_inverse_kinematics(
+            target_position=tcp_to_flange(scan_tcp, target_quat),
+            target_orientation=target_quat,
+        )
+        if not scan_solved:
+            raise RuntimeError(f'scan pose IK failed: {vec(scan_tcp)}')
+        robot.set_joint_positions(
+            scan_action.joint_positions,
+            joint_indices=scan_action.joint_indices,
+        )
+        for _ in range(30):
+            world.step(render=True)
+        camera_prim = omni.usd.get_context().get_stage().GetPrimAtPath(
+            task.camera_path
+        )
+        camera_xform = UsdGeom.XformCache().GetLocalToWorldTransform(camera_prim)
+        camera_position = np.array(camera_xform.ExtractTranslation())
+        optical_axis = np.array(
+            camera_xform.TransformDir(Gf.Vec3d(0.0, 0.0, -1.0))
+        )
+        optical_axis = optical_axis / np.linalg.norm(optical_axis)
+        cube_direction = np.array([*task.mission['pick_xy'], task.mission['pick_z']]) - camera_position
+        cube_direction = cube_direction / np.linalg.norm(cube_direction)
+        print(f'   scan tcp      {vec(scan_tcp)}')
+        print(f'   camera xyz    {vec(camera_position)}')
+        print(f'   camera axis   {vec(optical_axis)}')
+        print(f'   cube align    {float(np.dot(optical_axis, cube_direction)):+.3f}')
+
         section('ROS 2')
         image_publisher = WristImagePublisher(task.camera_path, ros_node)
         print(f'   publish       {IMAGE_TOPIC} sensor_msgs/Image rgb8')
@@ -802,10 +847,20 @@ def main():
         print('   press Play in the viewport')
 
         fsm = PickPlaceFSM(robot, task.mission)
-        was_playing = False
+        if os.environ.get('ISAAC_AUTOSTART', '1') == '1':
+            world.play()
+            print('   simulation    PLAY (automatic)')
+        max_runtime = float(os.environ.get('ISAAC_MAX_RUNTIME_SEC', '0'))
+        run_started_at = time.monotonic()
+        was_playing = world.is_playing()
         step = 0
 
         while simulation_app.is_running():
+            if (max_runtime > 0 and
+                    time.monotonic() - run_started_at > max_runtime):
+                raise TimeoutError(
+                    f'mission timeout after {max_runtime:.1f} seconds'
+                )
             world.step(render=True)
             rclpy.spin_once(ros_node, timeout_sec=0.0)
             time.sleep(0.005)
@@ -852,15 +907,24 @@ def main():
                     if step % LOG_INTERVAL == 0:
                         print_status(robot, solved, fsm, target_tcp)
                     step += 1
+                    if (fsm.done and
+                            os.environ.get('ISAAC_EXIT_ON_DONE', '0') == '1'):
+                        print('   validation    mission completed')
+                        break
 
             was_playing = is_playing
 
+    except BaseException as error:
+        failure = error
+        traceback.print_exc()
     finally:
         if ros_node is not None:
             ros_node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
         simulation_app.close()
+    if failure is not None:
+        raise failure
 
 
 if __name__ == '__main__':
