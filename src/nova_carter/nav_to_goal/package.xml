@@ -4,13 +4,20 @@
   <name>nav_to_goal</name>
   <version>0.0.0</version>
   <description>TODO: Package description</description>
-  <maintainer email="jungsub27@gmail.com">rokey</maintainer>
+  <maintainer email="csh980625@gmail.com">rokey</maintainer>
   <license>Apache-2.0</license>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>
   <test_depend>ament_pep257</test_depend>
   <test_depend>python3-pytest</test_depend>
+
+  <depend>rclpy</depend>
+  <!-- 이미지 처리 코드에 필요한 추가 의존성 -->
+  <depend>sensor_msgs</depend>
+  <depend>cv_bridge</depend>
+  <!-- 실행 시 필요한 Python 패키지 -->
+  <exec_depend>python3-opencv</exec_depend>
 
   <export>
     <build_type>ament_python</build_type>

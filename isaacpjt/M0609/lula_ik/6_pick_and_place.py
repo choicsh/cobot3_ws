@@ -14,23 +14,15 @@ from isaacsim import SimulationApp
 
 simulation_app = SimulationApp({"headless": False})
 
-from isaacsim.core.utils.extensions import enable_extension
-enable_extension("isaacsim.ros2.bridge")
-simulation_app.update()
-
 from pathlib import Path
 import time
 
 import numpy as np
-import random 
 import omni.usd
-from pxr import Usd, UsdGeom, UsdPhysics, Gf, Vt
-
+from pxr import Usd, UsdGeom, UsdPhysics
 
 from isaacsim.core.api import World
 from isaacsim.core.api.tasks import BaseTask
-from isaacsim.core.api.objects import DynamicCuboid, VisualCuboid
-from isaacsim.core.api.materials import PreviewSurface
 from isaacsim.robot.manipulators.grippers import ParallelGripper
 from isaacsim.robot.manipulators.manipulators import SingleManipulator
 from isaacsim.robot_motion.motion_generation import (
@@ -88,7 +80,7 @@ GRIPPER_JOINTS = ["finger_joint", "right_inner_knuckle_joint"]
 # finger_joint 절대 목표값 (라디안)
 #   Physics Inspector 는 도로 표시한다.  0.0 ~ 67.609 deg = 0.0 ~ 1.18 rad
 GRIPPER_OPEN_POS  = 0.0     #   0.0 deg
-GRIPPER_CLOSE_POS = 1.0     #  45.8 deg
+GRIPPER_CLOSE_POS = 0.8     #  45.8 deg
 
 
 
@@ -105,66 +97,9 @@ TCP_OFFSET = np.array([0.0, 0.0, FINGER_PAD_TIP_Z])
 # ══════════════════════════════════════════════════════════════
 #  목표
 # ══════════════════════════════════════════════════════════════
-# 큐브 랜덤 생성 범위 (로봇 작업 안전 반경)
-CUBE_X_RANGE = (0.22, 0.35)   # 로봇 전방 22cm ~ 35cm
-CUBE_Y_RANGE = (-0.10, 0.15)  # 좌우 -10cm ~ 15cm
-CUBE_SIZE    = 0.025          # 2.5cm 정육면체 (높이 중심: 0.0125m)
-
-
-def sample_cube_state():
-    """랜덤 위치(xyz)와 랜덤 색상(Blue 또는 Green)을 반환"""
-    rx = random.uniform(*CUBE_X_RANGE)
-    ry = random.uniform(*CUBE_Y_RANGE)
-    rz = CUBE_SIZE / 2.0  # 바닥에 딱 놓이도록 (0.0125m)
-    color_name, rgb = random.choice([
-        ("BLUE",  np.array([0.0, 0.0, 1.0])),
-        ("GREEN", np.array([0.0, 1.0, 0.0])),
-    ])
-    return np.array([rx, ry, rz]), color_name, rgb
-
-
-
 # 큐브를 집을 곳과 놓을 곳 (xy)
-PICK_XY    = np.array([0.25,  0.10])
-BASE_PLACE = np.array([0.45, -0.10])                     # 기준 놓는 위치
-PLACE_XY_1 = BASE_PLACE + np.array([0.10, -0.20])        # 1번 (파란 장판): [0.55, -0.30] (-x 10cm 이동)
-PLACE_XY_2 = BASE_PLACE + np.array([0.10,  0.20])        # 2번 (초록 장판): [0.55,  0.10] (-x 10cm 이동)
-PLACE_XY   = PLACE_XY_1
-
-# Action Graph 서브스크라이버 노드 경로
-SUBSCRIBER_PRIM_PATH = "/World/Graph/ActionGraph/ros2_subscriber"
-
-
-def get_subscriber_data():
-    """/World/Graph/ActionGraph/ros2_subscriber 노드로부터 데이터를 읽어온다"""
-    import omni.graph.core as og
-    import omni.usd
-
-    # 1. outputs:data 포트 시도
-    attr_data = og.Controller.attribute(f"{SUBSCRIBER_PRIM_PATH}.outputs:data")
-    if attr_data.is_valid():
-        val = og.Controller.get(attr_data)
-        if val is not None:
-            return val
-
-    # 2. outputs:value 포트 시도
-    attr_val = og.Controller.attribute(f"{SUBSCRIBER_PRIM_PATH}.outputs:value")
-    if attr_val.is_valid():
-        val = og.Controller.get(attr_val)
-        if val is not None:
-            return val
-
-    # 3. USD Prim 탐색 폴백
-    stage = omni.usd.get_context().get_stage()
-    prim = stage.GetPrimAtPath(SUBSCRIBER_PRIM_PATH)
-    if prim.IsValid():
-        for a in prim.GetAttributes():
-            name = a.GetName()
-            if name.startswith("outputs:") and not name.endswith("execOut"):
-                v = a.Get()
-                if v is not None:
-                    return v
-    return None
+PICK_XY  = np.array([0.25,  0.10])
+PLACE_XY = np.array([0.45, -0.10])
 
 # 높이
 #   PICK_Z    큐브 상단면. 여기서 그리퍼를 닫으면 큐브 옆면을 문다
@@ -309,18 +244,15 @@ class PickPlaceFSM:
     GRIPPER_STATES = {2: "close", 6: "open"}     # 제자리에서 개폐만 하는 단계
     DONE_STATE = 7
 
-    def __init__(self, robot, pick_xy=None):
+    def __init__(self, robot):
         self._robot = robot
-        self.pick_xy = np.array(pick_xy) if pick_xy is not None else PICK_XY
-        self.place_xy = PLACE_XY_1
-        self._classified = False
         self._build_waypoints()
-        self.reset(self.pick_xy)
+        self.reset()
 
     def _build_waypoints(self):
         """각 단계가 도달할 TCP 목표를 미리 계산해 둔다"""
-        px, py = self.pick_xy
-        gx, gy = self.place_xy
+        px, py = PICK_XY
+        gx, gy = PLACE_XY
         self.waypoints = [
             np.array([px, py, APPROACH_HEIGHT]),   # 0 APPROACH
             np.array([px, py, PICK_Z]),            # 1 DESCEND
@@ -331,54 +263,13 @@ class PickPlaceFSM:
             np.array([gx, gy, PLACE_Z]),           # 6 RELEASE
         ]
 
-    def set_place_target(self, place_xy):
-        """놓을 목표 위치(MOVE, LOWER, RELEASE)를 동적으로 변경한다"""
-        self.place_xy = np.array(place_xy)
-        gx, gy = self.place_xy
-        self.waypoints[4] = np.array([gx, gy, LIFT_HEIGHT])
-        self.waypoints[5] = np.array([gx, gy, PLACE_Z])
-        self.waypoints[6] = np.array([gx, gy, PLACE_Z])
-
-    def reset(self, pick_xy=None):
-        if pick_xy is not None:
-            self.pick_xy = np.array(pick_xy)
-
-        self.place_xy = PLACE_XY_1
-        self._classified = False
-        self._wait_tick = 0
-        self._build_waypoints()
-
+    def reset(self):
         self.state = 0
         self.step = 0
         self.start = None
         self.goal = self.waypoints[0]
         self.n_steps = MIN_STEPS
         self.gripper = "open"
-
-    def _check_subscriber_and_update_place(self):
-        """서브스크라이버 데이터를 확인하여 1이면 기존 위치, 2이면 +30cm 위치로 설정.
-        값이 없거나 0인 경우 False 반환(상공 대기)."""
-        raw_data = get_subscriber_data()
-        if raw_data is None:
-            return False
-
-        val_str = str(raw_data).strip()
-
-        # 값이 없거나 0일 때는 상공 대기
-        if val_str in ["0", "", "None", "0.0"]:
-            return False
-
-        if "2" in val_str:
-            self.set_place_target(PLACE_XY_2)
-            print(f"\n   [FSM ROUTE] Command '2' received -> Place at {vec(PLACE_XY_2)} (World +30cm)\n")
-            self._classified = True
-            return True
-        elif "1" in val_str:
-            self.set_place_target(PLACE_XY_1)
-            print(f"\n   [FSM ROUTE] Command '1' received -> Place at default {vec(PLACE_XY_1)}\n")
-            self._classified = True
-            return True
-        return False
 
     def current_target(self):
         """이번 스텝의 TCP 목표"""
@@ -410,20 +301,7 @@ class PickPlaceFSM:
 
         self.step += 1
         if self.step >= self.n_steps:
-            # 2 GRASP (그리퍼 닫기 제자리) 완료 후: 토픽 값 확인하여 1 or 2 판단 (값이 없거나 0이면 제자리 대기)
-            if self.state == 2:
-                valid = self._check_subscriber_and_update_place()
-                if valid:
-                    self._next()
-                else:
-                    # 유효한 명령(1 또는 2)이 올 때까지 그리퍼를 닫은 채 제자리 대기
-                    self.step = self.n_steps
-                    if self._wait_tick % 60 == 0:
-                        cur_val = get_subscriber_data()
-                        print(f"   [FSM WAIT] Holding at GRASP... Waiting for valid command (current: {cur_val})")
-                    self._wait_tick += 1
-            else:
-                self._next()
+            self._next()
 
     def _next(self):
         self.state += 1
@@ -458,9 +336,6 @@ class M0609Task(BaseTask):
     def __init__(self, name):
         super().__init__(name=name, offset=None)
         self._robot = None
-        self._cube = None
-        self._cube_material = None
-        self.current_cube_pos = None
 
     # ── 프레임워크 규약 ──────────────────────────────────
     def set_up_scene(self, scene):
@@ -469,60 +344,7 @@ class M0609Task(BaseTask):
         self._load_usd()
         self._setup_arm_drives()
         self._register_robot(scene)
-        self._setup_cube(scene)
-        self._setup_plates(scene)
         print("   scene        ready")
-
-    def _setup_plates(self, scene):
-        """1번과 2번 놓는 위치에 각각 파란색/초록색 얇은 장판 생성 (Collision/Rigid Body 없음)"""
-        plate_thickness = 0.001  # 1mm 두께
-        plate_z = plate_thickness / 2.0  # 바닥(Z=0) 위에 밀착
-
-        # 1일 때 놓는 위치 (파란색 장판: 0.1 x 0.1)
-        scene.add(
-            VisualCuboid(
-                prim_path="/World/Plate_Blue",
-                name="plate_blue",
-                position=np.array([PLACE_XY_1[0], PLACE_XY_1[1], plate_z]),
-                scale=np.array([0.1, 0.1, plate_thickness]),
-                color=np.array([0.0, 0.3, 1.0]),  # 파란색
-            )
-        )
-
-        # 2일 때 놓는 위치 (초록색 장판: 0.1 x 0.1)
-        scene.add(
-            VisualCuboid(
-                prim_path="/World/Plate_Green",
-                name="plate_green",
-                position=np.array([PLACE_XY_2[0], PLACE_XY_2[1], plate_z]),
-                scale=np.array([0.1, 0.1, plate_thickness]),
-                color=np.array([0.0, 1.0, 0.3]),  # 초록색
-            )
-        )
-        print("   plates       spawned (Blue at Choice 1, Green at Choice 2)")
-
-    def _setup_cube(self, scene):
-        # 시작부터 랜덤 위치와 색상으로 큐브 생성
-        rand_pos, color_name, rgb = sample_cube_state()
-        self.current_cube_pos = rand_pos
-
-        # 큐브 전용 PreviewSurface 머티리얼 생성 및 바인딩
-        self._cube_material = PreviewSurface(
-            prim_path="/World/Looks/CubeMaterial",
-            color=rgb,
-        )
-
-        self._cube = scene.add(
-            DynamicCuboid(
-                prim_path="/World/RandomCube",
-                name="random_cube",
-                position=rand_pos,
-                scale=np.array([CUBE_SIZE, CUBE_SIZE, CUBE_SIZE]),
-                visual_material=self._cube_material,
-                mass=0.04,
-            )
-        )
-        print(f"   [STARTUP SPAWN] {color_name} Cube at {vec(rand_pos)}")
 
     # ── 우리가 나눈 단계 ─────────────────────────────────
     def _load_usd(self):
@@ -582,14 +404,6 @@ class M0609Task(BaseTask):
     @property
     def robot(self):
         return self._robot
-
-    @property
-    def cube(self):
-        return self._cube
-
-    @property
-    def cube_material(self):
-        return self._cube_material
 
 
 def init_gripper(robot, world):
@@ -660,8 +474,7 @@ def print_target_info(target_quat):
 
     section("PLAN")
     print(f"   pick xy      {vec(PICK_XY)}")
-    print(f"   place xy 1   {vec(PLACE_XY_1)} (Choice 1: default)")
-    print(f"   place xy 2   {vec(PLACE_XY_2)} (Choice 2: World +30cm)")
+    print(f"   place xy     {vec(PLACE_XY)}")
     print()
     print(f"   approach z   {APPROACH_HEIGHT}")
     print(f"   pick z       {PICK_Z}")
@@ -695,7 +508,7 @@ def print_gripper_state(robot, command):
     print(f"   dof[6:12] {vec(q[6:12], 4)}")
 
 
-def print_status(robot, solved, fsm, target_tasktcp):
+def print_status(robot, solved, fsm, target_tcp):
     """현재 단계와 손가락 끝 위치를 함께 찍는다"""
     name = fsm.NAMES[min(fsm.state, fsm.DONE_STATE)]
 
@@ -743,8 +556,7 @@ def main():
     section("RUN")
     print("   press Play in the viewport\n")
 
-    # 시작 시 스폰된 큐브의 위치를 FSM 초기 목표로 전달
-    fsm = PickPlaceFSM(robot, pick_xy=task.current_cube_pos[:2])
+    fsm = PickPlaceFSM(robot)
     was_playing = False
     step = 0
 
@@ -760,19 +572,9 @@ def main():
             robot.initialize()
             init_gripper(robot, world)
             set_ready_pose(robot)
-
-            # Play 재시작 시 새로운 위치와 색상으로 리스폰
-            new_pos, color_name, rgb = sample_cube_state()
-            task.cube.set_world_pose(position=new_pos)
-            task.cube_material.set_color(rgb)
-            task.cube.set_linear_velocity(np.zeros(3))
-            task.cube.set_angular_velocity(np.zeros(3))
-
-            # FSM 리셋 (새로운 큐브 위치로 목표 갱신)
-            fsm.reset(pick_xy=new_pos[:2])
-            
+            fsm.reset()
             step = 0
-            print(f"\n[RE-SPAWN] {color_name} Cube relocated to {vec(new_pos)}")
+            print()
 
         if is_playing:
             # 팔 — 이번 스텝의 목표를 보간으로 구해 IK 로 푼다

@@ -72,9 +72,6 @@ READY_JOINTS_DEG = [0.0, 0.0, 90.0, 0.0, 90.0, 0.0]
 # finger_joint 가 구동 관절이고 나머지 5개는 Mimic 으로 따라온다
 # 두 번째 이름은 ParallelGripper 가 요구하는 형식상 필요하다
 GRIPPER_JOINTS = ["finger_joint", "right_inner_knuckle_joint"]
-# ParallelGripper 이름 자체에서 알 수 있듯 다 관절 gipper 임. 우리가 사용하는 그리퍼는 끝에 손가락 관절만 있는 gripper
-# 즉 ParallelGripper 내부에서 요규하는대로, 뒷부분은 이름만 넣어주는 것 뿐.
-# 그럼 왜 ParallelGripper 모듈이 필요한가? -> 아래 ParallelGripper 모듈에서 추가 설명.
 
 # finger_joint 절대 목표값. 한계는 0.0 ~ 약 1.18
 GRIPPER_OPEN_POS  = 0.0
@@ -251,14 +248,6 @@ def register_robot(world):
         joint_closed_positions=np.array([GRIPPER_CLOSE_POS] * 2),
         action_deltas=None,
     )
-    # ParallelGripper 는 robot 에 추가해 주기 위한 함수형 URDF 로 보면됨.
-    # 그리퍼를 신경쓰지 않았음. = 제어하지 않았음
-    # 그런데 제어를 하려고 보니, URDF 가 존재하는 로봇팔은 IK 를 이용해서 제어를 함.
-    # 그리퍼는? URDF 가 없는데?
-    # 그래서 함수를 통해서 제어. = ParallelGripper 사용
-    # 좀 더 명확하게는 ArticulationKinematicsSolver 을 통해 시뮬레이션을 수행하기 위해 필요한
-    # 각 관절의 좌표값 중 로봇팔은 IK 값, 그리퍼는 ParallelGripper 를 통해 계산된 값 인 것.
-    # 따라서 아래 robot에 추가된 robot을 ArticulationKinematicsSolver 에서 사용할 수 있음.
 
     robot = world.scene.add(
         SingleManipulator(

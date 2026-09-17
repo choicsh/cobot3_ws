@@ -14,7 +14,7 @@ setup(
     install_requires=['setuptools'],
     zip_safe=True,
     maintainer='rokey',
-    maintainer_email='jungsub27@gmail.com',
+    maintainer_email='csh980625@gmail.com',
     description='TODO: Package description',
     license='Apache-2.0',
     extras_require={
@@ -24,8 +24,9 @@ setup(
     },
     entry_points={
         'console_scripts': [
-	'nav_to_pose = nav_to_goal.nav_to_pose:main',
-    'nav_through_pose = nav_to_goal.nav_through_pose:main',
+            'nav_to_pose = nav_to_goal.nav_to_pose:main',
+            'nav_through_pose = nav_to_goal.nav_through_pose:main',
+            'image_saver_node = nav_to_goal.image_saver_node:main',
         ],
     },
 )

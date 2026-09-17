@@ -68,6 +68,10 @@ READY_JOINTS_DEG = [0.0, 0.0, 90.0, 0.0, 90.0, 0.0]
 #  목표
 # ══════════════════════════════════════════════════════════════
 TARGET_POS = np.array([0.40, 0.00, 0.40])
+# TARGET_POS = np.array([0.45,  0.00, 0.35])
+# TARGET_POS = np.array([0.30,  0.40, 0.45])
+# TARGET_POS = np.array([0.50, -0.20, 0.30])
+# TARGET_POS = np.array([1.00, 0.30, 0.40]) #도달범위 초과
 
 # 접근 방향 — 툴(link_6 로컬 +Z)이 어디를 향할지
 #   roll  pitch      방향
@@ -80,20 +84,23 @@ TARGET_POS = np.array([0.40, 0.00, 0.40])
 APPROACH_ROLL_DEG  = 180.0
 APPROACH_PITCH_DEG = 0.0
 
+# APPROACH_ROLL_DEG  = 180.0    
+# APPROACH_PITCH_DEG =  90.0
+
+# APPROACH_ROLL_DEG  =  90.0
+# APPROACH_PITCH_DEG =   0.0
+
+# APPROACH_ROLL_DEG  =   0.0
+# APPROACH_PITCH_DEG =   0.0
 # 툴축 회전 — 접근 방향은 그대로, 손가락(로컬 +X)만 돌아간다
 GRIPPER_YAW_DEG = 0.0
-
-# 심플하게 link6 좌표계 기준 x y z 축 회전값.
-# 현재 기준으로 추가 회전하라는 상대값이 아닌. link6 젚대 좌표 기준 회전 각도를 의미
-# 따라서, 0.0 값이라고해도, 시작이 20 도나 50 도 등이면 0도를 맞추기 위해 회전이 발생.
+# GRIPPER_YAW_DEG =  45.0
+# GRIPPER_YAW_DEG =  90.0
+# GRIPPER_YAW_DEG = 135.0
 
 # ══════════════════════════════════════════════════════════════
 #  회전 유틸
 # ══════════════════════════════════════════════════════════════
-# 회전값을 단순히 저장하고 관리해야할 값으로만 보면 x y z 에 대한 회전값 즉 오일러 앵글로 다루면 됨.
-# 그러나 오일러 앵글을 회전 연산에 사용하기엔 불편함이 많음.(회전 순서 문제와 gimbla lock 문제)
-# 이를 해결/보완 하고자 도입된게 쿼터니언 축별 회전 각도로 계산회는 회전 연산 전용 앵글로 보면 된다.
-# 쿼터니언 값 자체가 3d 앵글을 표현하는 값.
 def quat_mul(a, b):
     """쿼터니언 곱. 순서는 (w, x, y, z)"""
     w1, x1, y1, z1 = a
@@ -225,14 +232,6 @@ def create_ik_solver(robot):
 
     LulaKinematicsSolver         : URDF 만 읽는 계산기. 로봇을 모른다
     ArticulationKinematicsSolver : 계산 결과를 로봇 관절 명령으로 바꾼다
-
-    # URDF : 로봇의 구조와 물리적 특성 표현에 강점
-    # USD : 복잡한 3d 씬/시뮬레이션 표현에 강점
-    # 즉, URDF 파일이 아니면, LulaKinematicsSolver 를 계산할 수 없는게 아니라, 충분히 물리적 특성값이 포함된 USD 파일로도 가능
-    # 반대로 USD 파일이 아니면, 시뮬레이션에 표현 불가능이 아니라, 제한적이지만 URDF 에 넣을 수 있는 값으로도 3d 표현은 일부 가능
-
-    # LulaKinematicsSolver 가 URDF 를 통해 IK 계산 수행 == 관전들을 몇도 변화시켜야는지 역기구학 수행
-    # 이렇게 구한 역기구학 정보를 바탕으로 ArticulationKinematicsSolver 가 아이작 심 USD 파일이 show 하고 있는 시뮬레이션에 반영
     """
     lula = LulaKinematicsSolver(
         robot_description_path=DESCRIPTION_PATH,

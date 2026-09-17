@@ -101,6 +101,7 @@ APPROACH_PITCH_DEG = 0.0
 # 툴축 회전 — 접근 방향은 그대로, 손가락(로컬 +X)만 돌아간다
 GRIPPER_YAW_DEG = 0.0
 
+
 # ══════════════════════════════════════════════════════════════
 #  회전 유틸
 # ══════════════════════════════════════════════════════════════
@@ -156,17 +157,17 @@ def quat_to_matrix(q):
 # ══════════════════════════════════════════════════════════════
 #  TCP 변환
 # ══════════════════════════════════════════════════════════════
-# link6=플렌지는 본인 기준 좌표계를 가지고 있으므로, 여기에 grapper의 길이를 반영하여 world 좌표로의 상호 변환이 필요.
-def tcp_to_flange(tcp_pos, quat): #world 좌표를 플렌지 좌표로, 이때 그래퍼 길이는 플렌지가 회전한 만큼을 반영되어야 함.
+def tcp_to_flange(tcp_pos, quat):
     """
     손가락 끝 목표를 플랜지 목표로 바꾼다.
+
     오프셋은 link_6 로컬 좌표이므로 목표 자세만큼 회전시킨 뒤 빼야 한다.
     """
     R = quat_to_matrix(quat)
     return np.array(tcp_pos) - R @ TCP_OFFSET
 
 
-def get_tcp_pose(robot): #플렌지 좌표를 world 좌표로, 마찬가지로 그래퍼 길이는 플렌지가 회전한 만큼을 반영되어야 함.
+def get_tcp_pose(robot):
     """현재 플랜지 pose 로부터 손가락 끝의 월드 위치를 구한다"""
     pos, quat = robot.end_effector.get_world_pose()
     return pos + quat_to_matrix(quat) @ TCP_OFFSET
