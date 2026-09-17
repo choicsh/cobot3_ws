@@ -46,12 +46,12 @@ from isaacsim.robot_motion.motion_generation import (
 THIS_DIR   = Path(__file__).resolve().parent
 M0609_DIR  = THIS_DIR.parent
 
-SCENE_USD        = str(M0609_DIR.parent / "assets/PnP_test.usd")
+SCENE_USD        = str(M0609_DIR.parent / "assets/PnP_test_gripper_test.usd")
 URDF_PATH        = str(M0609_DIR / "doosan-robot2/urdf/m0609_isaac_sim.urdf")
 DESCRIPTION_PATH = str(M0609_DIR / "descriptor/m0609_description.yaml")
 
 # PnP_test.usd 안에서 로봇이 놓인 위치
-ROBOT_PRIM_PATH = "/World/robot/Robot/m0609_camera/m0609"
+ROBOT_PRIM_PATH = "/World/robot_test/Robot/m0609_camera/m0609"
 EE_LINK_NAME    = "link_6"
 D455_CAMERA_NAME = "RSD455"    # 그리퍼에 달린 손목 카메라. 조그 방향 기준으로 쓴다
 
@@ -68,12 +68,12 @@ DRIVE_MAX_FORCE = 300.0
 # 두 번째 이름은 ParallelGripper 가 요구하는 형식상 필요하다
 GRIPPER_JOINTS    = ["finger_joint", "right_inner_knuckle_joint"]
 GRIPPER_OPEN_POS  = 0.0     #   0.0 deg
-GRIPPER_CLOSE_POS = 1.09    #  45.8 deg — 잡는 폭. 키우면 더 좁게(꽉) 닫힌다
+GRIPPER_CLOSE_POS = 1.2    #  45.8 deg — 잡는 폭. 키우면 더 좁게(꽉) 닫힌다
 
 
 GRIPPER_DRIVE_STIFFNESS = 1e6
 GRIPPER_DRIVE_DAMPING   = 1e3
-GRIPPER_DRIVE_MAX_FORCE = 15.0   # N — 잡는 힘 상한. 낮추면 살살, 높이면 세게 잡는다
+GRIPPER_DRIVE_MAX_FORCE = 30.0   # N — 잡는 힘 상한. 낮추면 살살, 높이면 세게 잡는다
 
 # link_6 로컬 +Z 기준 손가락 패드 끝까지의 거리 (실측)
 TCP_OFFSET = np.array([0.0, 0.0, 0.21671])
