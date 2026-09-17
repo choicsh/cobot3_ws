@@ -16,7 +16,7 @@ from waypoint_mover import WaypointMover
 
 
 USD_PATH = Path("/home/rokey/cobot3_ws/isaacpjt/assets/move_test.usd")
-MOVE_ROOT_PATH = "/World/robot/robot"
+MOVE_ROOT_PATH = "/World/robot"
 
 WAYPOINTS = [
     np.array([1.07836, 0.05, 0.0]),       # W0
