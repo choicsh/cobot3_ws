@@ -15,14 +15,14 @@ from isaacsim.core.utils.stage import is_stage_loading, open_stage
 from waypoint_mover import WaypointMover
 
 
-USD_PATH = Path("/home/rokey/cobot3_ws/isaacpjt/assets/move_test.usd")
+USD_PATH = Path("/home/rokey/cobot3_ws/isaacpjt/assets/integration.usd")
 MOVE_ROOT_PATH = "/World/robot"
 
 WAYPOINTS = [
-    np.array([1.07836, 0.05, 0.0]),       # W0
-    np.array([6.72354, 0.05, 0.0]),       # W1
-    np.array([6.72354, 13.83883, 0.0]),   # W2
-    np.array([1.27576, 13.83883, 0.0]),   # W3
+    np.array([0.0, 0.0, 0.0]),       # W0
+    np.array([6.72354, 0.0, 0.0]),       # W1
+    np.array([6.72354, 15.5, 0.0]),   # W2
+    np.array([0, 15.5, 0.0]),   # W3
 ]
 
 SPEED_MPS = 1.0

@@ -95,6 +95,9 @@ POINT5_RPY = (-89.3, 89.1, 180.0)
 
 JOINT1_ROTATE_DEG = -90.0   # 들어올린 뒤 joint_1 을 이만큼 상대 회전한다
 
+POINT6_TCP = np.array([-0.0093, 0.7190, 0.22])   # 잡기 전 안전 위치
+POINT6_RPY = (-89.3, 0.1, 180.0)
+
 # 보간 속도 — 스텝당 이동량을 고정하고 구간 길이로 스텝 수를 정한다
 TCP_SPEED_M        = 0.004   # m / step
 JOINT_SPEED_DEG     = 0.5    # deg / step
