@@ -29,7 +29,10 @@ M0609_DIR = Path(__file__).resolve().parent.parent / "M0609"
 sys.path[:0] = [str(M0609_DIR / "move"), str(M0609_DIR / "teleop")]
 
 import omni.usd
+from pxr import Gf, UsdGeom, UsdPhysics
+
 from isaacsim.core.api import World
+from isaacsim.core.prims import SingleRigidPrim
 from isaacsim.core.utils.stage import is_stage_loading, open_stage
 
 from waypoint_mover import WaypointMover
@@ -60,6 +63,11 @@ from pick_and_place import (
 USD_PATH = Path("/home/rokey/cobot3_ws/isaacpjt/assets/integration.usd")
 MOVE_ROOT_PATH = "/World/robot"
 
+# 주행 중 짐을 물리적으로 끌고 가기 위한 프림들
+PAYLOAD_PRIM_PATH = "/World/tray/tray"          # 옮기는 물건 (유일한 dynamic rigid body)
+CARRY_ANCHOR_PATH = "/World/carry_anchor"
+CARRY_JOINT_PATH = "/World/carry_joint"
+
 WAYPOINTS = [
     np.array([0.0, 0.0, 0.0]),        # W0
     np.array([6.72354, 0.0, 0.0]),    # W1
@@ -70,6 +78,51 @@ WAYPOINTS = [
 SPEED_MPS = 1.0
 ACCEL_MPS2 = 1.0        # 주행 가감속
 PICK_PAUSE_S = 1.0      # 홈 복귀 후 주행을 시작하기까지 대기 시간
+
+
+def clear_carry(stage):
+    for path in (CARRY_JOINT_PATH, CARRY_ANCHOR_PATH):
+        if stage.GetPrimAtPath(path).IsValid():
+            stage.RemovePrim(path)
+
+
+class PayloadCarry:
+    """주행 구간 동안만 짐을 kinematic anchor 에 fixed joint 로 묶어 물리적으로 끌고 간다.
+
+    anchor 를 짐과 똑같은 월드 포즈의 스케일 없는 Xform 으로 만들기 때문에
+    joint local frame 이 양쪽 다 0 이고, 그래서 'disjointed body transforms' 경고가 나지 않는다."""
+
+    def __init__(self, stage, payload, mover):
+        clear_carry(stage)
+        self._stage = stage
+        self._mover = mover
+        self._payload_start, payload_quat = payload.get_world_pose()
+        self._robot_start = mover.get_world_position()
+
+        anchor = UsdGeom.Xform.Define(stage, CARRY_ANCHOR_PATH)
+        anchor.ClearXformOpOrder()
+        self._translate_op = anchor.AddTranslateOp(UsdGeom.XformOp.PrecisionDouble)
+        self._translate_op.Set(Gf.Vec3d(*[float(v) for v in self._payload_start]))
+        anchor.AddOrientOp(UsdGeom.XformOp.PrecisionDouble).Set(
+            Gf.Quatd(*[float(v) for v in payload_quat])
+        )
+        UsdPhysics.RigidBodyAPI.Apply(anchor.GetPrim()).CreateKinematicEnabledAttr(True)
+
+        joint = UsdPhysics.FixedJoint.Define(stage, CARRY_JOINT_PATH)
+        joint.CreateBody0Rel().SetTargets([CARRY_ANCHOR_PATH])
+        joint.CreateBody1Rel().SetTargets([PAYLOAD_PRIM_PATH])
+        joint.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        joint.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        joint.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        joint.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+
+    def update(self):
+        # ponytail: waypoint 가 평행이동뿐이라 translate 만 따라간다. 주행 중 회전이 생기면 orient 도 갱신해야 한다
+        delta = self._mover.get_world_position() - self._robot_start
+        self._translate_op.Set(Gf.Vec3d(*[float(v) for v in (self._payload_start + delta)]))
+
+    def release(self):
+        clear_carry(self._stage)
 
 
 def build_pick_sequence(base_pos, base_quat):
@@ -107,6 +160,19 @@ def build_pick_sequence(base_pos, base_quat):
     ]
 
 
+def build_place_sequence(base_pos, base_quat):
+    """놓는 순서 그대로. 단 접근/파지 지점은 1단계에서 실제로 내려놓은 P6 로 맞춘다"""
+    steps = build_sequence(base_pos, base_quat)
+    steps[0] = {
+        "type": "pose",
+        "label": "파지 위치(P6)",
+        "target": base_to_world(POINT6_TCP, POINT6_RPY, base_pos, base_quat),
+        "gripper": "open",
+    }
+    del steps[1]   # P1 접근 스텝과 목표가 같아져 의미가 없다
+    return steps
+
+
 def main():
     if not USD_PATH.is_file():
         raise FileNotFoundError(f"USD file was not found: {USD_PATH}")
@@ -114,6 +180,9 @@ def main():
         raise RuntimeError(f"Could not open USD: {USD_PATH}")
     while is_stage_loading():
         simulation_app.update()
+
+    stage = omni.usd.get_context().get_stage()
+    clear_carry(stage)
 
     world = World(stage_units_in_meters=1.0)
 
@@ -125,6 +194,10 @@ def main():
 
     world.reset()
     init_robot(robot, world)
+
+    payload = SingleRigidPrim(PAYLOAD_PRIM_PATH, name="payload")
+    payload.initialize()
+
     for _ in range(30):
         world.step(render=True)
 
@@ -133,7 +206,7 @@ def main():
     arm_indices = [robot.get_dof_index(j) for j in ARM_JOINTS]
 
     mover = WaypointMover(
-        stage=omni.usd.get_context().get_stage(),
+        stage=stage,
         prim_path=MOVE_ROOT_PATH,
         waypoints=WAYPOINTS,
         speed_mps=SPEED_MPS,
@@ -145,6 +218,7 @@ def main():
 
     phase = None
     seq = None
+    carry = None
     wait_ticks = 0
     was_playing = False
 
@@ -154,6 +228,8 @@ def main():
         is_playing = world.is_playing()
         if is_playing and not was_playing:
             init_robot(robot, world)
+            clear_carry(stage)
+            carry = None
             mover.reset_to_start()
             base_pos, base_quat = sync_base_pose(lula, robot)
             print(f"   base pos     {vec(base_pos)}")
@@ -176,16 +252,20 @@ def main():
         elif phase == "WAIT":
             wait_ticks -= 1
             if wait_ticks <= 0:
+                carry = PayloadCarry(stage, payload, mover)
                 phase = "MOVE"
                 print("[PHASE] MOVE")
 
         elif phase == "MOVE":
-            # 홈 자세로 물건 없이 주행하므로 팔은 마지막 drive target 그대로 둔다
-            if mover.step(world.get_physics_dt()):
+            # 홈 자세로 주행하므로 팔은 마지막 drive target 그대로 두고, 짐만 anchor 로 끌고 간다
+            arrived = mover.step(world.get_physics_dt())
+            carry.update()
+            if arrived:
+                carry.release()
                 base_pos, base_quat = sync_base_pose(lula, robot)
                 print(f"   base pos     {vec(base_pos)}")
                 seq = PickPlaceSequence(robot, ik_solver, arm_indices,
-                                        build_sequence(base_pos, base_quat))
+                                        build_place_sequence(base_pos, base_quat))
                 phase = "PLACE"
                 print("[PHASE] PLACE")
 

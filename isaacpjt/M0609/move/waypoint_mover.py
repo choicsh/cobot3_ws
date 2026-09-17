@@ -22,7 +22,7 @@ class WaypointMover:
         prim_path: str,
         waypoints,
         speed_mps: float = 1.0,
-        tolerance_m: float = 0.005,
+        tolerance_m: float = 0.001,
         accel_mps2: float = 1.0,
     ):
         self.stage = stage
