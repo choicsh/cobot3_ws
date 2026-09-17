@@ -6,10 +6,10 @@ Task space 텔레오퍼레이션 — 키보드/마우스로 집어서 옮기기
 pick & place 좌표를 손으로 찾기 위한 도구. TCP 를 직교 좌표로 몰고 다니면서
 집어 보고, 마음에 드는 지점에서 키를 눌러 좌표를 기록한다.
 
-  이동    W/S  +X/-X      A/D  +Y/-Y      Q/E  +Z/-Z
-  자세    I/K  pitch      J/L  roll       U/O  yaw
+  이동    W/S  카메라 기준 위/아래   A/D  카메라 기준 좌/우   Q/E  카메라 기준 전/후
+  자세    J/L  pitch      I/K  roll       U/O  yaw
   그리퍼  NUMPAD 0 열기/닫기 토글
-  기록    1 = PICK    2 = PLACE    P = 기록 출력
+  기록    1 = 좌표 추가 기록    2 = 기록 출력
   기타    M = 키보드/마커 모드 전환    R = 시작 자세 복귀
           [ / ] = 스텝 축소/확대    H = 도움말
 
@@ -53,38 +53,43 @@ DESCRIPTION_PATH = str(M0609_DIR / "descriptor/m0609_description.yaml")
 # PnP_test.usd 안에서 로봇이 놓인 위치
 ROBOT_PRIM_PATH = "/World/robot/Robot/m0609_camera/m0609"
 EE_LINK_NAME    = "link_6"
+D455_CAMERA_NAME = "RSD455"    # 그리퍼에 달린 손목 카메라. 조그 방향 기준으로 쓴다
 
 ARM_JOINTS = ["joint_1", "joint_2", "joint_3", "joint_4", "joint_5", "joint_6"]
 
-DRIVE_STIFFNESS = 1e8
-DRIVE_DAMPING   = 1e4
-DRIVE_MAX_FORCE = 1e8
+# 예전엔 사실상 무한대라 목표 각도로 매 스텝 즉시 스냅했다.
+# 유한한 값으로 낮춰서 서서히 가속/감속하며 부드럽게 따라가게 한다.
+# 실측 토크 스펙이 아니라 임의 시작값 — 너무 처지면 올리고, 여전히 빠르면 더 낮춘다.
+DRIVE_STIFFNESS = 3e5
+DRIVE_DAMPING   = 3e4
+DRIVE_MAX_FORCE = 300.0
 
 # finger_joint 가 구동 관절이고 나머지는 Mimic 으로 따라온다
 # 두 번째 이름은 ParallelGripper 가 요구하는 형식상 필요하다
 GRIPPER_JOINTS    = ["finger_joint", "right_inner_knuckle_joint"]
 GRIPPER_OPEN_POS  = 0.0     #   0.0 deg
-GRIPPER_CLOSE_POS = 1.3     #  45.8 deg — 잡는 폭. 키우면 더 좁게(꽉) 닫힌다
+GRIPPER_CLOSE_POS = 1.09    #  45.8 deg — 잡는 폭. 키우면 더 좁게(꽉) 닫힌다
+
 
 GRIPPER_DRIVE_STIFFNESS = 1e6
 GRIPPER_DRIVE_DAMPING   = 1e3
-GRIPPER_DRIVE_MAX_FORCE = 30.0   # N — 잡는 힘 상한. 낮추면 살살, 높이면 세게 잡는다
+GRIPPER_DRIVE_MAX_FORCE = 15.0   # N — 잡는 힘 상한. 낮추면 살살, 높이면 세게 잡는다
 
 # link_6 로컬 +Z 기준 손가락 패드 끝까지의 거리 (실측)
-TCP_OFFSET = np.array([0.0, 0.0, 0.19671])
+TCP_OFFSET = np.array([0.0, 0.0, 0.21671])
 
-READY_JOINTS_DEG = [0.0, 0.0, 90.0, 0.0, 90.0, 0.0]
+READY_JOINTS_RAD = [1.57, 0.0, 2.157, 0.0, -0.6, 1.57]
 
-# 시작 TCP — 로봇 base 기준 상대 위치
-START_TCP_OFFSET = np.array([0.35, 0.0, 0.30])
-START_RPY_DEG    = (180.0, 0.0, 0.0)    # 툴이 바닥을 향한다
+# check_math() 자체 검증용 — "툴이 바닥을 향한다" 케이스 하나로 부호만 확인한다.
+# 실제 시작 TCP/자세는 READY_JOINTS_RAD 의 FK 로 계산하지, 이 값을 쓰지 않는다.
+START_RPY_DEG = (180.0, 0.0, 0.0)
 
 # 텔레오퍼레이션은 매 프레임 조금씩만 움직이므로 웜스타트가 잘 듣는다
 IK_POSITION_TOLERANCE    = 0.003    # m
 IK_ORIENTATION_TOLERANCE = 0.02     # rad
 
 STEP_CHOICES = [0.001, 0.002, 0.005, 0.010, 0.020]
-ROT_STEP_DEG = 2.0
+ROT_STEP_DEG = 1.0
 JOG_KEYS     = {"W", "S", "A", "D", "Q", "E", "I", "K", "J", "L", "U", "O"}
 LOG_INTERVAL = 60
 
@@ -128,6 +133,38 @@ def quat_to_matrix(q):
         [2 * (x * y + z * w),     1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
         [2 * (x * z - y * w),     2 * (y * z + x * w),     1 - 2 * (x * x + y * y)],
     ])
+
+
+def quat_conjugate(q):
+    """단위 쿼터니언의 역회전"""
+    w, x, y, z = q
+    return np.array([w, -x, -y, -z])
+
+
+def matrix_to_rpy(m):
+    """회전행렬 -> (roll, pitch, yaw) 도.  make_target_quat 의 합성 순서
+    (Rx · Ry · Rz) 에 맞춘 역변환이다 — 순서가 다르면 값이 안 맞는다."""
+    pitch = np.degrees(np.arcsin(np.clip(m[0, 2], -1.0, 1.0)))
+    roll  = np.degrees(np.arctan2(-m[1, 2], m[2, 2]))
+    yaw   = np.degrees(np.arctan2(-m[0, 1], m[0, 0]))
+    return roll, pitch, yaw
+
+
+def quat_to_rpy(q):
+    """쿼터니언 -> (roll, pitch, yaw) 도. matrix_to_rpy 참고"""
+    return matrix_to_rpy(quat_to_matrix(q))
+
+
+def world_to_base(world_pos, world_rpy, base_pos, base_quat):
+    """world 기준 TCP 좌표를 로봇 base 기준 상대좌표로 바꾼다"""
+    base_rot = quat_to_matrix(base_quat)
+    local_pos = base_rot.T @ (np.array(world_pos) - np.array(base_pos))
+
+    world_quat = make_target_quat(*world_rpy)
+    local_quat = quat_mul(quat_conjugate(base_quat), world_quat)
+    local_quat = local_quat / np.linalg.norm(local_quat)
+
+    return local_pos, quat_to_rpy(local_quat)
 
 
 def tcp_to_flange(tcp_pos, quat):
@@ -271,7 +308,7 @@ def init_robot(robot, world):
         dof_names=robot.dof_names,
     )
     q = np.zeros(robot.num_dof)
-    q[:6] = np.deg2rad(READY_JOINTS_DEG)
+    q[:6] = READY_JOINTS_RAD
     robot.set_joint_positions(q)
 
 
@@ -354,21 +391,42 @@ class Keyboard:
         self._input.unsubscribe_to_keyboard_events(self._keyboard, self._sub)
 
 
+def get_camera_axes(cam_prim_path):
+    """그리퍼에 달린 D455 의 world 기준 right/up/forward 단위벡터를 구한다.
+    이 마운트는 표준 카메라 축(±Z 전방/Y 상단)이 아니라 로컬 +X 가 화면 전방,
+    +Y 가 좌우, +Z 가 상하로 나온다 (실측으로 확인, 3_10 조그 테스트 기준).
+    로봇을 따라 움직이는 카메라라서 조그할 때마다 매 프레임 새로 조회한다."""
+    fallback = (np.array([0.0, 1.0, 0.0]), np.array([0.0, 0.0, 1.0]), np.array([1.0, 0.0, 0.0]))
+
+    stage = omni.usd.get_context().get_stage()
+    cam_prim = stage.GetPrimAtPath(cam_prim_path)
+    if not cam_prim.IsValid():
+        return fallback
+
+    mat = UsdGeom.XformCache().GetLocalToWorldTransform(cam_prim)
+    right   = np.array(mat.TransformDir((0.0, 1.0, 0.0)))
+    up      = np.array(mat.TransformDir((0.0, 0.0, 1.0)))
+    forward = np.array(mat.TransformDir((1.0, 0.0, 0.0)))
+    return (right / np.linalg.norm(right),
+            up / np.linalg.norm(up),
+            forward / np.linalg.norm(forward))
+
+
 # ══════════════════════════════════════════════════════════════
 #  텔레오퍼레이션 상태
 # ══════════════════════════════════════════════════════════════
 class Teleop:
     """TCP 목표를 들고 있으면서 키 입력만큼 조금씩 옮긴다"""
 
-    def __init__(self, start_tcp):
+    def __init__(self, start_tcp, start_rpy):
         self.home = np.array(start_tcp, dtype=float)
         self.tcp = self.home.copy()
-        self.roll, self.pitch, self.yaw = START_RPY_DEG
-        self.step_index = 2          # 기본 5mm
+        self.home_rpy = tuple(start_rpy)
+        self.roll, self.pitch, self.yaw = self.home_rpy
+        self.step_index = 1          # 기본 2mm
         self.gripper_closed = False
         self.marker_mode = False
-        self.pick = None
-        self.place = None
+        self.points = []
 
     @property
     def step(self):
@@ -390,37 +448,38 @@ class Teleop:
 
     def home_pose(self):
         self.tcp = self.home.copy()
-        self.roll, self.pitch, self.yaw = START_RPY_DEG
+        self.roll, self.pitch, self.yaw = self.home_rpy
 
-    def jog(self, kb):
-        """눌려 있는 키를 읽어 목표를 옮긴다"""
+    def jog(self, kb, cam_right, cam_up, cam_forward):
+        """눌려 있는 키를 읽어 카메라 시점 기준으로 목표를 옮긴다
+        W/S 카메라 상하, A/D 카메라 좌우, Q/E 카메라 전후"""
         d, r = self.step, ROT_STEP_DEG
-        for key, axis, sign in (("W", 0, +1), ("S", 0, -1),
-                                ("A", 1, +1), ("D", 1, -1),
-                                ("Q", 2, +1), ("E", 2, -1)):
+        for key, axis, sign in (("W", cam_up, +1), ("S", cam_up, -1),
+                                ("D", cam_right, +1), ("A", cam_right, -1),
+                                ("Q", cam_forward, -1), ("E", cam_forward, +1)):
             if kb.held(key):
-                self.tcp[axis] += sign * d
+                self.tcp += sign * d * axis
 
-        if kb.held("I"): self.pitch += r
-        if kb.held("K"): self.pitch -= r
-        if kb.held("J"): self.roll += r
-        if kb.held("L"): self.roll -= r
-        if kb.held("U"): self.yaw += r
-        if kb.held("O"): self.yaw -= r
+        if kb.held("J"): self.pitch += r
+        if kb.held("L"): self.pitch -= r
+        if kb.held("K"): self.roll += r
+        if kb.held("I"): self.roll -= r
+        if kb.held("O"): self.yaw += r
+        if kb.held("U"): self.yaw -= r
 
 
-def print_records(teleop):
-    """기록한 좌표를 붙여넣기 가능한 형태로 찍는다"""
+def print_records(teleop, robot):
+    """기록한 좌표를 붙여넣기 가능한 형태로 찍는다.
+    저장은 world 기준으로 해 두고, 출력할 때 로봇 base 기준 상대좌표로 바꾼다."""
     section("RECORDED")
-    if teleop.pick is None and teleop.place is None:
-        print("   기록 없음. 1 또는 2 로 현재 TCP 를 기록한다.")
+    if not teleop.points:
+        print("   기록 없음. 1 로 현재 TCP 를 기록한다.")
         return
-    for label, rec in (("PICK", teleop.pick), ("PLACE", teleop.place)):
-        if rec is None:
-            continue
-        pos, rpy = rec
-        print(f"   {label}_TCP = np.array([{pos[0]:.4f}, {pos[1]:.4f}, {pos[2]:.4f}])")
-        print(f"   {label}_RPY = ({rpy[0]:.1f}, {rpy[1]:.1f}, {rpy[2]:.1f})")
+    base_pos, base_quat = robot.get_world_pose()
+    for i, (world_pos, world_rpy) in enumerate(teleop.points, start=1):
+        pos, rpy = world_to_base(world_pos, world_rpy, base_pos, base_quat)
+        print(f"   POINT{i}_TCP = np.array([{pos[0]:.4f}, {pos[1]:.4f}, {pos[2]:.4f}])   # base 기준")
+        print(f"   POINT{i}_RPY = ({rpy[0]:.1f}, {rpy[1]:.1f}, {rpy[2]:.1f})")
 
 
 # ══════════════════════════════════════════════════════════════
@@ -433,13 +492,10 @@ def handle_taps(kb, teleop, robot):
             teleop.gripper_closed = not teleop.gripper_closed
             print(f"   gripper      {'CLOSE' if teleop.gripper_closed else 'OPEN'}")
         elif key == "KEY_1":
-            teleop.pick = (teleop.tcp.copy(), teleop.rpy)
-            print(f"   PICK  기록   {vec(teleop.tcp, 4)}")
+            teleop.points.append((teleop.tcp.copy(), teleop.rpy))
+            print(f"   POINT{len(teleop.points)} 기록   {vec(teleop.tcp, 4)}")
         elif key == "KEY_2":
-            teleop.place = (teleop.tcp.copy(), teleop.rpy)
-            print(f"   PLACE 기록   {vec(teleop.tcp, 4)}")
-        elif key == "P":
-            print_records(teleop)
+            print_records(teleop, robot)
         elif key == "H":
             print(__doc__)
         elif key == "M":
@@ -468,6 +524,12 @@ def main():
     setup_gripper_drive()
     robot = register_robot(world)
 
+    camera_matches = find_all_named(D455_CAMERA_NAME, ROBOT_PRIM_PATH)
+    if not camera_matches:
+        raise RuntimeError(f"'{D455_CAMERA_NAME}' 카메라를 로봇 아래에서 찾지 못했다.")
+    camera_prim_path = camera_matches[0]
+    print(f"   camera       {camera_prim_path}")
+
     world.reset()
     init_robot(robot, world)
     for _ in range(30):
@@ -481,7 +543,16 @@ def main():
     if np.linalg.norm(base_pos) > 1e-6:
         print("   NOTE         로봇이 원점에 있지 않다. base pose 동기화가 필수다")
 
-    teleop = Teleop(base_pos + START_TCP_OFFSET)
+    # 시작 TCP/자세는 READY_JOINTS_RAD 로 실제로 선 FK 로 구한다 —
+    # 따로 값을 지어내면 이 목표가 실제 관절 자세와 어긋나서, 다음 프레임에 IK 가
+    # 그 어긋난 목표로 끌고가버려 방금 세팅한 홈 자세가 무의미해진다.
+    flange_pos, flange_rot = ik_solver.compute_end_effector_pose()
+    home_tcp = flange_pos + flange_rot @ TCP_OFFSET
+    home_rpy = matrix_to_rpy(flange_rot)
+    print(f"   home TCP     {vec(home_tcp)}")
+    print(f"   home RPY     ({home_rpy[0]:+.1f} {home_rpy[1]:+.1f} {home_rpy[2]:+.1f})")
+
+    teleop = Teleop(home_tcp, home_rpy)
     marker = world.scene.add(
         VisualCuboid(
             prim_path="/World/teleop_target",
@@ -507,6 +578,7 @@ def main():
         is_playing = world.is_playing()
         if is_playing and not was_playing:
             init_robot(robot, world)
+            teleop.home_pose()
             step = 0
         was_playing = is_playing
 
@@ -523,7 +595,8 @@ def main():
             before = None
         else:
             before = teleop.state()
-            teleop.jog(kb)
+            cam_right, cam_up, cam_forward = get_camera_axes(camera_prim_path)
+            teleop.jog(kb, cam_right, cam_up, cam_forward)
 
         quat = teleop.quat()
         action, solved = ik_solver.compute_inverse_kinematics(
@@ -559,7 +632,7 @@ def main():
             )
         step += 1
 
-    print_records(teleop)
+    print_records(teleop, robot)
     kb.close()
     simulation_app.close()
 
