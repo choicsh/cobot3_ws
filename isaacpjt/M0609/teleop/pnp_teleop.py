@@ -46,7 +46,7 @@ from isaacsim.robot_motion.motion_generation import (
 THIS_DIR   = Path(__file__).resolve().parent
 M0609_DIR  = THIS_DIR.parent
 
-SCENE_USD        = str(M0609_DIR.parent / "assets/Collected_PnP_test/PnP_test.usd")
+SCENE_USD        = str(M0609_DIR.parent / "assets/PnP_test.usd")
 URDF_PATH        = str(M0609_DIR / "doosan-robot2/urdf/m0609_isaac_sim.urdf")
 DESCRIPTION_PATH = str(M0609_DIR / "descriptor/m0609_description.yaml")
 
