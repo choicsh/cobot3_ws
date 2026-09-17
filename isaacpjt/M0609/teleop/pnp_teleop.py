@@ -46,7 +46,7 @@ from isaacsim.robot_motion.motion_generation import (
 THIS_DIR   = Path(__file__).resolve().parent
 M0609_DIR  = THIS_DIR.parent
 
-SCENE_USD        = str(M0609_DIR.parent / "assets/PnP_test.usd")
+SCENE_USD        = str(M0609_DIR.parent / "assets/Collected_PnP_test/PnP_test.usd")
 URDF_PATH        = str(M0609_DIR / "doosan-robot2/urdf/m0609_isaac_sim.urdf")
 DESCRIPTION_PATH = str(M0609_DIR / "descriptor/m0609_description.yaml")
 
@@ -163,7 +163,8 @@ def load_scene():
     if not world_prim.IsValid():
         world_prim = UsdGeom.Xform.Define(stage, "/World").GetPrim()
 
-    world_prim.GetReferences().AddReference(SCENE_USD)
+    # PnP_test.usd 에 defaultPrim 이 없어서 prim 경로를 명시해야 참조가 걸린다
+    world_prim.GetReferences().AddReference(SCENE_USD, "/World")
     for _ in range(30):
         simulation_app.update()
 
