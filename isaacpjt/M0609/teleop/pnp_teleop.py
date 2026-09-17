@@ -170,26 +170,13 @@ def load_scene():
     print(f"   scene        {Path(SCENE_USD).name}")
 
 
-def print_hierarchy(max_depth=5):
-    """ROBOT_PRIM_PATH 가 안 맞을 때 실제 경로를 찾으라고 찍어 준다"""
+def find_all_named(name, root_path=None):
+    """이름이 일치하는 프림의 전체 경로를 모은다. root_path 를 주면 그 아래만 본다"""
     stage = omni.usd.get_context().get_stage()
-    section("STAGE")
-    for prim in Usd.PrimRange(stage.GetPseudoRoot()):
-        depth = str(prim.GetPath()).count("/") - 1
-        if 1 <= depth <= max_depth:
-            tag = "   << ARTICULATION_ROOT" if prim.HasAPI(UsdPhysics.ArticulationRootAPI) else ""
-            print(f"   {'  ' * (depth - 1)}{prim.GetName()}  [{prim.GetTypeName() or '-'}]{tag}")
-
-
-def find_prim_path(root_path, name):
-    """USD 계층에서 이름으로 prim 경로를 찾는다"""
-    root = omni.usd.get_context().get_stage().GetPrimAtPath(root_path)
+    root = stage.GetPrimAtPath(root_path) if root_path else stage.GetPseudoRoot()
     if not root.IsValid():
-        return None
-    for prim in Usd.PrimRange(root):
-        if prim.GetName() == name:
-            return str(prim.GetPath())
-    return None
+        return []
+    return [str(p.GetPath()) for p in Usd.PrimRange(root) if p.GetName() == name]
 
 
 def setup_arm_drives():
@@ -211,13 +198,26 @@ def setup_arm_drives():
 
 def register_robot(world):
     """로봇과 그리퍼를 Articulation 으로 등록한다"""
-    ee_path = find_prim_path(ROBOT_PRIM_PATH, EE_LINK_NAME)
-    if ee_path is None:
-        print_hierarchy()
+    under = find_all_named(EE_LINK_NAME, ROBOT_PRIM_PATH)
+    if not under:
+        # 경로가 틀린 건지, 경로는 맞는데 이름이 다른 건지 구분해서 알려준다
+        stage = omni.usd.get_context().get_stage()
+        exists = stage.GetPrimAtPath(ROBOT_PRIM_PATH).IsValid()
+        anywhere = find_all_named(EE_LINK_NAME)
+        roots = [
+            str(p.GetPath())
+            for p in Usd.PrimRange(stage.GetPseudoRoot())
+            if p.HasAPI(UsdPhysics.ArticulationRootAPI)
+        ]
         raise RuntimeError(
-            f"{ROBOT_PRIM_PATH} 아래에 '{EE_LINK_NAME}' 이 없다. "
-            f"위 STAGE 출력에서 실제 경로를 찾아 ROBOT_PRIM_PATH 를 고친다."
+            f"'{EE_LINK_NAME}' 을 찾지 못했다.\n"
+            f"   ROBOT_PRIM_PATH   {ROBOT_PRIM_PATH}  (존재: {exists})\n"
+            f"   스테이지 전체의 '{EE_LINK_NAME}'  {anywhere or '없음'}\n"
+            f"   ArticulationRoot  {roots or '없음'}\n"
+            f"   위 '{EE_LINK_NAME}' 경로의 조상 중 ArticulationRoot 를 "
+            f"ROBOT_PRIM_PATH 로 쓴다."
         )
+    ee_path = under[0]
 
     gripper = ParallelGripper(
         end_effector_prim_path=ee_path,
