@@ -528,8 +528,18 @@ def main():
 
     section("SCENE")
     load_scene()
+<<<<<<< Updated upstream
 
     robot_prim_path = find_articulation_root()
+=======
+<<<<<<< Updated upstream
+    setup_arm_drives()
+    robot = register_robot(world)
+=======
+
+    # robot_prim_path = '/World/robot/Robot/m0609_camera/m0609'
+
+>>>>>>> Stashed changes
     if robot_prim_path is None:
         load_robot_fallback()
         robot_prim_path = find_articulation_root()
