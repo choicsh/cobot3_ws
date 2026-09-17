@@ -8,7 +8,7 @@ pick & place 좌표를 손으로 찾기 위한 도구. TCP 를 직교 좌표로 
 
   이동    W/S  +X/-X      A/D  +Y/-Y      Q/E  +Z/-Z
   자세    I/K  pitch      J/L  roll       U/O  yaw
-  그리퍼  SPACE 열기/닫기 토글
+  그리퍼  NUMPAD 0 열기/닫기 토글
   기록    1 = PICK    2 = PLACE    P = 기록 출력
   기타    M = 키보드/마커 모드 전환    R = 시작 자세 복귀
           [ / ] = 스텝 축소/확대    H = 도움말
@@ -64,7 +64,11 @@ DRIVE_MAX_FORCE = 1e8
 # 두 번째 이름은 ParallelGripper 가 요구하는 형식상 필요하다
 GRIPPER_JOINTS    = ["finger_joint", "right_inner_knuckle_joint"]
 GRIPPER_OPEN_POS  = 0.0     #   0.0 deg
-GRIPPER_CLOSE_POS = 1.0     #  45.8 deg
+GRIPPER_CLOSE_POS = 1.3     #  45.8 deg — 잡는 폭. 키우면 더 좁게(꽉) 닫힌다
+
+GRIPPER_DRIVE_STIFFNESS = 1e6
+GRIPPER_DRIVE_DAMPING   = 1e3
+GRIPPER_DRIVE_MAX_FORCE = 30.0   # N — 잡는 힘 상한. 낮추면 살살, 높이면 세게 잡는다
 
 # link_6 로컬 +Z 기준 손가락 패드 끝까지의 거리 (실측)
 TCP_OFFSET = np.array([0.0, 0.0, 0.19671])
@@ -195,6 +199,23 @@ def setup_arm_drives():
                 drive.GetMaxForceAttr().Set(DRIVE_MAX_FORCE)
                 count += 1
     print(f"   arm drives   {count}")
+
+
+def setup_gripper_drive():
+    """그리퍼가 무는 힘(최대 힘)을 제한한다"""
+    stage = omni.usd.get_context().get_stage()
+    count = 0
+    for prim in Usd.PrimRange(stage.GetPrimAtPath(ROBOT_PRIM_PATH)):
+        if prim.GetName() not in GRIPPER_JOINTS:
+            continue
+        for drive_type in ["angular", "linear"]:
+            drive = UsdPhysics.DriveAPI.Get(prim, drive_type)
+            if drive:
+                drive.GetStiffnessAttr().Set(GRIPPER_DRIVE_STIFFNESS)
+                drive.GetDampingAttr().Set(GRIPPER_DRIVE_DAMPING)
+                drive.GetMaxForceAttr().Set(GRIPPER_DRIVE_MAX_FORCE)
+                count += 1
+    print(f"   gripper drive {count}")
 
 
 def register_robot(world):
@@ -408,7 +429,7 @@ def print_records(teleop):
 def handle_taps(kb, teleop, robot):
     """한 번 누르는 키들을 처리한다"""
     for key in kb.take_taps():
-        if key == "SPACE":
+        if key == "NUMPAD_0":
             teleop.gripper_closed = not teleop.gripper_closed
             print(f"   gripper      {'CLOSE' if teleop.gripper_closed else 'OPEN'}")
         elif key == "KEY_1":
@@ -444,6 +465,7 @@ def main():
     section("SCENE")
     load_scene()
     setup_arm_drives()
+    setup_gripper_drive()
     robot = register_robot(world)
 
     world.reset()
