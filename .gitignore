@@ -1,0 +1,3 @@
+local_guide_md/
+__pycache__/
+*.pyc
