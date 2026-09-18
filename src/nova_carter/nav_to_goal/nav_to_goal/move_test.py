@@ -86,35 +86,51 @@ def create_pose(navigator, x, y, yaw_deg):
 def main():
     rclpy.init()
     nav = BasicNavigator()
-    
-    # 1. 출발점 설정
-    init_pose = create_pose(nav, -6.0, -1.0, 0.007)
+
+    # 1. 출발점 설정: Isaac Sim의 시작 위치 (1.5, 1.5, 0)를
+    # move_test_map 기준 (0.0, 0.0, 0.0)으로 사용한다.
+    init_pose = create_pose(nav, 0.0, 0.0, 0.0)
     nav.setInitialPose(init_pose)
     nav.waitUntilNav2Active()
-    
-    # 2. 목표 지점 설정
-    goal_pose = create_pose(nav, -2.0, 2.0, 180.0)
-        
-    # 3. Task 실행
-    nav.goToPose(goal_pose)
-    
-    last_pose = None
+
+    # 2. 순차 방문할 좌표를 (x[m], y[m], yaw[deg]) 형식으로 입력한다.
+    # 예: (2.0, 1.0, 90.0)
+    waypoint_specs = [
+        # 여기에 waypoint를 입력하세요.
+        (7, 1.5, 90),
+        (7, 15, 180),
+        (1.5, 15, 180)
+    ]
+
+    if not waypoint_specs:
+        nav.get_logger().error(
+            'waypoint_specs가 비어 있습니다. (x, y, yaw_deg) 좌표를 입력하세요.'
+        )
+        rclpy.shutdown()
+        return
+
+    waypoints = [
+        create_pose(nav, x, y, yaw_deg)
+        for x, y, yaw_deg in waypoint_specs
+    ]
+
+    # 3. 입력된 waypoint를 순서대로 방문한다.
+    nav.followWaypoints(waypoints)
 
     while not nav.isTaskComplete():
         feedback = nav.getFeedback()
         if feedback:
-            last_pose = feedback.current_pose
-            print(f"남은 거리: {feedback.distance_remaining:.2f} m")
-            
-        time.sleep(1.0)
+            current_index = feedback.current_waypoint
+            print(
+                f"현재 waypoint: {current_index + 1}/{len(waypoints)}"
+            )
+
+        time.sleep(0.5)
 
     # 4. 결과 처리
     result = nav.getResult()
     if result == TaskResult.SUCCEEDED:
-        print('\n🎉 목적지 도착 완료!')
-        
-        print_final_pose(last_pose)
-            
+        print('\n🎉 모든 waypoint 도착 완료!')
     elif result == TaskResult.CANCELED:
         print('주행 취소됨')
     elif result == TaskResult.FAILED:
