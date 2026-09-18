@@ -22,7 +22,8 @@ class WaypointMover:
         prim_path: str,
         waypoints,
         speed_mps: float = 1.0,
-        tolerance_m: float = 0.005,
+        tolerance_m: float = 0.001,
+        accel_mps2: float = 1.0,
     ):
         self.stage = stage
         self.prim_path = prim_path
@@ -41,7 +42,9 @@ class WaypointMover:
 
         self.speed_mps = float(speed_mps)
         self.tolerance_m = float(tolerance_m)
+        self.accel_mps2 = float(accel_mps2)
 
+        self.velocity_mps = 0.0
         self.target_index = 1
         self.done = False
 
@@ -111,6 +114,7 @@ class WaypointMover:
         W0로 이동시키고 다음 목표를 W1로 되돌린다.
         """
         self._set_world_position(self.waypoints[0])
+        self.velocity_mps = 0.0
         self.target_index = 1
         self.done = False
 
@@ -139,6 +143,7 @@ class WaypointMover:
             print(f"[REACHED] W{self.target_index}: {target}")
 
             self.target_index += 1
+            self.velocity_mps = 0.0
 
             if self.target_index >= len(self.waypoints):
                 self.done = True
@@ -147,7 +152,15 @@ class WaypointMover:
 
             return False
 
-        travel = min(self.speed_mps * dt, distance)
+        # 등속이 아니라 가감속: 최고 속도까지 올리되, 남은 거리 안에 설 수 있는 속도로 제한한다
+        stop_speed = float(np.sqrt(2.0 * self.accel_mps2 * distance))
+        self.velocity_mps = min(
+            self.velocity_mps + self.accel_mps2 * dt,
+            self.speed_mps,
+            stop_speed,
+        )
+
+        travel = min(self.velocity_mps * dt, distance)
         new_position = current + (offset / distance) * travel
         self._set_world_position(new_position)
 
