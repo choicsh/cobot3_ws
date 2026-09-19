@@ -430,8 +430,7 @@ class PickPlaceSequence:
             self.start_pos, self.start_quat = self._current_flange_pose()
             if step["type"] == "hold":
                 self.target_pos, self.target_quat = self.start_pos, self.start_quat
-                # steps 키가 있으면 그 길이만큼 제자리 대기한다 (없으면 그리퍼 여닫이 기준값)
-                self.n_steps = int(step.get("steps", GRIPPER_WAIT_STEPS))
+                self.n_steps = GRIPPER_WAIT_STEPS
             else:
                 self.target_pos, self.target_quat = step["target"]
                 self.n_steps = steps_for_pose(

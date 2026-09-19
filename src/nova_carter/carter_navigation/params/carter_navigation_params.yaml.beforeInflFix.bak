@@ -171,7 +171,7 @@ controller_server:
     progress_checker:
       plugin: "nav2_controller::SimpleProgressChecker"
       required_movement_radius: 0.25   # 목표 근처 미세 정렬 구간이 실패로 잡히지 않게
-      movement_time_allowance: 30.0   # 제자리 정렬 중엔 병진이 0 이라 progress_checker 가 무조건 실패로 집계. 회전 추종률 실측 0.5x 라 정렬에 2배 소요
+      movement_time_allowance: 15.0   # NavFn 경로는 코너마다 제자리 회전(180도 ≈ 8초)
     # Goal checker parameters
     #precise_goal_checker:
     #  plugin: "nav2_controller::SimpleGoalChecker"
@@ -212,17 +212,11 @@ controller_server:
       trans_stopped_velocity: 0.05   # 5cm/s 이하여야 최종 회전 시작 (사람 공간 주행 고려)
       short_circuit_trajectory_evaluation: True
       stateful: True
-      critics: ["RotateToGoal", "Oscillation", "ObstacleFootprint", "GoalAlign", "PathAlign", "PathDist", "GoalDist"]
-      ObstacleFootprint.scale: 0.2   # 0.5 일 때 하늘색(253) 감점 6.3 이 GoalAlign(2.0) 보다 커서 회전을 체계적으로 억제했다.
-      # 하늘색은 내접반경 0.48m 띠일 뿐 실제 충돌이 아니다. 치명(254) 거부는 scale 과 무관하게 유지된다.
-      # (libdwb_critics.so 확인: pointCost 는 0xfe/0xff 만 비교, 0xfd(253) 비교 없음)
-      Oscillation.oscillation_reset_time: 5.0   # 기본 -1.0 은 시간 해제 끔. 막혀서 못 움직이면 해제조건(5cm/11.5도)을
-      # 영영 못 채워 잠금이 영구화되고 419개 전부 불법이 됐다 (실측 불법판정 89,000건)
-      # 내접 반경 0.48 m (footprint 앞변 거리) 안에 들어가면 실제 충돌 여부와 무관하게 제자리 회전까지 막혔다.
-      # 차체 실측 1.80 x 0.988 m 로 footprint(1.86 x 1.0) 여유가 전후 3cm/좌우 6mm 뿐이라 footprint 축소는 불가.
+      critics: ["RotateToGoal", "Oscillation", "BaseObstacle", "GoalAlign", "PathAlign", "PathDist", "GoalDist"]
+      BaseObstacle.scale: 0.5   # 사람 공간: 장애물에서 떨어지려는 성향 부여
       PathAlign.scale: 8.0   # 직선 구간 미세 조향 추가 완화 (32 -> 16 -> 8)
       PathAlign.forward_point_distance: 0.8   # 로봇 길이 1.86m 기준 (기존 0.1 은 1배 카터용)
-      GoalAlign.scale: 3.0   # 목표 0.09m 앞에서 GoalAlign 기여 8.1 이 RotateToGoal 0.8 을 압도해 좌우 반전 진동 유발 (측정). 최종 정렬은 RotateToGoal 담당
+      GoalAlign.scale: 12.0   # PathAlign(8.0) 과 균형
       GoalAlign.forward_point_distance: 0.8   # 〃
       PathDist.scale: 32.0
       GoalDist.scale: 24.0
@@ -248,7 +242,7 @@ local_costmap:
       footprint: "[ [0.48, 0.5], [0.48, -0.5], [-1.38, -0.5], [-1.38, 0.5] ]"
       mark_threshold: 2
       always_send_full_costmap: True
-      plugins: ["static_map_layer", "front_3d_lidar_layer", "inflation_layer"]   # StaticLayer 가 뒤에 오면 updateWithTrueOverwrite 로 팽창을 통째로 덮어씀 (실측: 팽창 cost 0개)
+      plugins: ["front_3d_lidar_layer", "front_2d_lidar_layer", "back_2d_lidar_layer", "inflation_layer", "static_map_layer"]
       static_map_layer:
         plugin: "nav2_costmap_2d::StaticLayer"
         map_subscribe_transient_local: True
@@ -259,35 +253,68 @@ local_costmap:
         cost_scaling_factor: 3.0   # 거리에 따라 빠르게 감쇠 (붉은 띠 좁아짐)
         inflation_radius: 0.6      # 내접 반경 0.48 + 여유 0.12
         
-      # 주의: 아래 이름들은 nav2_costmap_2d::VoxelLayer 가 선언하는 이름과 정확히 일치해야 한다.
-      # ros2 param list /local_costmap/local_costmap 로 확인 가능. 이름이 틀리면 조용히 무시된다.
+      front_2d_lidar_layer:
+        plugin: "nav2_costmap_2d::ObstacleLayer"
+        enabled: True
+        observation_sources: scan
+        scan:
+          topic: /front_2d_lidar/scan
+          max_obstacle_height: 4.0
+          clearing: True
+          marking: True
+          data_type: "LaserScan"
+      back_2d_lidar_layer:
+        plugin: "nav2_costmap_2d::ObstacleLayer"
+        enabled: True
+        observation_sources: scan
+        scan:
+          topic: /back_2d_lidar/scan
+          max_obstacle_height: 4.0
+          clearing: True
+          marking: True
+          data_type: "LaserScan"
+
       front_3d_lidar_layer:
         plugin: "nav2_costmap_2d::VoxelLayer"
         enabled: true
-        # voxel_decay / decay_model / filter / clear_after_reading / track_unknown_space 는
-        # SpatioTemporalVoxelLayer 파라미터라 이 플러그인에서는 선언되지 않는다 (무시됨). 제거함.
-        mark_threshold: 2            # 장애물로 칠 최소 복셀 수
-        footprint_clearing_enabled: true
-        combination_method: 1        # 1=max
-        origin_z: 0.0
-        z_resolution: 0.2            # 이전 voxel_size 는 오인식 이름이었음 (기본 0.2 가 적용 중이었다)
-        z_voxels: 10
-        publish_voxel_map: true
+        voxel_decay: 15.0 # seconds if linear, e^n if exponential
+        decay_model: 0 # 0=linear, 1=exponential, -1=persistent
+        voxel_size: 0.1 # meters
+        track_unknown_space: False # default space is known
+        mark_threshold: 2 # voxel height
+        update_footprint_enabled: true
+        combination_method: 1 # 1=max, 0=override
+        origin_z: 0.0 # meters
+        publish_voxel_map: true # default off
+        transform_tolerance: 0.2 # seconds
+        # observation_sources: hesai_mark hesai_clear
         observation_sources: hesai_mark
         hesai_mark:
           data_type: PointCloud2
           topic: /front_3d_lidar/lidar_points
           marking: true
-          clearing: true             # false 였음. 마킹만 하고 해제를 안 해 롤링 윈도우에 누적됐다
-          obstacle_max_range: 6.0    # 이전 obstacle_range 는 오인식 이름이었음 (기본 2.5 가 적용 중이었다)
-          obstacle_min_range: 0.0
-          raytrace_max_range: 6.0    # 해제 범위는 마킹 범위 이상이어야 마크가 지워진다
-          raytrace_min_range: 0.0
-          min_obstacle_height: -0.8
-          max_obstacle_height: 3.0
-          expected_update_rate: 0.0
-          observation_persistence: 0.0
-          inf_is_valid: false
+          clearing: false
+          obstacle_range: 6.0 # meters
+          min_obstacle_height: -0.8 # default 0, meters
+          max_obstacle_height: 3.0 # default 3, meters
+          expected_update_rate: 0.0 # default 0, if not updating at this rate at least, remove from buffer
+          observation_persistence: 0.0 # default 0, use all measurements taken during now-value, 0=latest
+          inf_is_valid: false # default false, for laser scans
+          filter: "voxel" # default passthrough, apply "voxel", "passthrough", or no filter to sensor data, recommend on     voxel_min_points: 0          # default 0, minimum points per voxel for voxel filter
+          clear_after_reading: true # default false, clear the buffer after the layer gets readings from it
+        # hesai_clear:
+        #   enabled: true #default true, can be toggled on/off with associated service call
+        #   data_type: PointCloud2
+        #   topic: /front_3d_lidar/lidar_points
+        #   marking: false
+        #   clearing: true
+        #   max_z: 20.0 # default 0, meters
+        #   min_z: 0.05 # default 10, meters
+        #   vertical_fov_angle: 1.15 # Note: This the full fov.
+        #   vertical_fov_padding: 0.05 # 3D Lidar only. Default 0, in meters
+        #   horizontal_fov_angle: 6.29 # 3D lidar scanners like the VLP16 have 360 deg horizontal FOV.
+        #   decay_acceleration: 5.0 # default 0, 1/s^2.
+        #   model_type: 1 # default 0, model type for frustum. 0=depth camera, 1=3d lidar like VLP16 or similar
 
 global_costmap:
   global_costmap:
