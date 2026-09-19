@@ -13,7 +13,7 @@ amcl:
     do_beamskip: false
     global_frame_id: "map"
     lambda_short: 0.1
-    laser_likelihood_max_dist: 2.0   # nav2 기본값. 로봇 크기와 무관한 값이라 2배로 올릴 이유가 없었음
+    laser_likelihood_max_dist: 4.0
     laser_max_range: 100.0
     laser_min_range: -1.0
     laser_model_type: "likelihood_field"
@@ -32,7 +32,7 @@ amcl:
     tf_broadcast: true
     transform_tolerance: 1.0
     update_min_a: 0.2
-    update_min_d: 0.2   # 자주·조금씩 보정 → map->odom 점프 완화
+    update_min_d: 0.5
     z_hit: 0.5
     z_max: 0.05
     z_rand: 0.5
@@ -43,10 +43,10 @@ amcl:
     always_reset_initial_pose: false
     first_map_only: false
     initial_pose:
-      x: 1.233      # 씬의 chassis_link(=base_link) 실측 위치
-      y: 3.363
+      x: -0.761
+      y: 0.551
       z: 0.0
-      yaw: 3.14159  # 180도
+      yaw: -1.5708
 
 amcl_map_client:
   ros__parameters:
@@ -143,13 +143,13 @@ velocity_smoother:
     use_sim_time: True
     smoothing_frequency: 20.0 
     scale_velocities: false 
-    feedback: "OPEN_LOOP"   # CLOSED_LOOP 는 램프가 이론값(0.60s)의 3.3배(2.00s) 로 늘어져 최종 회전이 좌우로 헌팅함 (실측)
-    max_velocity: [0.5, 0.0, 0.5] 
-    min_velocity: [-0.3, 0.0, -0.5] 
+    feedback: "OPEN_LOOP" 
+    max_velocity: [1.6, 0.0, 0.7] 
+    min_velocity: [-1.6, 0.0, -0.7] 
     # deadband_velocity: [0.0, 0.0, 0.0] 
     velocity_timeout: 1.0 
-    max_accel: [0.5, 0.0, 1.0]     # 기본값(2.5/3.2)은 390kg 로봇에 공격적
-    max_decel: [-0.5, 0.0, -1.0] 
+    # max_accel: [1.0, 0.0, 1.25] 
+    # max_decel: [-1.0, 0.0, -1.25] 
     odom_topic: "chassis/odom" 
     odom_duration: 0.1
 
@@ -170,8 +170,8 @@ controller_server:
     # Progress checker parameters
     progress_checker:
       plugin: "nav2_controller::SimpleProgressChecker"
-      required_movement_radius: 0.25   # 목표 근처 미세 정렬 구간이 실패로 잡히지 않게
-      movement_time_allowance: 15.0   # NavFn 경로는 코너마다 제자리 회전(180도 ≈ 8초)
+      required_movement_radius: 1.0
+      movement_time_allowance: 10.0
     # Goal checker parameters
     #precise_goal_checker:
     #  plugin: "nav2_controller::SimpleGoalChecker"
@@ -181,24 +181,24 @@ controller_server:
     general_goal_checker:
       stateful: True
       plugin: "nav2_controller::SimpleGoalChecker"
-      xy_goal_tolerance: 0.1     # 차동구동 한계상 실질 하한 0.05
-      yaw_goal_tolerance: 0.05   # 2.9도. AMCL 각도 추정 오차가 하한(~0.03)
+      xy_goal_tolerance: 0.5
+      yaw_goal_tolerance: 0.25
   # DWB parameters
     FollowPath:
       plugin: "dwb_core::DWBLocalPlanner"
       debug_trajectory_details: True
-      min_vel_x: 0.0   # NavFn 은 후진 경로를 만들지 않음
+      min_vel_x: 0.0
       min_vel_y: 0.0
-      max_vel_x: 0.5   # 사람이 있는 공간 주행 속도
+      max_vel_x: 1.6
       max_vel_y: 0.0
-      max_vel_theta: 0.5
+      max_vel_theta: 0.7
       min_speed_xy: 0.0
-      max_speed_xy: 0.5   # max_vel_x 와 정합
+      max_speed_xy: 2.0
       min_speed_theta: 0.0
-      acc_lim_x: 1.0   # 급출발 억제
+      acc_lim_x: 2.5
       acc_lim_y: 0.0
-      acc_lim_theta: 1.0
-      decel_lim_x: -1.5   # 감속은 상대적으로 강하게 (안전)
+      acc_lim_theta: 3.5
+      decel_lim_x: -2.5
       decel_lim_y: 0.0
       decel_lim_theta: -3.5
       vx_samples: 20
@@ -208,16 +208,16 @@ controller_server:
       linear_granularity: 0.1
       angular_granularity: 0.025
       transform_tolerance: 0.2
-      xy_goal_tolerance: 0.1
-      trans_stopped_velocity: 0.05   # 5cm/s 이하여야 최종 회전 시작 (사람 공간 주행 고려)
+      xy_goal_tolerance: 0.5
+      trans_stopped_velocity: 0.5
       short_circuit_trajectory_evaluation: True
       stateful: True
       critics: ["RotateToGoal", "Oscillation", "BaseObstacle", "GoalAlign", "PathAlign", "PathDist", "GoalDist"]
-      BaseObstacle.scale: 0.5   # 사람 공간: 장애물에서 떨어지려는 성향 부여
-      PathAlign.scale: 8.0   # 직선 구간 미세 조향 추가 완화 (32 -> 16 -> 8)
-      PathAlign.forward_point_distance: 0.8   # 로봇 길이 1.86m 기준 (기존 0.1 은 1배 카터용)
-      GoalAlign.scale: 12.0   # PathAlign(8.0) 과 균형
-      GoalAlign.forward_point_distance: 0.8   # 〃
+      BaseObstacle.scale: 0.02
+      PathAlign.scale: 32.0
+      PathAlign.forward_point_distance: 0.1
+      GoalAlign.scale: 24.0
+      GoalAlign.forward_point_distance: 0.1
       PathDist.scale: 32.0
       GoalDist.scale: 24.0
       RotateToGoal.scale: 32.0
@@ -250,8 +250,8 @@ local_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         enabled: True
-        cost_scaling_factor: 3.0   # 거리에 따라 빠르게 감쇠 (붉은 띠 좁아짐)
-        inflation_radius: 0.6      # 내접 반경 0.48 + 여유 0.12
+        cost_scaling_factor: 1.5
+        inflation_radius: 1.6
         
       front_2d_lidar_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
@@ -352,8 +352,8 @@ global_costmap:
         map_subscribe_transient_local: True
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        cost_scaling_factor: 3.0   # 0.15 는 감쇠가 거의 없어 맵 전체가 고비용이었다
-        inflation_radius: 0.6
+        cost_scaling_factor: 0.15
+        inflation_radius: 2.0
       always_send_full_costmap: True
   global_costmap_client:
     ros__parameters:
@@ -413,10 +413,8 @@ planner_server:
     expected_planner_frequency: 10.0
     planner_plugins: ["GridBased"]
     GridBased:
-      # 차동구동이라 제자리 회전이 가능한데, Smac Hybrid 는 곡률 제약(최소 회전반경) 때문에
-      # 항상 큰 호로 돌고 가까운 목표에서 고리를 그리다 실패했다 -> 격자 A* 인 NavFn 으로 복귀.
       plugin: "nav2_navfn_planner::NavfnPlanner"
-      tolerance: 0.25
+      tolerance: 1.0
       use_astar: false
       allow_unknown: true
 
@@ -453,9 +451,9 @@ behavior_server:
     robot_base_frame: base_link
     transform_tolerance: 0.2
     simulate_ahead_time: 2.0
-    max_rotational_vel: 0.5   # 주행 max_vel_theta 와 일치 (복구가 더 거칠면 안 됨)
-    min_rotational_vel: 0.2
-    rotational_acc_lim: 1.0   # 주행 acc_lim_theta 와 일치
+    max_rotational_vel: 1.2
+    min_rotational_vel: 0.4
+    rotational_acc_lim: 3.2
 
 robot_state_publisher:
   ros__parameters:

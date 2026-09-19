@@ -138,8 +138,8 @@ def generate_launch_description():
                     parameters=[{
                         'target_frame': 'front_3d_lidar',
                         'transform_tolerance': 0.01,
-                        'min_height': -0.4,
-                        'max_height': 1.5,
+                        'min_height': -0.8,   # 로봇 2배 스케일: 라이다 장착 높이도 2배
+                        'max_height': 3.0,    # 로봇 2배 스케일
                         'angle_min': -1.5708,  # -M_PI/2
                         'angle_max': 1.5708,  # M_PI/2
                         'angle_increment': 0.0087,  # M_PI/360.0
