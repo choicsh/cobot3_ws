@@ -30,7 +30,9 @@ amcl:
     save_pose_rate: 0.5
     sigma_hit: 0.2
     tf_broadcast: true
-    transform_tolerance: 1.0
+    # map->odom 을 마지막 스캔 처리 후 이 시간만큼 유효하게 유지한다. Isaac Sim 라이다가 1.2초까지 끊기는데
+    # 1.0 이면 그 사이 TF 가 만료되어 controller_server 가 "Transform data too old" 로 주행을 abort 한다.
+    transform_tolerance: 3.0
     update_min_a: 0.2
     update_min_d: 0.2   # 자주·조금씩 보정 → map->odom 점프 완화
     z_hit: 0.5
@@ -39,14 +41,12 @@ amcl:
     z_short: 0.05
     scan_topic: scan
     map_topic: map
-    set_initial_pose: true
+    # 초기 위치는 여기 적지 않는다. Isaac Sim(run_nova_sim.py)이 Play 시점의 실제 위치를
+    # isaacpjt/assets/start_pose.json 에 기록하고, nav_to_goal/move_test.py 가 그걸 읽어
+    # /initialpose 로 넘긴다. 씬에서 로봇을 옮겨도 이 파일을 고칠 필요가 없다.
+    set_initial_pose: false
     always_reset_initial_pose: false
     first_map_only: false
-    initial_pose:
-      x: 1.233      # 씬의 chassis_link(=base_link) 실측 위치
-      y: 3.363
-      z: 0.0
-      yaw: 3.14159  # 180도
 
 amcl_map_client:
   ros__parameters:
@@ -181,8 +181,10 @@ controller_server:
     general_goal_checker:
       stateful: True
       plugin: "nav2_controller::SimpleGoalChecker"
-      xy_goal_tolerance: 0.1     # 차동구동 한계상 실질 하한 0.05
-      yaw_goal_tolerance: 0.05   # 2.9도. AMCL 각도 추정 오차가 하한(~0.03)
+      # 도킹 정밀도. NavigateThroughPoses 로 주행하므로 이 값은 도킹 지점에만 적용된다.
+      # DWB + AMCL 조합의 실질 하한 (xy 0.05 / yaw 0.03). 더 줄이려면 도킹 구간 컨트롤러를 바꿔야 한다.
+      xy_goal_tolerance: 0.05
+      yaw_goal_tolerance: 0.03   # 1.7도
   # DWB parameters
     FollowPath:
       plugin: "dwb_core::DWBLocalPlanner"
@@ -208,7 +210,9 @@ controller_server:
       linear_granularity: 0.1
       angular_granularity: 0.025
       transform_tolerance: 0.2
-      xy_goal_tolerance: 0.1
+      # RotateToGoal 이 '제자리 회전 모드'로 바뀌는 창. goal checker 의 xy_goal_tolerance 보다 크면
+      # 그 창에 들어오자마자 전진을 멈춰서 checker 허용치까지 못 다가가므로 반드시 같거나 작게 둔다.
+      xy_goal_tolerance: 0.05
       trans_stopped_velocity: 0.05   # 5cm/s 이하여야 최종 회전 시작 (사람 공간 주행 고려)
       short_circuit_trajectory_evaluation: True
       stateful: True
@@ -371,7 +375,8 @@ collision_monitor:
     cmd_vel_out_topic: "cmd_vel"
     state_topic: "collision_monitor_state"
     transform_tolerance: 0.2
-    source_timeout: 1.0
+    # Isaac Sim 라이다(/scan ~4.5Hz)가 주기적으로 1.0~1.2초씩 끊긴다. 1.0 이면 그때마다 로봇을 세운다.
+    source_timeout: 2.5
     base_shift_correction: True
     stop_pub_timeout: 2.0
     # Polygons represent zone around the robot for "stop", "slowdown" and "limit" action types,
