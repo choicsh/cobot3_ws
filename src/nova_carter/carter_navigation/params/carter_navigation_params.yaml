@@ -164,8 +164,10 @@ controller_server:
     min_theta_velocity_threshold: 0.001
     failure_tolerance: 0.3
     progress_checker_plugins: ["progress_checker"]
-    goal_checker_plugins: ["general_goal_checker"] # "precise_goal_checker"
-    controller_plugins: ["FollowPath"]
+    # goal checker 는 두 개: 구간 경계(방->복도, 복도->방)는 transit, 도킹 끝만 general(정밀).
+    # 컨트롤러도 두 개: 방 안은 DWB(FollowPath), 복도는 MPPI(FollowPathMPPI). move_test 가 구간마다 골라 보낸다.
+    goal_checker_plugins: ["general_goal_checker", "transit_goal_checker"]
+    controller_plugins: ["FollowPath", "FollowPathMPPI"]
     use_realtime_priority: false
 
     # Progress checker parameters
@@ -186,6 +188,12 @@ controller_server:
       # DWB 로 실질적으로 맞출 수 있는 하한 (xy 0.05 / yaw 0.03). 더 줄이려면 도킹 구간 컨트롤러를 바꿔야 한다.
       xy_goal_tolerance: 0.05
       yaw_goal_tolerance: 0.03   # 1.7도
+    transit_goal_checker:
+      # 구간 경계용. 여기서 정밀 정렬을 하면 복도 입구에서 도킹하듯 멈춰 서므로 느슨하게 두고 바로 다음 구간으로 넘긴다.
+      stateful: False
+      plugin: "nav2_controller::SimpleGoalChecker"
+      xy_goal_tolerance: 0.3
+      yaw_goal_tolerance: 0.3
   # DWB parameters
     FollowPath:
       plugin: "dwb_core::DWBLocalPlanner"
@@ -228,7 +236,90 @@ controller_server:
       RotateToGoal.scale: 32.0
       RotateToGoal.slowing_factor: 5.0
       RotateToGoal.lookahead_time: -1.0
-        
+
+  # MPPI parameters (복도 전용). 정적/동적 장애물이 있을 때 경로 주변으로 부드럽게 우회했다가 돌아오게 한다.
+  # 경로는 복도 동쪽(x=8.0)에 치우쳐 그려서 서쪽 4 m 가 회피 공간이 된다.
+    FollowPathMPPI:
+      plugin: "nav2_mppi_controller::MPPIController"
+      # 예측 horizon = time_steps * model_dt. 고정 경로(FollowPath) 위의 장애물을 MPPI 혼자 비켜 가려면
+      # "옆으로 빠졌다가 지나가는" 궤적 전체가 horizon 안에 들어와야 한다. 2.8 s 로는 콘 앞 0.6 m 에서야 알아채고
+      # 제자리에 서 버렸다(실측) -> 4.5 s. 연산량이 비례해서 늘므로 controller 20 Hz 를 놓치면(로그 'missed its desired rate') 줄인다.
+      time_steps: 90
+      model_dt: 0.05          # 90 * 0.05 = 4.5 s 앞을 본다 (0.5 m/s 면 2.25 m)
+      batch_size: 1000
+      # 가감속 한계는 nav2 기본값(3.0 / -3.0 / 3.5) 그대로 둔다. MPPI 에서 이 값은 "샘플 궤적이 한 스텝(model_dt)에
+      # 속도를 얼마나 바꿀 수 있나" 를 정하는 탐색 폭이라, DWB 처럼 1.0 으로 줄이면 스텝당 0.05 m/s 로 잘려서
+      # 후보 궤적 1000개가 전부 로봇 주변 0.2 m 안에 뭉치고(실측) 비용 차이가 안 나 제자리에서 멈춘다.
+      # 실제 로봇 가감속은 velocity_smoother(max_accel 0.5 / 1.0) 가 따로 제한한다.
+      ax_max: 3.0
+      ax_min: -3.0
+      ay_max: 0.0
+      ay_min: 0.0
+      az_max: 3.5
+      vx_std: 0.2
+      vy_std: 0.0
+      wz_std: 0.2             # 기본 0.4. 회전 노이즈가 크면 (1) 출력 wz 가 흔들려 좌우 1~2 cm 요동, (2) 빠른 샘플일수록
+                              # 옆으로 새서 PathAlign 벌점이 커져 속도가 0.2 m/s 근처에 묶인다 (실측 0.17)
+      vx_max: 0.5             # DWB 와 같은 속도
+      vx_min: 0.0             # 후진 금지. 꼬리 1.38 m 가 라이다 사각에서 벽/사람에 닿는다
+      vy_max: 0.0
+      wz_max: 0.5
+      iteration_count: 1
+      prune_distance: 4.0     # critic 에 주는 경로 길이. horizon 거리보다 길어야 장애물 너머의 경로점이 보여 PathFollow 가 그쪽으로 당긴다
+      transform_tolerance: 0.2
+      temperature: 0.3
+      gamma: 0.015
+      motion_model: "DiffDrive"
+      visualize: true         # RViz 에서 후보 궤적 확인 (/trajectories)
+      regenerate_noises: true
+      TrajectoryVisualizer:
+        trajectory_step: 5
+        time_step: 3
+      critics: ["ConstraintCritic", "CostCritic", "GoalCritic", "GoalAngleCritic", "PathAlignCritic", "PathFollowCritic", "PathAngleCritic", "PreferForwardCritic"]
+      ConstraintCritic:
+        enabled: truobs
+        enabled: true
+        cost_power: 1
+        cost_weight: 5.0
+        threshold_to_consider: 0.5
+      CostCritic:
+        # 장애물 회피의 핵심. 로봇이 길어 내접원(0.48) 대신 footprint 전체로 충돌 검사한다.
+        enabled: true
+        cost_power: 1
+        cost_weight: 3.81
+        critical_cost: 300.0
+        consider_footprint: true
+        collision_cost: 1000000.0
+        near_goal_distance: 1.0
+        trajectory_point_step: 2
+      PathAlignCritic:
+        # 경로 위 점의 5% 이상이 장애물에 가려지면 자동으로 꺼져서(max_path_occupancy_ratio) 우회를 허용한다.
+        # 가중치는 기본 14 -> 8. 이 critic 은 후보 궤적이 1 m(offset_from_furthest 20 포즈) 이상 뻗을 때만 켜져서
+        # 빠른 샘플에만 벌점을 주므로, PathFollow 보다 세면 속도 상한처럼 작용한다.
+        enabled: true
+        cost_power: 1
+        cost_weight: 8.0
+        max_path_occupancy_ratio: 0.05
+        trajectory_point_step: 4
+        threshold_to_consider: 0.5
+        offset_from_furthest: 20
+        use_path_orientations: false
+      PathFollowCritic:
+        # 전진 속도를 만드는 유일한 critic (궤적 끝이 경로 앞쪽 목표점에 가까울수록 보상). 기본 5 -> 8.
+        enabled: true
+        cost_power: 1
+        cost_weight: 8.0
+        offset_from_furthest: 12   # 권장치 = horizon 거리의 30% / 경로 간격 = 4.5*0.5/0.05/3 ≈ 15
+        threshold_to_consider: 1.4
+      PathAngleCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 2.0
+        offset_from_furthest: 4
+        threshold_to_consider: 0.5
+        max_angle_to_furthest: 1.0
+        mode: 0
+
 
 local_costmap:
   local_costmap:
@@ -247,7 +338,10 @@ local_costmap:
       footprint: "[ [0.48, 0.5], [0.48, -0.5], [-1.38, -0.5], [-1.38, 0.5] ]"
       mark_threshold: 2
       always_send_full_costmap: True
-      plugins: ["front_3d_lidar_layer", "front_2d_lidar_layer", "back_2d_lidar_layer", "inflation_layer", "static_map_layer"]
+      # 순서가 곧 덮어쓰기 순서다. 원본(Isaac 샘플)은 static_map_layer 가 맨 뒤였는데, StaticLayer 는 use_maximum=false 면
+      # 자기 값을 그대로 덮어써서(TrueOverwrite) 앞에서 라이다가 찍은 lethal 과 인플레이션이 전부 지워졌다
+      # -> local costmap 이 정적 지도와 똑같아져 콘을 코앞에 두고도 MPPI 가 직진했다 (실측). nav2 관례대로 static 먼저, inflation 마지막.
+      plugins: ["static_map_layer", "front_3d_lidar_layer", "front_2d_lidar_layer", "back_2d_lidar_layer", "inflation_layer"]
       static_map_layer:
         plugin: "nav2_costmap_2d::StaticLayer"
         map_subscribe_transient_local: True
@@ -299,7 +393,10 @@ local_costmap:
           topic: /front_3d_lidar/lidar_points
           marking: true
           clearing: false
-          obstacle_range: 6.0 # meters
+          # nav2 파라미터 이름은 obstacle_max_range 다 (obstacle_range 는 ROS1 이름이라 무시되고 기본 2.5 m 가 적용됐다).
+          # 실측: 3.5 m 앞 콘은 안 찍히고 1.9~2.5 m 벽만 찍혔다. MPPI 가 감속·우회할 시간을 주려면 6 m 는 봐야 한다.
+          obstacle_max_range: 6.0 # meters
+          obstacle_min_range: 0.0
           min_obstacle_height: -0.8 # default 0, meters
           max_obstacle_height: 3.0 # default 3, meters
           expected_update_rate: 0.0 # default 0, if not updating at this rate at least, remove from buffer
