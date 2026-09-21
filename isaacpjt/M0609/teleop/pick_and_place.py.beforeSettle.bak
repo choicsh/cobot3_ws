@@ -95,7 +95,7 @@ POINT5_RPY = (-89.3, 89.1, 180.0)
 
 JOINT1_ROTATE_DEG = -90.0   # 들어올린 뒤 joint_1 을 이만큼 상대 회전한다
 
-POINT6_TCP = np.array([-0.0093, 0.7690, 0.25])   # 처음에 내려놓는 위치 (base +y 로 50mm 더 안쪽)
+POINT6_TCP = np.array([-0.0093, 0.7690, 0.24])   # 처음에 내려놓는 위치 (base +y 로 50mm 더 안쪽)
 POINT6_RPY = (-89.3, 0.1, 180.0)
 
 # 보간 속도 — 스텝당 이동량을 고정하고 구간 길이로 스텝 수를 정한다
@@ -430,8 +430,7 @@ class PickPlaceSequence:
             self.start_pos, self.start_quat = self._current_flange_pose()
             if step["type"] == "hold":
                 self.target_pos, self.target_quat = self.start_pos, self.start_quat
-                # steps 키가 있으면 그 길이만큼 제자리 대기한다 (없으면 그리퍼 여닫이 기준값)
-                self.n_steps = int(step.get("steps", GRIPPER_WAIT_STEPS))
+                self.n_steps = GRIPPER_WAIT_STEPS
             else:
                 self.target_pos, self.target_quat = step["target"]
                 self.n_steps = steps_for_pose(
