@@ -79,42 +79,72 @@ def create_pose(navigator, x, y, yaw_deg):
     
     pose.pose.orientation.x = q[0]
     pose.pose.orientation.y = q[1]
-    pose.pose.orientation.z = q[2]
+    pose.pose.orientation.z = q[2]  
     pose.pose.orientation.w = q[3]
     return pose
 
 def main():
     rclpy.init()
     nav = BasicNavigator()
-    
-    # 1. 출발점 설정
-    init_pose = create_pose(nav, -6.0, -1.0, 0.007)
+
+    # 1. 출발점 설정: intergration_nova.usd 의 /World/robot_nova 배치값 그대로.
+    # Isaac 월드 좌표 == 맵 좌표 이므로 변환 없이 넣는다 (yaw -90deg).
+    # 씬에서 카트를 옮기면 이 값도 같이 고쳐야 AMCL 이 처음부터 제대로 붙는다.
+    init_pose = create_pose(nav, 1.2303, 3.36282, 180.0)
     nav.setInitialPose(init_pose)
     nav.waitUntilNav2Active()
-    
-    # 2. 목표 지점 설정
-    goal_pose = create_pose(nav, -2.0, 2.0, 180.0)
-        
-    # 3. Task 실행
-    nav.goToPose(goal_pose)
-    
-    last_pose = None
+
+    # 2. 순차 방문할 좌표를 (x[m], y[m], yaw[deg]) 형식으로 입력한다.
+    # 예: (2.0, 1.0, 90.0)
+    # 맵 제작 시 free space 기준점이 책상과 겹쳐 씬 전체를 x축으로 -1.84091 옮겼으므로
+    # 좌표를 그만큼 옮겼다.
+    #
+    # 책상 옆(x = -0.761)은 로봇 옆면과 책상 사이가 1cm 뿐이라 '직진만' 되는 구간이다.
+    # 그래서 출발 직후엔 남쪽으로 빠져나오고, 도착할 때도 위(y=19.5)에서 -90deg 로
+    # 방향을 맞춘 뒤 남쪽으로 진입한다. 도착 지점에서 제자리 회전을 시키면 책상에 부딪힌다.
+    waypoint_specs = [
+        (-1.937, 3.416, 180.0),
+        (-1.958, -0.352, 270.0),
+        (6.641, 0.138, 90.0),
+        (7.398, 17.238, 150.0),
+        (5.826, 19.193, 180.0),
+        (1.618, 19.349, 180.0),
+        #(-2.5, 3.36282, -90.0),
+        #(-2.5, -1.0,    0),
+        #(6.0, -1.0,   90),
+        #(6.0, 18.0,  0),    # 내려놓는 자세 바로 위
+        #(1.2303, 18.0,  0)    # 남쪽으로 진입 = 팔이 트레이를 내려놓는 자세
+    ]
+
+    if not waypoint_specs:
+        nav.get_logger().error(
+            'waypoint_specs가 비어 있습니다. (x, y, yaw_deg) 좌표를 입력하세요.'
+        )
+        rclpy.shutdown()
+        return
+
+    waypoints = [
+        create_pose(nav, x, y, yaw_deg)
+        for x, y, yaw_deg in waypoint_specs
+    ]
+
+    # 3. 입력된 waypoint를 순서대로 방문한다.
+    nav.followWaypoints(waypoints)
 
     while not nav.isTaskComplete():
         feedback = nav.getFeedback()
         if feedback:
-            last_pose = feedback.current_pose
-            print(f"남은 거리: {feedback.distance_remaining:.2f} m")
-            
-        time.sleep(1.0)
+            current_index = feedback.current_waypoint
+            print(
+                f"현재 waypoint: {current_index + 1}/{len(waypoints)}"
+            )
+
+        time.sleep(0.5)
 
     # 4. 결과 처리
     result = nav.getResult()
     if result == TaskResult.SUCCEEDED:
-        print('\n🎉 목적지 도착 완료!')
-        
-        print_final_pose(last_pose)
-            
+        print('\n🎉 모든 waypoint 도착 완료!')
     elif result == TaskResult.CANCELED:
         print('주행 취소됨')
     elif result == TaskResult.FAILED:

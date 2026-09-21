@@ -144,11 +144,10 @@ PICK_DONE = HANDSHAKE_DIR / "pick_done"
 NAV_DONE = HANDSHAKE_DIR / "nav_done"
 
 APPROACH_BACKOFF_M = 0.082   # P1->P2 와 같은 수평 접근 거리
-RACK_SETTLE_S = 0.5          # 랙 위(P3)에서 내려놓기(P6) 전 제자리 대기
 PICK_PAUSE_S = 1.0           # 홈 복귀 후 신호를 내보내기까지 대기 시간
 
 
-def build_pick_sequence(base_pos, base_quat, settle_steps):
+def build_pick_sequence(base_pos, base_quat):
     """놓는 순서(build_sequence)의 역순. 놓고 -> 그리퍼 열고 -> 홈 복귀로 끝난다"""
     p1, p2, p3, p4, p5, p6 = (
         base_to_world(tcp, rpy, base_pos, base_quat)
@@ -176,8 +175,6 @@ def build_pick_sequence(base_pos, base_quat, settle_steps):
         {"type": "pose",  "label": "들어올리기",     "target": lift, "gripper": None},
         {"type": "joint", "label": "joint_1 역회전", "target": lambda start: start - joint1_delta, "gripper": None},
         {"type": "pose",  "label": "P3 정렬",        "target": p3, "gripper": None},
-        # 랙 위에 도착한 자세가 흔들린 채로 곧장 내려가면 트레이가 랙 턱에 걸린다
-        {"type": "hold",  "label": f"대기 {RACK_SETTLE_S}s", "gripper": None, "steps": settle_steps},
         {"type": "pose",  "label": "놓는 위치",      "target": p6, "gripper": None},
         {"type": "hold",  "label": "그리퍼 열기",    "gripper": "open"},
         {"type": "pose",  "label": "후퇴 안전 위치", "target": p1, "gripper": None},
@@ -249,9 +246,8 @@ def main():
                     f.unlink()
             base_pos, base_quat = sync_base_pose(lula, robot)
             print(f"   base pos     {vec(base_pos)}")
-            settle_steps = max(1, int(RACK_SETTLE_S / world.get_physics_dt()))
             seq = PickPlaceSequence(robot, ik_solver, arm_indices,
-                                    build_pick_sequence(base_pos, base_quat, settle_steps))
+                                    build_pick_sequence(base_pos, base_quat))
             phase = "PICK"
             print("[PHASE] PICK")
         was_playing = is_playing

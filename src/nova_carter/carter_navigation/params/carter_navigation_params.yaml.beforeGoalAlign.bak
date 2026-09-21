@@ -213,16 +213,12 @@ controller_server:
       short_circuit_trajectory_evaluation: True
       stateful: True
       critics: ["RotateToGoal", "Oscillation", "ObstacleFootprint", "GoalAlign", "PathAlign", "PathDist", "GoalDist"]
-      ObstacleFootprint.scale: 0.2   # 0.5 일 때 하늘색(253) 감점 6.3 이 GoalAlign(2.0) 보다 커서 회전을 체계적으로 억제했다.
-      # 하늘색은 내접반경 0.48m 띠일 뿐 실제 충돌이 아니다. 치명(254) 거부는 scale 과 무관하게 유지된다.
-      # (libdwb_critics.so 확인: pointCost 는 0xfe/0xff 만 비교, 0xfd(253) 비교 없음)
-      Oscillation.oscillation_reset_time: 5.0   # 기본 -1.0 은 시간 해제 끔. 막혀서 못 움직이면 해제조건(5cm/11.5도)을
-      # 영영 못 채워 잠금이 영구화되고 419개 전부 불법이 됐다 (실측 불법판정 89,000건)
+      ObstacleFootprint.scale: 0.5   # BaseObstacle 은 중심 셀 1개만 보고 내접(253) 이상이면 전 궤적을 불법 처리했다.
       # 내접 반경 0.48 m (footprint 앞변 거리) 안에 들어가면 실제 충돌 여부와 무관하게 제자리 회전까지 막혔다.
       # 차체 실측 1.80 x 0.988 m 로 footprint(1.86 x 1.0) 여유가 전후 3cm/좌우 6mm 뿐이라 footprint 축소는 불가.
       PathAlign.scale: 8.0   # 직선 구간 미세 조향 추가 완화 (32 -> 16 -> 8)
       PathAlign.forward_point_distance: 0.8   # 로봇 길이 1.86m 기준 (기존 0.1 은 1배 카터용)
-      GoalAlign.scale: 3.0   # 목표 0.09m 앞에서 GoalAlign 기여 8.1 이 RotateToGoal 0.8 을 압도해 좌우 반전 진동 유발 (측정). 최종 정렬은 RotateToGoal 담당
+      GoalAlign.scale: 12.0   # PathAlign(8.0) 과 균형
       GoalAlign.forward_point_distance: 0.8   # 〃
       PathDist.scale: 32.0
       GoalDist.scale: 24.0

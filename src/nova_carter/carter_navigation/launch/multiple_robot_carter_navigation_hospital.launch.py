@@ -39,7 +39,7 @@ def generate_launch_description():
     robots = [{"name": "carter1"}, {"name": "carter2"}, {"name": "carter3"}]
 
     # Common settings
-    ENV_MAP_FILE = "carter_hospital_navigation.yaml"
+    ENV_MAP_FILE = "intergration_nova.yaml"
     use_sim_time = LaunchConfiguration("use_sim_time", default="True")
     map_yaml_file = LaunchConfiguration("map")
     default_bt_xml_filename = LaunchConfiguration("default_bt_xml_filename")
@@ -139,7 +139,7 @@ def generate_launch_description():
                         'target_frame': 'front_3d_lidar',
                         'transform_tolerance': 0.3,
                         'min_height': -0.1,
-                        'max_height': 1.5,
+                        'max_height': 3.0,    # 로봇 2배 스케일
                         'angle_min': -1.5708,  # -M_PI/2
                         'angle_max': 1.5708,  # M_PI/2
                         'angle_increment': 0.0087,  # M_PI/360.0
