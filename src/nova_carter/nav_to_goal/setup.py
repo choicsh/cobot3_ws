@@ -27,7 +27,6 @@ setup(
             'move_test = nav_to_goal.move_test:main',
             'nav_through_pose = nav_to_goal.nav_through_pose:main',
             'image_saver_node = nav_to_goal.image_saver_node:main',
-            'initial_pose_from_sim = nav_to_goal.initial_pose_from_sim:main',
             'ground_truth_localization = nav_to_goal.ground_truth_localization:main',
             'nav_to_multi_pose = nav_to_goal.nav_to_multi_pose:main',
         ],

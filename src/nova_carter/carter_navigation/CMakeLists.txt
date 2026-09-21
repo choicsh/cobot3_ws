@@ -8,7 +8,6 @@ install(DIRECTORY
   params
   maps
   rviz2
-  behavior_trees
   DESTINATION share/${PROJECT_NAME})
 
 ament_package()

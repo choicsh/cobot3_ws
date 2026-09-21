@@ -2,6 +2,9 @@ import math
 import time
 import rclpy
 from rclpy.parameter import Parameter
+from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSDurabilityPolicy
+from rclpy.time import Time
+from nav_msgs.msg import Path
 from nav2_simple_commander.robot_navigator import BasicNavigator, TaskResult
 from geometry_msgs.msg import PoseStamped
 
@@ -125,7 +128,6 @@ def path_length(route):
 
 
 def build_path(nav, route, final_yaw_deg):
-    from nav_msgs.msg import Path
     path = Path()
     path.header.frame_id = 'map'
     path.header.stamp = nav.get_clock().now().to_msg()
@@ -137,13 +139,38 @@ def build_path(nav, route, final_yaw_deg):
 
 
 def wait_until_nav2_active(nav):
-    """AMCL/bt_navigator 활성화 + amcl_pose 수신까지 기다린다. /initialpose 는 절대 쏘지 않는다."""
-    nav._waitForNodeToActivate('amcl')
-    nav._waitForNodeToActivate('bt_navigator')
-    nav.get_logger().info('AMCL 위치(amcl_pose) 수신 대기 중...')
-    while rclpy.ok() and not nav.initial_pose_received:
-        rclpy.spin_once(nav, timeout_sec=1.0)
+    """controller_server 활성화 + map->base_link TF(ground_truth_localization + Isaac odom)까지 기다린다.
+
+    nav.waitUntilNav2Active() 는 AMCL 전제라 쓰지 않는다 (amcl 노드를 기다리고, 기본값 (0,0,0)을
+    /initialpose 로 쏜다).
+    """
+    from tf2_ros import Buffer, TransformListener
+    nav._waitForNodeToActivate('controller_server')
+    tf_buffer = Buffer()
+    nav._tf_listener = TransformListener(tf_buffer, nav)
+    nav.get_logger().info('map->base_link TF 대기 중...')
+    while rclpy.ok() and not tf_buffer.can_transform('map', 'base_link', Time()):
+        rclpy.spin_once(nav, timeout_sec=0.5)
     nav.get_logger().info('Nav2 준비 완료')
+    return tf_buffer
+
+
+def remaining_path(path, tf_buffer, start_index):
+    """로봇에서 가장 가까운 포즈(start_index 이후만 탐색)부터 끝까지 잘라낸 Path 와 그 인덱스."""
+    try:
+        t = tf_buffer.lookup_transform('map', 'base_link', Time()).transform.translation
+    except Exception:
+        return None, start_index
+    best_i, best_d = start_index, float('inf')
+    for i in range(start_index, len(path.poses)):
+        p = path.poses[i].pose.position
+        d = (p.x - t.x) ** 2 + (p.y - t.y) ** 2
+        if d < best_d:
+            best_i, best_d = i, d
+    rest = Path()
+    rest.header = path.header
+    rest.poses = path.poses[best_i:]
+    return rest, best_i
 
 
 def main():
@@ -152,11 +179,9 @@ def main():
     # launch 쪽 Nav2 가 Isaac Sim 클록(use_sim_time)으로 돌므로 goal stamp 도 같은 클록이어야 한다.
     nav.set_parameters([Parameter('use_sim_time', Parameter.Type.BOOL, True)])
 
-    # 1. 출발점은 여기서 정하지 않는다. carter_navigation.launch.py 의 initial_pose_from_sim 이
-    # Isaac Sim 이 기록한 start_pose.json 을 AMCL 에 넘기므로, 씬에서 카트를 옮겨도 손댈 곳이 없다.
-    # 주의: nav.waitUntilNav2Active() 는 amcl_pose 를 받기 전이면 자기 기본값 (0,0,0) 을
-    # /initialpose 로 쏴서 AMCL 위치를 덮어쓴다. 그래서 쓰지 않고 직접 기다린다.
-    wait_until_nav2_active(nav)
+    # 1. 출발점/현재 위치는 여기서 정하지 않는다. Isaac Sim 이 기록한 start_pose.json 으로
+    # launch 의 ground_truth_localization 이 map->odom 을 잡으므로, 씬에서 카트를 옮겨도 손댈 곳이 없다.
+    tf_buffer = wait_until_nav2_active(nav)
 
     # 2. 경로를 직접 그려서 controller_server 의 FollowPath 로 보낸다.
     #    planner(NavFn)와 경유점 통과 판정(RemovePassedGoals)을 아예 쓰지 않으므로
@@ -191,15 +216,27 @@ def main():
     path = build_path(nav, route, dock_yaw_deg)
     print(f"경로 {len(path.poses)} 포즈 ({path_length(route):.1f} m) 를 FollowPath 로 보냅니다. "
           f"도킹: ({path.poses[-1].pose.position.x:.3f}, {path.poses[-1].pose.position.y:.3f}, {dock_yaw_deg:.0f}deg)")
+
+    # RViz 의 Global Planner > Path 디스플레이(/plan)에 그린 경로를 띄운다. planner 를 안 쓰므로 직접 발행.
+    plan_pub = nav.create_publisher(Path, 'plan', QoSProfile(
+        depth=1, reliability=QoSReliabilityPolicy.RELIABLE, durability=QoSDurabilityPolicy.TRANSIENT_LOCAL))
+    plan_pub.publish(path)
+
     nav.followPath(path)
 
     last_print = 0.0
+    passed_index = 0
     while not nav.isTaskComplete():
         feedback = nav.getFeedback()
         now = time.time()
         if feedback and now - last_print > 3.0:
             last_print = now
             print(f"-> 남은 거리 {feedback.distance_to_goal:.1f} m, 속도 {feedback.speed:.2f} m/s")
+
+        # 지나간 구간은 RViz 표시에서 지운다 (planner 가 매초 다시 그리던 것과 같은 느낌)
+        rest, passed_index = remaining_path(path, tf_buffer, passed_index)
+        if rest is not None:
+            plan_pub.publish(rest)
         time.sleep(0.5)
 
     # 4. 결과 처리

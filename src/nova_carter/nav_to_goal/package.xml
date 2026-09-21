@@ -14,7 +14,7 @@
 
   <depend>rclpy</depend>
   <depend>geometry_msgs</depend>
-  <depend>lifecycle_msgs</depend>
+  <depend>nav_msgs</depend>
   <depend>tf2_ros_py</depend>
   <depend>nav2_simple_commander</depend>
   <!-- 이미지 처리 코드에 필요한 추가 의존성 -->

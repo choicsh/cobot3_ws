@@ -19,21 +19,13 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.actions import IncludeLaunchDescription
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.conditions import LaunchConfigurationEquals
-from launch.substitutions import LaunchConfiguration, PythonExpression
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
-from nav2_common.launch import RewrittenYaml
 
 
 def generate_launch_description():
 
     use_sim_time = LaunchConfiguration("use_sim_time", default="True")
-
-    # localization:=truth (기본) -> Isaac odom 이 drift 가 없으므로 map->odom 을 start_pose.json 의
-    #                              정적 TF 로 발행하고, AMCL 은 TF 를 내보내지 않게 한다 (amcl_pose 만 발행).
-    # localization:=amcl          -> 실기와 같은 구성. AMCL 이 map->odom 을 추정한다.
-    localization = LaunchConfiguration("localization", default="truth")
-    amcl_tf_broadcast = PythonExpression(["'", localization, "' == 'amcl'"])
 
     map_dir = LaunchConfiguration(
         "map",
@@ -49,14 +41,6 @@ def generate_launch_description():
         ),
     )
 
-
-    # AMCL 의 tf_broadcast 만 localization 인자에 맞춰 덮어쓴 params 사본
-    params_for_bringup = RewrittenYaml(
-        source_file=param_dir,
-        param_rewrites={"tf_broadcast": amcl_tf_broadcast},
-        convert_types=True,
-    )
-
     nav2_bringup_launch_dir = os.path.join(get_package_share_directory("nav2_bringup"), "launch")
 
     rviz_config_dir = os.path.join(get_package_share_directory("carter_navigation"), "rviz2", "carter_navigation.rviz")
@@ -70,33 +54,23 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "use_sim_time", default_value="True", description="Use simulation (Omniverse Isaac Sim) clock if True"
             ),
-            DeclareLaunchArgument(
-                "localization", default_value="truth", choices=["truth", "amcl"],
-                description="truth: Isaac ground-truth map->odom (sim only), amcl: AMCL estimates map->odom",
-            ),
             IncludeLaunchDescription(
                 PythonLaunchDescriptionSource(os.path.join(nav2_bringup_launch_dir, "rviz_launch.py")),
                 launch_arguments={"namespace": "", "use_namespace": "False", "rviz_config": rviz_config_dir}.items(),
             ),
             IncludeLaunchDescription(
                 PythonLaunchDescriptionSource([nav2_bringup_launch_dir, "/bringup_launch.py"]),
-                launch_arguments={"map": map_dir, "use_sim_time": use_sim_time, "params_file": params_for_bringup}.items(),
+                launch_arguments={"map": map_dir, "use_sim_time": use_sim_time, "params_file": param_dir}.items(),
             ),
 
-            # Isaac Sim(run_nova_sim.py)이 기록한 start_pose.json 을 AMCL 초기 위치로 넘긴다.
-            # 씬에서 로봇 시작점을 옮겨도 params 의 숫자를 고칠 필요가 없다.
-            Node(
-                package='nav_to_goal', executable='initial_pose_from_sim',
-                name='initial_pose_from_sim', output='screen',
-                parameters=[{'use_sim_time': use_sim_time}],
-            ),
-
-            # localization:=truth 일 때만: start_pose.json 으로 map->odom 정적 TF 발행 (AMCL 은 TF 를 안 냄)
+            # 위치: Isaac Sim 의 odom 은 물리 엔진 실제 자세라 drift 가 없고 Play 시점이 원점이므로,
+            # map->odom 은 run_nova_sim.py 가 기록한 start_pose.json 값 그대로의 정적 TF 로 충분하다.
+            # AMCL 은 bringup 안에서 같이 뜨지만 tf_broadcast: false 라 TF 를 내지 않는다 (params 참고).
+            # start_pose.json -> map->odom 정적 TF
             Node(
                 package='nav_to_goal', executable='ground_truth_localization',
                 name='ground_truth_localization', output='screen',
                 parameters=[{'use_sim_time': use_sim_time}],
-                condition=LaunchConfigurationEquals('localization', 'truth'),
             ),
 
             Node(
