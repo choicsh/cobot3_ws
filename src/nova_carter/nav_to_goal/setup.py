@@ -25,6 +25,7 @@ setup(
     entry_points={
         'console_scripts': [
             'move_test = nav_to_goal.move_test:main',
+            'move_test_followpath = nav_to_goal.move_test_followpath:main',
             'nav_through_pose = nav_to_goal.nav_through_pose:main',
             'image_saver_node = nav_to_goal.image_saver_node:main',
         ],
