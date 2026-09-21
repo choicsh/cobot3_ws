@@ -36,16 +36,12 @@ INIT_POSE = (1.2303, 3.36282, 180.0)          # amcl initial_pose 와 같은 값
 
 NAV_WAYPOINTS = [                              # Nav2 담당
     # (-1.937,  3.416, 180.0),
-    # (-1.958, -0.352, 270.0),
+    (-1.958, -0.352, 270.0),
     # ( 6.641,  0.138,  90.0),
     # ( 7.398, 17.238, 150.0),
     ( 5.826, 19.343, 180.0),
 ]
 FINAL_GOAL = (1.618, 19.343, 180.0)            # cmd_vel 담당
-
-# PICK 직후 구간. 책상 옆이라 회전하면 부딪히므로 자세 그대로 후진만 한다.
-# 로봇은 yaw 180deg 로 서 있으니 후진 = 월드 +x. y 는 현재값을 그대로 유지한다.
-START_REVERSE_X = 6.641
 
 # FINAL 구간 주행 상수
 # 조향도 최종 회전도 하지 않는다. 바라보는 방향으로 직진만 한다.
@@ -116,16 +112,6 @@ class FinalDriver(Node):
         while time.time() < end:
             rclpy.spin_once(self, timeout_sec=0.001)
 
-    def wait_pose(self, timeout=15.0):
-        """TF 리스너를 막 만든 직후에는 버퍼가 비어 있다. 채워질 때까지 스핀하며 기다린다."""
-        t0 = time.time()
-        while time.time() - t0 < timeout:
-            rclpy.spin_once(self, timeout_sec=0.05)
-            p = self.pose()
-            if p is not None:
-                return p
-        return None
-
     def _turn_cmd(self, err):
         """부호 유지, 크기는 [TURN_MIN, TURN_MAX] 로 제한.
         너무 작은 값은 정지마찰을 못 이겨 제자리에서 굳는다."""
@@ -155,43 +141,6 @@ class FinalDriver(Node):
         self.get_logger().error("정렬 시간 초과")
         return False
 
-    def run_reverse_to_x(self, target_x):
-        """자세 그대로 후진만 한다. 정렬도 조향도 하지 않는다.
-
-        책상 옆 구간은 로봇 옆면과 책상 사이가 좁아 제자리 회전이 불가능하다.
-        그래서 방향을 바꾸지 않고 뒤로만 빠져나온다. y 는 출발 시점 값을 목표로 잡는다.
-        """
-        p = self.wait_pose()
-        if p is None:
-            self.get_logger().error("map->base_link TF 를 15초 동안 못 받았다. 후진 불가")
-            return False
-        gx, gy = float(target_x), p[1]
-        self.get_logger().info(
-            f"후진 시작 ({p[0]:.3f}, {p[1]:.3f}) yaw {math.degrees(p[2]):+.1f} deg -> x={gx:.3f} (y {gy:.3f} 유지)")
-
-        dt = 1.0 / CMD_HZ
-        t0 = time.time()
-        while time.time() - t0 < TIMEOUT_S:
-            rclpy.spin_once(self, timeout_sec=0.0)
-            p = self.pose()
-            if p is None:
-                self.send(0.0, 0.0); self.spin_for(dt); continue
-            x, y, yaw = p
-            # 진행방향(정면) 기준 남은 거리. 목표가 뒤에 있으므로 음수가 나온다
-            remain_rev = -((gx - x) * math.cos(yaw) + (gy - y) * math.sin(yaw))
-            if remain_rev <= STOP_TOL_M:
-                self.send(0.0, 0.0)
-                self.spin_for(0.3)
-                self.get_logger().info(
-                    f"후진 완료 ({x:.3f}, {y:.3f})  y 변화 {y-gy:+.3f} m  (남은 후진거리 {remain_rev*100:+.1f} cm)")
-                return True
-            self.send(-(APPROACH_MPS if remain_rev < SLOW_AT_M else CRUISE_MPS), 0.0)
-            self.spin_for(dt)
-
-        self.send(0.0, 0.0); self.spin_for(0.3)
-        self.get_logger().error("후진 시간 초과")
-        return False
-
     def run(self, gx, gy, _gyaw_deg=None):
         """목표 방향으로 제자리 회전한 뒤, 조향 없이 직진만 한다.
 
@@ -199,10 +148,7 @@ class FinalDriver(Node):
         직진 거리를 고정해두면 Nav2 가 마지막 웨이포인트에서 몇 cm 못 미치거나
         지나쳤을 때 오차가 그대로 남는데, 투영값은 실제 위치 기준이라 흡수된다.
         """
-        p = self.wait_pose()
-        if p is None:
-            self.get_logger().error("map->base_link TF 를 15초 동안 못 받았다. 직진 불가")
-            return False
+        p = self.pose()
         if p is not None:
             err = wrap_pi(math.atan2(gy - p[1], gx - p[0]) - p[2])
             self.get_logger().info(
@@ -262,15 +208,6 @@ def main():
 
     wait_for(PICK_DONE, "PICK 완료 신호")
 
-    drv = FinalDriver()
-
-    # ---- START 구간 (후진). 책상 옆을 자세 그대로 빠져나온다
-    print(f"[START] cmd_vel 후진 -> x={START_REVERSE_X} (y 유지)")
-    if not drv.run_reverse_to_x(START_REVERSE_X):
-        print("[중단] 후진 실패. nav_done 을 만들지 않는다")
-        drv.destroy_node(); nav.destroy_node(); rclpy.shutdown()
-        return
-
     # ---- NAV 구간
     print(f"[NAV] Nav2 웨이포인트 {len(NAV_WAYPOINTS)}개 시작")
     nav.followWaypoints([make_pose(nav, *w) for w in NAV_WAYPOINTS])
@@ -288,6 +225,7 @@ def main():
 
     # ---- FINAL 구간
     print(f"[FINAL] cmd_vel 직접 주행 -> {FINAL_GOAL}")
+    drv = FinalDriver()
     ok = drv.run(*FINAL_GOAL)
     p = drv.pose()
     if p:
