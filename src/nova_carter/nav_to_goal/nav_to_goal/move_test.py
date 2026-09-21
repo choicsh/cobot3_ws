@@ -1,6 +1,8 @@
 import math
+import os
 import time
 import rclpy
+from ament_index_python.packages import get_package_share_directory
 from rclpy.parameter import Parameter
 from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSDurabilityPolicy
 from rclpy.time import Time
@@ -183,64 +185,80 @@ def main():
     # launch 의 ground_truth_localization 이 map->odom 을 잡으므로, 씬에서 카트를 옮겨도 손댈 곳이 없다.
     tf_buffer = wait_until_nav2_active(nav)
 
-    # 2. 경로를 직접 그려서 controller_server 의 FollowPath 로 보낸다.
-    #    planner(NavFn)와 경유점 통과 판정(RemovePassedGoals)을 아예 쓰지 않으므로
-    #    "경유점을 지나쳐서 되돌아가는" 일이 구조적으로 없고, 코너는 우리가 정한 반경의 호 그대로 돈다.
-    #    정지/자세 판정(goal checker)은 경로 끝 = 도킹 지점 한 곳에만 적용된다.
+    # 2. 주행은 세 단계다 (실제 AMR 의 undock -> navigate -> dock 과 같은 구조):
+    #   [A] 책상 옆 탈출  : FollowPath 고정 직선. 꼬리(1.38 m)가 책상을 벗어날 때까지는 조향 없이 직진해야 해서
+    #                       planner 에 맡기지 않는다.
+    #   [B] 자율주행      : NavigateToPose 로 도킹 라인 앞 staging 지점까지. planner(Smac Hybrid-A*, 회전 반경 0.6)
+    #                       가 1 Hz 로 재계획하므로 사람이 막으면 우회하고, 차선 마스크 덕에 평소엔 ㄷ자 동선 가운데로 간다.
+    #   [C] 도킹          : FollowPath 고정 직선 4.3 m. 도착 시 회전이 없어야 12 cm 옆 간격에서 책상을 안 친다.
     #
     # 씬 기준값 (intergration_nova.usd / intergration_nova.png):
     #   시작 base_link = (1.233, 3.363, 180deg), 아래 책상 x[-0.02, 2.92] y >= 3.986 -> 옆면~책상 12cm
     #   위 책상은 아래 책상보다 정확히 +15.8m -> 시작과 같은 간격/방향의 도킹 pose = (1.233, 19.163, 180deg)
     #   아래 방 x[-3.9, 4.0] y[-2.8, 5.2] / 복도 x[4.0, 10.0] (중앙 7.0) / 위 방 y[12.1, 21.1]
-    #
-    # footprint 앞 0.48 / 뒤 1.38 / 폭 1.0. 좌회전 때 꼬리 바깥 모서리가 회전 중심에서
-    # sqrt((R+0.5)^2 + 1.38^2) 만큼 바깥으로 쓸려 나간다 (R=0.6 -> 1.76 m, R=1.5 -> 2.43 m).
-    #
-    # 서쪽 포켓(책상 끝 -0.02 ~ 벽 -3.875, 3.85 m)은 이 로봇이 큰 호로 U턴하기엔 좁다:
-    #   - 꼬리가 책상 끝을 지난 뒤(x <= -1.6)에야 좌회전을 시작할 수 있고
-    #   - 남향 구간에서 다시 좌회전할 때 꼬리가 서쪽 벽 쪽으로 약 1.3 m 쓸려 나간다.
-    #   => U턴은 R=0.6 (전진하며 도는 타이트한 U턴), 나머지 코너는 여유 있게 R=1.5.
-    route = [
-        ('line', (1.233, 3.363), (-1.6, 3.363)),          # 책상 옆 서쪽 직진. 끝날 때 꼬리 x=-0.22 (책상 밖)
-        ('arc',  (-1.6, 2.763), 0.6, 90.0, 180.0),        # 좌회전 -> 남향 (꼬리 모서리 최대 y=4.5, 벽까지 0.9)
-        ('line', (-2.2, 2.763), (-2.2, 1.2)),             # 남쪽으로
-        ('arc',  (-1.6, 1.2), 0.6, 180.0, 270.0),         # 좌회전 -> 동향 (꼬리 모서리 벽까지 0.35)
-        ('line', (-1.6, 0.6), (5.5, 0.6)),                # 아래 방 가운데로 동진 (남쪽 벽/책상 각 3.4 m)
-        ('arc',  (5.5, 2.1), 1.5, 270.0, 360.0),          # 좌회전 -> 북향, 복도 가운데 x=7.0 진입
-        ('line', (7.0, 2.1), (7.0, 17.663)),              # 복도 북진
-        ('arc',  (5.5, 17.663), 1.5, 0.0, 90.0),          # 좌회전 -> 서향, 도킹 라인 y=19.163 에 정렬
-        ('line', (5.5, 19.163), (1.233, 19.163)),         # 4.3 m 직진 진입 -> 도킹 (책상 구간 전 2.1 m 정렬)
+    # footprint 앞 0.48 / 뒤 1.38 / 폭 1.0.
+    # 서쪽 포켓(책상 끝 -0.02 ~ 벽 -3.875)은 꼬리 1.38 m 때문에 U턴 여유가 거의 없어 planner 에 맡기지 않고
+    # 계산으로 검증한 R=0.6 고정 호로 돈다 (footprint 모서리 기준 벽 0.51 m, 책상 0.12 m 이상 유지).
+    undock_route = [
+        ('line', (1.233, 3.363), (-1.6, 3.363)),   # 서쪽 직진. 끝날 때 꼬리 x=-0.22 (책상 끝 -0.02 밖)
+        ('arc',  (-1.6, 2.763), 0.6, 90.0, 180.0), # 좌회전 -> 남향
+        ('line', (-2.2, 2.763), (-2.2, 1.2)),
+        ('arc',  (-1.6, 1.2), 0.6, 180.0, 270.0),  # 좌회전 -> 동향, 아래 방 가운데(y=0.6) 에서 자율주행 시작
     ]
-    dock_yaw_deg = 180.0   # 시작과 같은 방향
+    staging_pose = (5.5, 19.163, 180.0)            # 도킹 라인 위, 책상 구간(x<=3.4) 에서 2.1 m 앞
+    dock_route = [
+        ('line', (5.5, 19.163), (1.233, 19.163)),  # 직진 진입 -> 시작과 같은 책상 간격/방향
+    ]
+    dock_yaw_deg = 180.0
 
-    path = build_path(nav, route, dock_yaw_deg)
-    print(f"경로 {len(path.poses)} 포즈 ({path_length(route):.1f} m) 를 FollowPath 로 보냅니다. "
-          f"도킹: ({path.poses[-1].pose.position.x:.3f}, {path.poses[-1].pose.position.y:.3f}, {dock_yaw_deg:.0f}deg)")
+    bt_xml = os.path.join(get_package_share_directory('carter_navigation'),
+                          'behavior_trees', 'navigate_to_pose_carter.xml')   # Spin/BackUp 복구 제거판
 
-    # RViz 의 Global Planner > Path 디스플레이(/plan)에 그린 경로를 띄운다. planner 를 안 쓰므로 직접 발행.
+    # RViz 의 Global Planner > Path 디스플레이(/plan). 고정 구간은 우리가, 자율 구간은 planner 가 발행한다.
     plan_pub = nav.create_publisher(Path, 'plan', QoSProfile(
         depth=1, reliability=QoSReliabilityPolicy.RELIABLE, durability=QoSDurabilityPolicy.TRANSIENT_LOCAL))
-    plan_pub.publish(path)
 
-    nav.followPath(path)
+    def run_follow_path(name, route, final_yaw_deg):
+        path = build_path(nav, route, final_yaw_deg)
+        print(f"[{name}] FollowPath {path_length(route):.1f} m -> "
+              f"({path.poses[-1].pose.position.x:.3f}, {path.poses[-1].pose.position.y:.3f}, {final_yaw_deg:.0f}deg)")
+        plan_pub.publish(path)
+        nav.followPath(path)
+        passed_index = 0
+        while not nav.isTaskComplete():
+            rest, passed_index = remaining_path(path, tf_buffer, passed_index)
+            if rest is not None:
+                plan_pub.publish(rest)
+            time.sleep(0.5)
+        return nav.getResult()
 
-    last_print = 0.0
-    passed_index = 0
-    while not nav.isTaskComplete():
-        feedback = nav.getFeedback()
-        now = time.time()
-        if feedback and now - last_print > 3.0:
-            last_print = now
-            print(f"-> 남은 거리 {feedback.distance_to_goal:.1f} m, 속도 {feedback.speed:.2f} m/s")
+    def run_navigate(name, pose):
+        print(f"[{name}] NavigateToPose -> {pose}")
+        nav.goToPose(create_pose(nav, *pose), behavior_tree=bt_xml)
+        last_print = 0.0
+        while not nav.isTaskComplete():
+            feedback = nav.getFeedback()
+            now = time.time()
+            if feedback and now - last_print > 3.0:
+                last_print = now
+                print(f"-> 남은 거리 {feedback.distance_remaining:.1f} m, 복구 {feedback.number_of_recoveries}회")
+            time.sleep(0.5)
+        return nav.getResult()
 
-        # 지나간 구간은 RViz 표시에서 지운다 (planner 가 매초 다시 그리던 것과 같은 느낌)
-        rest, passed_index = remaining_path(path, tf_buffer, passed_index)
-        if rest is not None:
-            plan_pub.publish(rest)
-        time.sleep(0.5)
+    stages = [
+        ('A 탈출',  lambda: run_follow_path('A 탈출', undock_route, 0.0)),
+        ('B 자율주행', lambda: run_navigate('B 자율주행', staging_pose)),
+        ('C 도킹',  lambda: run_follow_path('C 도킹', dock_route, dock_yaw_deg)),
+    ]
+    result = TaskResult.UNKNOWN
+    for name, run in stages:
+        result = run()
+        if result != TaskResult.SUCCEEDED:
+            print(f"[{name}] 실패: {result.name}")
+            break
+        print(f"[{name}] 완료")
 
     # 4. 결과 처리
-    result = nav.getResult()
     if result == TaskResult.SUCCEEDED:
         print('\n🎉 도킹 지점 도착 완료!')
     elif result == TaskResult.CANCELED:

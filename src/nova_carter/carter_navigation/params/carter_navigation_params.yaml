@@ -338,6 +338,15 @@ global_costmap:
       # origin_x: -100.0
       # origin_y: -100.0
       plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
+      # 차선 선호 마스크 (maps/lane_mask.png, make_lane_mask.py 로 생성). 차선 밖은 비용 40% 라
+      # planner 가 평소엔 ㄷ자 동선 가운데로 가고, 사람이 막으면 비용을 감수하고 벗어나 우회한다.
+      # 로컬 코스트맵에는 넣지 않는다 (컨트롤러가 차선 밖 회피를 꺼리게 되면 안 되므로).
+      filters: ["keepout_filter"]
+      keepout_filter:
+        plugin: "nav2_costmap_2d::KeepoutFilter"
+        enabled: True
+        filter_info_topic: "/costmap_filter_info"
+        transform_tolerance: 0.1
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
         enabled: True
@@ -358,7 +367,9 @@ global_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 3.0   # 0.15 는 감쇠가 거의 없어 맵 전체가 고비용이었다
-        inflation_radius: 0.6
+        # Smac Hybrid 가 footprint(꼬리 포함) 로 충돌 검사를 하려면 로봇 외접 반경(1.48 m) 이상이어야 한다.
+        # 0.6 이면 검사가 무력화되어 책상 옆을 스치거나 모서리에 걸리는 경로가 나온다. 로컬 코스트맵(DWB)은 0.6 유지.
+        inflation_radius: 1.6
       always_send_full_costmap: True
   global_costmap_client:
     ros__parameters:
@@ -419,12 +430,37 @@ planner_server:
     expected_planner_frequency: 10.0
     planner_plugins: ["GridBased"]
     GridBased:
-      # 차동구동이라 제자리 회전이 가능한데, Smac Hybrid 는 곡률 제약(최소 회전반경) 때문에
-      # 항상 큰 호로 돌고 가까운 목표에서 고리를 그리다 실패했다 -> 격자 A* 인 NavFn 으로 복귀.
-      plugin: "nav2_navfn_planner::NavfnPlanner"
+      # Smac Hybrid-A*: 최소 회전 반경 제약으로 직선+호 경로를 만든다 (자동차처럼 도는 움직임).
+      # 이전에 "가까운 목표에서 고리를 그리다 실패"했던 건 followWaypoints 로 가까운 목표를 여러 개 준
+      # 구성에서였다. 지금은 먼 staging 지점 하나만 목표로 주고, 도킹/탈출 직진은 FollowPath 가 맡는다.
+      plugin: "nav2_smac_planner::SmacPlannerHybrid"
       tolerance: 0.25
-      use_astar: false
+      downsample_costmap: true       # 1001x1001@0.05 는 Hybrid-A* 에 무거워서 0.1 m 로 탐색
+      downsampling_factor: 2
       allow_unknown: true
+      max_iterations: 1000000
+      max_on_approach_iterations: 1000
+      max_planning_time: 5.0
+      motion_model_for_search: "DUBIN"   # 전진만 (min_vel_x 0). REEDS_SHEPP 는 후진 호를 만든다
+      angle_quantization_bins: 72
+      analytic_expansion_ratio: 3.5
+      analytic_expansion_max_length: 3.0
+      minimum_turning_radius: 0.6   # 서쪽 포켓 U턴이 가능한 최소값 (move_test.py 의 고정 경로와 동일)
+      reverse_penalty: 2.0
+      change_penalty: 0.0
+      non_straight_penalty: 1.2
+      cost_penalty: 2.0             # 차선 마스크/인플레이션 비용을 피해 차선 가운데로
+      retrospective_penalty: 0.015
+      lookup_table_size: 20.0
+      cache_obstacle_heuristic: false
+      smooth_path: true
+      smoother:
+        max_iterations: 1000
+        w_smooth: 0.3
+        w_data: 0.2
+        tolerance: 1.0e-10
+        do_refinement: true
+        refinement_num: 2
 
 planner_server_rclcpp_node:
   ros__parameters:
