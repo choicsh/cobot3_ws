@@ -1,3 +1,11 @@
+# ROS2 빌드 산출물
 build/
 install/
 log/
+
+# 파이썬 바이트코드
+__pycache__/
+*.pyc
+
+# 로컬 참고 문서
+local_guide_md/

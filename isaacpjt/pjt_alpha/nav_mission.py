@@ -1,0 +1,308 @@
+#!/usr/bin/env python3
+"""통합 미션의 주행 담당 (프로세스 B).
+
+pickup_place_go_nova.py(프로세스 A)가 Isaac Python 3.11 에서 도는데
+Jazzy rclpy 는 3.12 전용이라 한 프로세스에 못 들어간다. 그래서 주행만 떼어냈다.
+A 와는 /tmp/cobot3_mission 의 파일 두 개로만 주고받는다.
+
+  pick_done  A가 생성  : 트레이를 랙에 실었다. 주행 시작해도 된다
+  nav_done   B가 생성  : 마지막 지점 도착. 내려놓기 시작해도 된다
+
+주행은 두 구간으로 나뉜다.
+  NAV   웨이포인트 0~4 : Nav2 followWaypoints (경로생성 + 회피)
+  FINAL 마지막 1개     : /cmd_vel 직접 발행 (회피/경로생성 없음)
+
+FINAL 구간에서 200Hz 로 쏘는 이유: Nav2 가 떠 있는 동안 collision_monitor 가
+/cmd_vel 에 0 을 20Hz 로 계속 발행한다. 200Hz 면 0 의 비중이 약 9% 로 희석된다.
+"""
+
+import math
+import os
+import time
+from pathlib import Path
+
+import rclpy
+from geometry_msgs.msg import PoseStamped, Twist
+from nav2_simple_commander.robot_navigator import BasicNavigator, TaskResult
+from rclpy.node import Node
+from tf2_ros import Buffer, TransformListener
+
+# ---------------------------------------------------------------- 설정
+HANDSHAKE_DIR = Path("/tmp/cobot3_mission")
+PICK_DONE = HANDSHAKE_DIR / "pick_done"
+NAV_DONE = HANDSHAKE_DIR / "nav_done"
+
+INIT_POSE = (1.2303, 3.36282, 180.0)          # amcl initial_pose 와 같은 값
+
+NAV_WAYPOINTS = [                              # Nav2 담당
+    # (-1.937,  3.416, 180.0),
+    # (-1.958, -0.352, 270.0),
+    # ( 6.641,  0.138,  90.0),
+    # ( 7.398, 17.238, 150.0),
+    ( 5.826, 19.343, 180.0),
+]
+FINAL_GOAL = (1.618, 19.343, 180.0)            # cmd_vel 담당
+
+# PICK 직후 구간. 책상 옆이라 회전하면 부딪히므로 자세 그대로 후진만 한다.
+# 로봇은 yaw 180deg 로 서 있으니 후진 = 월드 +x. y 는 현재값을 그대로 유지한다.
+START_REVERSE_X = 6.641
+
+# FINAL 구간 주행 상수
+# 조향도 최종 회전도 하지 않는다. 바라보는 방향으로 직진만 한다.
+# Nav2 가 마지막 웨이포인트를 (5.826, 19.193, 180deg) 로 맞춰 놓으므로
+# 그 자세 그대로 전진하면 FINAL_GOAL 에 닿는다.
+CMD_HZ = 200.0
+CRUISE_MPS = 0.35        # 랙 위 트레이가 미끄러지지 않을 속도
+APPROACH_MPS = 0.10      # 남은 거리가 SLOW_AT_M 이하일 때
+SLOW_AT_M = 0.60
+STOP_TOL_M = 0.03        # 남은 전진거리가 이 값 이하면 정지
+TIMEOUT_S = 90.0
+
+# 직진 전 제자리 회전.
+# Nav2 가 마지막 웨이포인트를 180도로 맞춰준다는 보장이 없다. 그 웨이포인트가 실패했거나
+# 도중에 abort 되면 엉뚱한 방향을 본 채로 넘어오는데, 그대로 직진하면 벽에 박는다.
+ALIGN_TOL_RAD = math.radians(2.0)
+TURN_MAX_RPS = 0.30
+TURN_MIN_RPS = 0.12      # 실측 정지마찰 문턱(약 0.05~0.10 rad/s) 위로 유지
+TURN_GAIN = 1.0
+ALIGN_TIMEOUT_S = 40.0
+
+
+def yaw_of(q):
+    return math.atan2(2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+
+
+def wrap_pi(a):
+    return (a + math.pi) % (2.0 * math.pi) - math.pi
+
+
+def make_pose(nav, x, y, yaw_deg):
+    p = PoseStamped()
+    p.header.frame_id = "map"
+    p.header.stamp = nav.get_clock().now().to_msg()
+    p.pose.position.x = float(x)
+    p.pose.position.y = float(y)
+    r = math.radians(yaw_deg) / 2.0
+    p.pose.orientation.z = math.sin(r)
+    p.pose.orientation.w = math.cos(r)
+    return p
+
+
+class FinalDriver(Node):
+    """마지막 구간만 담당한다. 경로생성도 회피도 하지 않고 직선으로 밀어넣는다."""
+
+    def __init__(self):
+        super().__init__("final_driver")
+        self.pub = self.create_publisher(Twist, "/cmd_vel", 10)
+        self.buf = Buffer()
+        TransformListener(self.buf, self)
+
+    def pose(self):
+        try:
+            tf = self.buf.lookup_transform("map", "base_link", rclpy.time.Time())
+        except Exception:
+            return None
+        t = tf.transform.translation
+        return t.x, t.y, yaw_of(tf.transform.rotation)
+
+    def send(self, v, w):
+        m = Twist()
+        m.linear.x = float(v)
+        m.angular.z = float(w)
+        self.pub.publish(m)
+
+    def spin_for(self, sec):
+        end = time.time() + sec
+        while time.time() < end:
+            rclpy.spin_once(self, timeout_sec=0.001)
+
+    def wait_pose(self, timeout=15.0):
+        """TF 리스너를 막 만든 직후에는 버퍼가 비어 있다. 채워질 때까지 스핀하며 기다린다."""
+        t0 = time.time()
+        while time.time() - t0 < timeout:
+            rclpy.spin_once(self, timeout_sec=0.05)
+            p = self.pose()
+            if p is not None:
+                return p
+        return None
+
+    def _turn_cmd(self, err):
+        """부호 유지, 크기는 [TURN_MIN, TURN_MAX] 로 제한.
+        너무 작은 값은 정지마찰을 못 이겨 제자리에서 굳는다."""
+        mag = min(TURN_MAX_RPS, max(TURN_MIN_RPS, abs(TURN_GAIN * err)))
+        return math.copysign(mag, err)
+
+    def align_to(self, gx, gy):
+        """목표를 정면에 두도록 제자리 회전한다. 진행 자체는 하지 않는다."""
+        dt = 1.0 / CMD_HZ
+        t0 = time.time()
+        while time.time() - t0 < ALIGN_TIMEOUT_S:
+            rclpy.spin_once(self, timeout_sec=0.0)
+            p = self.pose()
+            if p is None:
+                self.send(0.0, 0.0); self.spin_for(dt); continue
+            x, y, yaw = p
+            err = wrap_pi(math.atan2(gy - y, gx - x) - yaw)
+            if abs(err) <= ALIGN_TOL_RAD:
+                self.send(0.0, 0.0)
+                self.spin_for(0.3)
+                self.get_logger().info(
+                    f"정렬 완료 yaw {math.degrees(yaw):+.1f} deg (오차 {math.degrees(err):+.2f} deg)")
+                return True
+            self.send(0.0, self._turn_cmd(err))
+            self.spin_for(dt)
+        self.send(0.0, 0.0); self.spin_for(0.3)
+        self.get_logger().error("정렬 시간 초과")
+        return False
+
+    def run_reverse_to_x(self, target_x):
+        """자세 그대로 후진만 한다. 정렬도 조향도 하지 않는다.
+
+        책상 옆 구간은 로봇 옆면과 책상 사이가 좁아 제자리 회전이 불가능하다.
+        그래서 방향을 바꾸지 않고 뒤로만 빠져나온다. y 는 출발 시점 값을 목표로 잡는다.
+        """
+        p = self.wait_pose()
+        if p is None:
+            self.get_logger().error("map->base_link TF 를 15초 동안 못 받았다. 후진 불가")
+            return False
+        gx, gy = float(target_x), p[1]
+        self.get_logger().info(
+            f"후진 시작 ({p[0]:.3f}, {p[1]:.3f}) yaw {math.degrees(p[2]):+.1f} deg -> x={gx:.3f} (y {gy:.3f} 유지)")
+
+        dt = 1.0 / CMD_HZ
+        t0 = time.time()
+        while time.time() - t0 < TIMEOUT_S:
+            rclpy.spin_once(self, timeout_sec=0.0)
+            p = self.pose()
+            if p is None:
+                self.send(0.0, 0.0); self.spin_for(dt); continue
+            x, y, yaw = p
+            # 진행방향(정면) 기준 남은 거리. 목표가 뒤에 있으므로 음수가 나온다
+            remain_rev = -((gx - x) * math.cos(yaw) + (gy - y) * math.sin(yaw))
+            if remain_rev <= STOP_TOL_M:
+                self.send(0.0, 0.0)
+                self.spin_for(0.3)
+                self.get_logger().info(
+                    f"후진 완료 ({x:.3f}, {y:.3f})  y 변화 {y-gy:+.3f} m  (남은 후진거리 {remain_rev*100:+.1f} cm)")
+                return True
+            self.send(-(APPROACH_MPS if remain_rev < SLOW_AT_M else CRUISE_MPS), 0.0)
+            self.spin_for(dt)
+
+        self.send(0.0, 0.0); self.spin_for(0.3)
+        self.get_logger().error("후진 시간 초과")
+        return False
+
+    def run(self, gx, gy, _gyaw_deg=None):
+        """목표 방향으로 제자리 회전한 뒤, 조향 없이 직진만 한다.
+
+        정지 조건은 '목표까지 남은 거리를 진행방향에 투영한 값'이다.
+        직진 거리를 고정해두면 Nav2 가 마지막 웨이포인트에서 몇 cm 못 미치거나
+        지나쳤을 때 오차가 그대로 남는데, 투영값은 실제 위치 기준이라 흡수된다.
+        """
+        p = self.wait_pose()
+        if p is None:
+            self.get_logger().error("map->base_link TF 를 15초 동안 못 받았다. 직진 불가")
+            return False
+        if p is not None:
+            err = wrap_pi(math.atan2(gy - p[1], gx - p[0]) - p[2])
+            self.get_logger().info(
+                f"진입 자세 ({p[0]:.3f}, {p[1]:.3f}) yaw {math.degrees(p[2]):+.1f} deg, "
+                f"목표 방향과 {math.degrees(err):+.1f} deg 차이")
+        if not self.align_to(gx, gy):
+            return False
+
+        dt = 1.0 / CMD_HZ
+        t0 = time.time()
+        start = None
+        while time.time() - t0 < TIMEOUT_S:
+            rclpy.spin_once(self, timeout_sec=0.0)
+            p = self.pose()
+            if p is None:
+                self.send(0.0, 0.0); self.spin_for(dt); continue
+            x, y, yaw = p
+            if start is None:
+                start = (x, y)
+                self.get_logger().info(f"직진 시작 ({x:.3f}, {y:.3f})")
+
+            remain = (gx - x) * math.cos(yaw) + (gy - y) * math.sin(yaw)
+            if remain <= STOP_TOL_M:
+                self.send(0.0, 0.0)
+                self.spin_for(0.3)
+                self.get_logger().info(
+                    f"직진 완료 {math.hypot(x-start[0], y-start[1]):.3f} m "
+                    f"(남은 전진거리 {remain*100:+.1f} cm)")
+                return True
+
+            self.send(APPROACH_MPS if remain < SLOW_AT_M else CRUISE_MPS, 0.0)
+            self.spin_for(dt)
+
+        self.send(0.0, 0.0); self.spin_for(0.3)
+        self.get_logger().error("FINAL 구간 시간 초과")
+        return False
+
+
+def wait_for(path, label):
+    print(f"[대기] {label}  ({path})")
+    while not path.exists():
+        time.sleep(0.2)
+    print(f"[확인] {label}")
+
+
+def main():
+    HANDSHAKE_DIR.mkdir(parents=True, exist_ok=True)
+    for f in (PICK_DONE, NAV_DONE):
+        if f.exists():
+            f.unlink()
+
+    rclpy.init()
+    nav = BasicNavigator()
+    nav.setInitialPose(make_pose(nav, *INIT_POSE))
+    nav.waitUntilNav2Active()
+    print("[준비] Nav2 active")
+
+    wait_for(PICK_DONE, "PICK 완료 신호")
+
+    drv = FinalDriver()
+
+    # ---- START 구간 (후진). 책상 옆을 자세 그대로 빠져나온다
+    print(f"[START] cmd_vel 후진 -> x={START_REVERSE_X} (y 유지)")
+    if not drv.run_reverse_to_x(START_REVERSE_X):
+        print("[중단] 후진 실패. nav_done 을 만들지 않는다")
+        drv.destroy_node(); nav.destroy_node(); rclpy.shutdown()
+        return
+
+    # ---- NAV 구간
+    print(f"[NAV] Nav2 웨이포인트 {len(NAV_WAYPOINTS)}개 시작")
+    nav.followWaypoints([make_pose(nav, *w) for w in NAV_WAYPOINTS])
+    last = -1
+    while not nav.isTaskComplete():
+        fb = nav.getFeedback()
+        if fb and fb.current_waypoint != last:
+            last = fb.current_waypoint
+            print(f"[NAV] waypoint {last + 1}/{len(NAV_WAYPOINTS)}")
+        time.sleep(0.3)
+    if nav.getResult() != TaskResult.SUCCEEDED:
+        print(f"[NAV] 결과: {nav.getResult()} — 일부 웨이포인트 실패. FINAL 구간은 계속 진행한다")
+    else:
+        print("[NAV] 완료")
+
+    # ---- FINAL 구간
+    print(f"[FINAL] cmd_vel 직접 주행 -> {FINAL_GOAL}")
+    ok = drv.run(*FINAL_GOAL)
+    p = drv.pose()
+    if p:
+        print(f"[FINAL] 최종 위치 ({p[0]:.3f}, {p[1]:.3f}) yaw {math.degrees(p[2]):+.1f} deg")
+
+    if ok:
+        NAV_DONE.write_text("ok\n")
+        print(f"[신호] {NAV_DONE} 생성. PLACE 를 시작해도 된다")
+    else:
+        print("[중단] 도달 실패. nav_done 을 만들지 않는다")
+
+    drv.destroy_node()
+    nav.destroy_node()
+    rclpy.shutdown()
+
+
+if __name__ == "__main__":
+    main()
