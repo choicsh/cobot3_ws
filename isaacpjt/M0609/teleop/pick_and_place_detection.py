@@ -27,6 +27,19 @@ Play 를 누르면 아래 순서를 자동으로 수행한다.
 
 검출은 관제 PC 의 admin_ws/src/tray_detector 가 맡는다. ultralytics 는 python3.12,
 Isaac Sim 은 자체 python3.11 이라 한 프로세스에 합칠 수 없다.
+
+주행(Nav2)까지 묶은 전체 시나리오 — 프로세스 3개다 (rclpy 를 번들 파이썬에서 못 쓴다).
+
+    1) 관제 PC 검출 노드     detect_node.py            (~/yolo-venv)
+    2) 이 파일               ~/isaacsim/python.sh      씬 + 사람 + 팔 + 후방 라이다
+    3) Nav2 스택 + 주행 미션 ros2 launch carter_navigation nav2_human_test.launch.py
+                             ros2 run nav_to_goal through_pose_human_test
+
+    적재(트레이 3개) -> 랙 ArUco 관측 -> 팔 홈 복귀 -> /mission_state 1 발행
+      -> (주행 프로세스가 undock -> goThroughPoses -> dock) -> /nav_done 1 수신 -> 하역
+
+이 파일이 run_human_scene.py 의 일(사람 확장/navmesh/후방 라이다)까지 겸한다.
+주행만 단독으로 시험할 때는 그쪽을 그대로 쓰면 된다.
 """
 
 from isaacsim import SimulationApp
@@ -39,6 +52,7 @@ from isaacsim.core.utils.extensions import enable_extension
 enable_extension("isaacsim.ros2.bridge")
 
 from pathlib import Path
+import random
 import time
 
 import carb
@@ -47,11 +61,12 @@ import numpy as np
 import omni.appwindow
 import omni.usd
 import omni.graph.core as og
-from pxr import Gf, Usd, UsdGeom, UsdPhysics
+from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade, UsdSkel
 from isaacsim.core.utils.prims import set_targets
 
 from isaacsim.core.api import World
 from isaacsim.core.prims import SingleXFormPrim
+from isaacsim.core.utils.stage import is_stage_loading
 from isaacsim.core.utils.types import ArticulationAction
 from isaacsim.robot.manipulators.grippers import ParallelGripper
 from isaacsim.robot.manipulators.manipulators import SingleManipulator
@@ -82,6 +97,33 @@ EE_LINK_NAME    = "link_6"
 
 ARM_JOINTS = ["joint_1", "joint_2", "joint_3", "joint_4", "joint_5", "joint_6"]
 
+# ── 주행(Nav2)용 씬 설정 — isaacpjt/pjt_alpha/run_human_scene.py 에서 가져왔다.
+# 이 파일 하나로 적재/주행/하역을 다 돌리므로 run_human_scene.py 를 따로 띄우지 않는다
+# (그쪽은 주행만 단독 시험할 때 계속 쓴다). 값이 바뀌면 두 파일 다 고칠 것.
+PEOPLE_EXTENSIONS = [
+    "omni.anim.people",
+    "omni.anim.navigation.bundle",
+    "omni.anim.timeline",
+    "omni.anim.graph.bundle",
+    "omni.anim.graph.core",
+    "omni.anim.graph.ui",
+    "omni.anim.retarget.bundle",
+    "omni.anim.retarget.core",
+    "omni.anim.retarget.ui",
+    "omni.kit.scripting",
+]
+PEOPLE_COMMAND_FILE = "/home/rokey/cobot3_ws/isaacpjt/assets/people/command.txt"
+# 캐릭터에 애니메이션 그래프 + behavior 스크립트를 붙일 위치. 씬 USD 에는 이게 안 들어 있다.
+CHARACTERS_ROOT     = "/World/Characters"
+BIPED_SETUP_PATH    = CHARACTERS_ROOT + "/Biped_Setup"
+
+# 후방 2D 라이다(SLAMTEC RPLIDAR S2E). Nav2 params 의 local/global costmap 이 둘 다
+# /scan_rear 를 본다 — 이게 없으면 뒤쪽 장애물이 costmap 에 안 찍힌다.
+REAR_RPLIDAR_PATH = ROBOT_PRIM_PATH + "/chassis_link/sensors/rear_RPLidar"
+REAR_TOPIC        = "scan_rear"
+REAR_FRAME        = "rear_rplidar"   # 발행 frameId 와 TF 프레임 이름이 같아야 한다
+TF_SENSORS_NODE   = "/World/nova_carter_ros/transform_tree_odometry/tf_sensors"
+
 # RSD455 는 Xform 이고 실제 렌더링되는 컬러 카메라는 그 아래 프림이다
 D455_CAMERA_NAME       = "RSD455"
 D455_COLOR_CAMERA_NAME = "Camera_OmniVision_OV9782_Color"
@@ -92,6 +134,13 @@ COLOR_TOPIC       = "wrist_camera/color/image_raw"
 DEPTH_TOPIC       = "wrist_camera/depth/image_raw"
 INFO_TOPIC        = "wrist_camera/color/camera_info"
 RESULT_TOPIC      = "tray_detection"
+MARKER_TOPIC      = "aruco_markers"
+# 주행 프로세스(nav_to_goal/through_pose_human_test.py)와의 손잡기.
+#   MISSION_TOPIC  Isaac -> 주행 :  1 = 적재+관측 끝났다, 출발해도 된다
+#   NAV_DONE_TOPIC 주행 -> Isaac :  1 = 도킹까지 끝났다, 하역해도 된다
+# rclpy 를 못 쓰니(번들 파이썬 3.11) 검출과 같은 제네릭 ROS2 노드로 주고받는다.
+MISSION_TOPIC     = "mission_state"
+NAV_DONE_TOPIC    = "nav_done"
 IMAGE_RESOLUTION  = (640, 480)
 IMAGE_FRAME_SKIP  = 4   # 매 프레임 발행하면 네트워크/렌더 둘 다 버겁다
 
@@ -138,11 +187,11 @@ POINT3_RPY = (-89.3, 0.1, 180.0)
 # y 이력: 0.7690 -> 0.8190(+5cm) -> 0.7590(-6cm, 테두리 충돌) -> 0.7890(+3cm).
 # 놓기 위 안전 위치는 POINT4_TCP 에서 z 만 올려 만들므로 자동으로 같이 움직인다.
 # 후퇴점(POINT5)도 같은 양만큼 옮겨 수평 후퇴 15cm 를 유지한다.
-# z 이력: 0.2500 -> 0.2600(+1cm, 그리퍼 열 때 트레이 내부 형상과 충돌해서)
-POINT4_TCP = np.array([-0.0093, 0.7890, 0.2600])    # 놓는 위치 (랙 가운데 슬롯)
+# z 이력: 0.2500 -> 0.2600(+1cm, 그리퍼 열 때 트레이 내부 형상과 충돌해서) -> 0.2700(+1cm)
+POINT4_TCP = np.array([-0.0093, 0.7890, 0.2700])    # 놓는 위치 (랙 가운데 슬롯)
 POINT4_RPY = (-89.3, 0.1, 180.0)
 
-POINT5_TCP = np.array([-0.0093, 0.6390, 0.2600])    # 놓고 후퇴하는 안전 위치 (수평 15cm 후퇴, z 는 POINT4 와 같게)
+POINT5_TCP = np.array([-0.0093, 0.6390, 0.2700])    # 놓고 후퇴하는 안전 위치 (수평 15cm 후퇴, z 는 POINT4 와 같게)
 POINT5_RPY = (-89.3, 0.1, 180.0)
 
 POINT6_TCP = np.array([-0.0093, 0.7690, 0.25])   # 처음에 내려놓는 위치 (base +y 로 50mm 더 안쪽)
@@ -150,11 +199,12 @@ POINT6_RPY = (-89.3, 0.1, 180.0)
 
 # 랙 3칸 (base 기준). POINT4 가 가운데(2번)이고, 칸은 base x 축으로 늘어선다
 # (씬 실측: 칸막이가 x = -0.233 / -0.069 / +0.094 / +0.258, 간격 ~0.163).
-# y 는 접근(깊이) 축이라 건드리지 않는다. 1번 = x -0.165, 3번 = x +0.165
+# 1번 = x -0.165, 3번 = x +0.165. y 는 접근(깊이) 축이라 칸별 보정으로만 건드린다
 RACK_PITCH_M = 0.165
-# 칸별 x 보정. USD 칸막이로 계산한 기하 중심은 세 칸 모두 현재값보다 +x 로 ~2cm 인데,
-# 1/2번은 여유 안에서 동작해 두고 3번만 왼쪽(-x) 테두리에 닿아 +2cm 옮겼다
-RACK_SLOT_X_TRIM = (0.0, 0.0, 0.02)
+# 칸별 x 보정 (칸이 늘어선 방향). USD 칸막이로 계산한 기하 중심이 세 칸 모두 +x 로 ~2cm 라,
+# 3번(테두리에 닿았다)에 이어 1/2번도 같은 값으로 맞췄다. 세 칸이 같은 값이지만 칸마다
+# 따로 재서 넣는 자리이므로 튜플로 둔다
+RACK_SLOT_X_TRIM = (0.02, 0.02, 0.02)
 RACK_SLOTS   = [POINT4_TCP + np.array([i * RACK_PITCH_M + t, 0.0, 0.0])
                 for i, t in zip((-1, 0, 1), RACK_SLOT_X_TRIM)]
 RACK_RETREAT = POINT5_TCP - POINT4_TCP          # 놓은 뒤 수평 15cm 후퇴, 슬롯마다 같은 양
@@ -166,6 +216,27 @@ TRAY_PRIM_PATH   = "/World/tray"
 TRAY_COPIES      = 2
 TRAY_SPREAD_R_M  = 0.20
 TRAY_MIN_GAP_M   = 0.15     # 트레이끼리 이보다 가까우면 다시 뽑는다 (겹치면 물리로 튄다)
+
+# 긴급도 ArUco 마커 — 트레이마다 id 0/1/2(하/중/상)를 무작위로 골라 손잡이 윗판에 붙인다.
+# 적재/하역과 무관. 랙 적재가 끝난 뒤 랙을 대각선 위에서 관측해 칸별 긴급도만 출력한다.
+# 윗판 = handle/Cube_01: handle 기준 x ±0.025, y ±0.05, 윗면 z = 0.1449 + 0.0025 (실측, tray.usd)
+ARUCO_DIR        = str(M0609_DIR.parent / "assets/markers")   # make_markers.py 출력
+ARUCO_IDS        = (0, 1, 2)
+ARUCO_SIDE_M     = 0.049    # 흰 여백 포함 한 변. 검은 마커 = *6/7 = 0.042 (solvePnP markerLength)
+ARUCO_HANDLE_REL = "tray/test_tube_rack/handle"
+ARUCO_TOP_Z_M    = 0.1474 + 0.0005   # 윗판 윗면 + z-fighting 방지 여유
+URGENCY_NAMES    = {0: "하", 1: "중", 2: "상"}
+
+# 적재 완료 후 랙 관측 자세 (base 기준, 가운데 칸 RACK_SLOTS[1] 에서 파생). 실측 안 된 계산값 —
+# 랙에 닿거나 IK 가 안 풀리면 이 세 값만 조정할 것. 카메라는 TCP 보다 0.217 뒤(툴 z)에 있어
+# TCP (0, 0.49, 0.57) + 50도 숙임이면 카메라 ≈ (0, 0.36, 0.74), 윗판(z≈0.30)까지 앙각 ≈46도,
+# 거리 ≈0.62m → 4.9cm 마커 ≈ 49x35px (5px/셀). 스캔 자세(앙각 15도, 10px)로는 못 읽는다.
+OBSERVE_BACK_M    = 0.30    # 랙 열에서 로봇 쪽으로
+OBSERVE_UP_M      = 0.30    # 놓는 높이(POINT4 z)에서 위로. 0.35 -> 0.30 (실행 보니 너무 높았다)
+OBSERVE_PITCH_DEG = -50.0   # PITCH_DOWN_DEG 와 같은 부호 규약(음수 = 아래)
+# 마커가 5px/셀 근처라 프레임마다 0~2개로 깜빡인다. 한 장만 믿지 말고 첫 신선 프레임부터
+# 이만큼(시뮬 프레임, 60Hz 가정 ≈1.5초) 누적해서 칸별로 가장 많이 나온 id 를 쓴다
+OBSERVE_COLLECT_FRAMES = 90
 
 # 보간 속도 — 스텝당 이동량을 고정하고 구간 길이로 스텝 수를 정한다
 TCP_SPEED_M        = 0.004   # m / step
@@ -253,9 +324,31 @@ DESK_LATERAL    = np.array([-_c[1], _c[0], 0.0])
 DESK_SLOTS      = [DESK_ROW_CENTER + DESK_LATERAL * DESK_PITCH_M * k for k in (1, 0, -1)]   # [1번=왼쪽, 2번=가운데, 3번=오른쪽]
 UNLOAD_KEY      = "U"      # 적재 완료 후 뷰포트에서 이 키를 누르면 3번부터 하역
 
+# 회전 전 후퇴를 직교(IK) 대신 관절로 한다. 자세를 고정한 채 TCP 를 당기면
+# joint_5 가 0 을 지나 손목 특이점을 관통한다 (실측: IK 거부 161틱, 25cm 중 7cm 만 가고 중단).
+# 어깨(joint_2)/팔꿈치(joint_3)를 접고 joint_5 로 그만큼 되돌려 트레이 기울기를 유지한다.
+# 크기는 실측으로 맞출 값 — 실행 로그 'retreat' 줄의 수평 도달거리 감소량을 보고 조정할 것.
+# (부호는 코드가 FK 로 두 방향을 미리 재서 고른다. 반대로 접으면 랙 쪽으로 뻗는다)
+RETREAT_SHOULDER_DEG    = 10.0    # joint_2
+RETREAT_ELBOW_DEG       = 14.0    # joint_3
+
+# 스텝 도달 실패 복구. 흐름을 끊지 않는 게 목표다 — 실패한 스텝은 손목을 풀고 한 번 더,
+# 그래도 안 되면 그 단계만 포기하고 다음으로 넘어간다 (미션은 계속된다)
+MAX_STEP_RETRIES        = 1
+WRIST_UNLOCK_DEG        = 15.0    # joint_5 를 0 에서 띄우는 양. joint_3 로 같은 양을 되돌려 기울기는 유지
+MAX_STAGE_FAILS         = 2       # 적재에서 이만큼 실패하면 남은 칸을 포기하고 관측/주행으로 넘어간다
+
 # 손목 특이점(joint_5 부근) 대응. 자코비안이 퇴화하면 IK 가 한 프레임에 크게 튀는
 # 해로 넘어가 팔이 뒤틀린다 — 그런 해는 걸러서 그 프레임만 미해결 처리한다
 MAX_IK_JOINT_JUMP_DEG   = 20.0
+# pose 스텝 도달 확인. 틱 수만 세고 넘기면 IK 가 거부된 스텝(특이점/도달 불가)에서 팔이 제자리에
+# 있는데도 다음 스텝(예: joint_1 회전)이 시작된다 — "올린 뒤 후퇴 없이 회전" 증상. 오차가 크면
+# 목표를 계속 주며 STEP_EXTRA_TICKS 더 기다리고, 그래도 못 가면 시퀀스를 중단한다(계속 가면 충돌).
+STEP_POS_TOL_M          = 0.01
+STEP_ROT_TOL_DEG        = 5.0
+STEP_EXTRA_TICKS        = 120
+# 바닥에 닿는 스텝(랙/책상 수직 하강)은 트레이가 먼저 닿아 목표보다 위에서 멈추는 게 정상이라 느슨하게
+STEP_CONTACT_TOL_M      = 0.03
 WRIST_NEAR_SINGULAR_DEG = 8.0
 
 
@@ -359,6 +452,12 @@ def check_math():
         opposite = rack_yaw_delta_deg(p, -p)
         assert abs(abs(opposite) - 180.0) < 1e-6, f"반대 방향인데 180 도가 아니다: {p} -> {opposite:+.4f}"
 
+    # 랙 관측: (id, 칸) -> 칸별 id. 같은 칸 중복은 먼저 온 것, 범위 밖 칸은 무시 -> [2, -1, 1]
+    got = assign_slots([(2, 0), (1, 2), (0, 2), (2, 7)])
+    assert got == [2, -1, 1], got
+    # 프레임 누적: 1번 칸은 2 가 두 번/0 이 한 번 -> 2, 2번 칸은 한 번도 없음 -> -1, 3번 칸은 한 번만 -> 1
+    assert merge_urgencies([[2, -1, -1], [0, -1, 1], [2, -1, -1]]) == [2, -1, 1]
+
 
 def world_to_base_pos(world_pos, base_pos, base_quat):
     """world 좌표를 로봇 base 기준 위치로 바꾼다 (자세는 다루지 않는다).
@@ -432,6 +531,119 @@ def vec(v, digits=3):
     return "[" + " ".join(f"{x:+.{digits}f}" for x in v) + "]"
 
 
+def setup_people():
+    """omni.anim.people 캐릭터가 걸어다니게 한다 (run_human_scene.py 에서 가져옴).
+
+    확장도 carb 설정도 **씬 로드보다 먼저** 해야 한다. 캐릭터 behavior 스크립트는
+    초기화 시점에 명령 파일 경로를 한 번만 읽고, standalone 은 확장을 최소만 로드한다.
+    확장이 빠지면 'No module named omni.anim.graph.core' 로 사람이 제자리에 선다."""
+    for ext in PEOPLE_EXTENSIONS:
+        enable_extension(ext)
+        simulation_app.update()
+    st = carb.settings.get_settings()
+    st.set("/exts/omni.anim.people/command_settings/command_file_path", PEOPLE_COMMAND_FILE)
+    st.set("/exts/omni.anim.people/command_settings/number_of_loop", "inf")   # 기본 "0" 은 1회 재생
+    st.set("/exts/omni.anim.people/navigation_settings/navmesh_enabled", True)
+    st.set("/exts/omni.anim.people/navigation_settings/dynamic_avoidance_enabled", True)
+    simulation_app.update()
+    print(f"   people       확장 {len(PEOPLE_EXTENSIONS)}개 + {Path(PEOPLE_COMMAND_FILE).name}")
+
+
+def setup_characters():
+    """캐릭터마다 애니메이션 그래프와 behavior 스크립트를 붙인다. **씬 로드 뒤에** 호출한다.
+
+    이게 사람이 안 움직이던 진짜 이유다. 확장을 켜고 command_file_path 를 지정해도,
+    명령을 읽어 실행하는 주체는 캐릭터 SkelRoot 에 붙은 `character_behavior.py`
+    (omni.kit.scripting BehaviorScript) 다. GUI 의 People 확장에서 'Setup characters' 를
+    눌러야 USD 에 저장되는데 integration_human.usd 에는 없다 — 실측으로 확인:
+    /World/Characters/Character{,_01} 에 omni:scripting:scripts 도, AnimationGraphAPI 도 없다.
+
+    isaacsim.replicator.agent.core 의 stage_util.setup_animation_graph_to_character /
+    setup_python_scripts_to_character 와 같은 명령을 그대로 쓴다."""
+    import omni.kit.app
+    import omni.kit.commands
+
+    stage = omni.usd.get_context().get_stage()
+    root = stage.GetPrimAtPath(CHARACTERS_ROOT)
+    if not root.IsValid():
+        print(f"   people       {CHARACTERS_ROOT} 가 없다 — 사람 없는 씬")
+        return 0
+
+    # Biped_Setup 은 스켈레톤/애니메이션 원본이라 제외한다 (캐릭터가 아니다)
+    skelroots = [prim for prim in Usd.PrimRange(root)
+                 if prim.IsA(UsdSkel.Root) and not str(prim.GetPath()).startswith(BIPED_SETUP_PATH)]
+    if not skelroots:
+        print("   people       캐릭터 SkelRoot 를 못 찾았다 — 캐릭터 에셋이 아직 로드 안 됐다")
+        return 0
+
+    biped = stage.GetPrimAtPath(BIPED_SETUP_PATH)
+    graph = next((prim for prim in Usd.PrimRange(biped) if prim.GetTypeName() == "AnimationGraph"),
+                 None) if biped.IsValid() else None
+
+    paths = [prim.GetPath() for prim in skelroots]
+    if graph is None:
+        print(f"   people       {BIPED_SETUP_PATH} 아래 AnimationGraph 가 없다 — 걷는 모션이 안 붙는다")
+    else:
+        omni.kit.commands.execute("RemoveAnimationGraphAPICommand", paths=paths)
+        omni.kit.commands.execute("ApplyAnimationGraphAPICommand", paths=paths,
+                                  animation_graph_path=graph.GetPath())
+
+    script = (omni.kit.app.get_app().get_extension_manager()
+              .get_extension_path_by_module("omni.anim.people")
+              + "/omni/anim/people/scripts/character_behavior.py")
+    omni.kit.commands.execute("RemoveScriptingAPICommand", paths=paths)
+    omni.kit.commands.execute("ApplyScriptingAPICommand", paths=paths)
+    for prim in skelroots:
+        prim.GetAttribute("omni:scripting:scripts").Set([script])
+    simulation_app.update()
+
+    names = ", ".join(prim.GetName() for prim in skelroots)
+    print(f"   characters   {len(skelroots)}명 연결 ({names}) — 그래프 {'O' if graph else 'X'}, behavior 스크립트 O")
+    print(f"                명령은 {Path(PEOPLE_COMMAND_FILE).name} 의 이름과 캐릭터 프림 이름이 같아야 실행된다")
+    return len(skelroots)
+
+
+def bake_navmesh(timeout_s=30.0):
+    """NavMesh 를 굽는다. 베이크 결과는 USD 에 저장되지 않아 매 실행 다시 구워야 한다.
+    안 구우면 캐릭터의 GoTo 가 전부 'invalid command' 로 거부돼 사람이 안 움직인다."""
+    try:
+        import omni.anim.navigation.core as nav
+    except ImportError as exc:
+        print(f"   navmesh      건너뜀 ({exc})")
+        return False
+    inav = nav.acquire_interface()
+    inav.start_navmesh_baking()
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        simulation_app.update()
+        if not inav.is_navmesh_baking():
+            break
+    else:
+        print(f"   navmesh      베이크 시간 초과 ({timeout_s:.0f}s)")
+        return False
+    if inav.get_navmesh() is None:
+        print("   navmesh      실패 — NavMeshVolume 범위와 agentMinIslandRadius 를 확인할 것")
+        return False
+    print("   navmesh      베이크 완료")
+    return True
+
+
+def find_rtx_lidar(root_path):
+    """root_path 하위의 RTX 라이다 프림. 스톡 nova_carter.usd 가 온라인 에셋이라
+    하위 프림 이름을 확인할 수 없어서 이름 대신 타입으로 찾는다."""
+    stage = omni.usd.get_context().get_stage()
+    root = stage.GetPrimAtPath(root_path)
+    if not root.IsValid():
+        return None
+    for prim in Usd.PrimRange(root):
+        if prim.GetTypeName() == "OmniLidar":
+            return prim
+    for prim in Usd.PrimRange(root):
+        if any(a.GetName().startswith("omni:sensor:") for a in prim.GetAttributes()):
+            return prim
+    return None
+
+
 def load_scene():
     """PnP 씬을 /World 아래 참조로 올린다"""
     stage = omni.usd.get_context().get_stage()
@@ -441,6 +653,10 @@ def load_scene():
 
     world_prim.GetReferences().AddReference(SCENE_USD, "/World")
     for _ in range(30):
+        simulation_app.update()
+    # 캐릭터/로봇 에셋은 원격 참조라 30프레임으로는 안 끝날 수 있다. 다 올라와야 그 뒤의
+    # setup_characters() 가 SkelRoot 를 찾는다
+    while is_stage_loading():
         simulation_app.update()
 
     print(f"   scene        {Path(SCENE_USD).name}")
@@ -481,13 +697,51 @@ class KeyTap:
         self._input.unsubscribe_to_keyboard_events(self._keyboard, self._sub)
 
 
-def spawn_tray_copies():
-    """원본 트레이를 TRAY_COPIES 개 복제해 무작위로 흩뿌린다. world.reset() 전에 부른다.
+def attach_aruco(tray_path, marker_id):
+    """트레이 손잡이 윗판 위에 ArUco 텍스처 사각형(시각 전용, 콜리전 없음)을 붙인다.
 
-    duplicate_prim 은 참조까지 합쳐 복사하므로 rigid body / 콜리전이 그대로 따라온다."""
+    handle Xform 의 자식이라 트레이가 움직이면 같이 따라간다. 위에서 볼 때 반시계 순서로
+    점을 두고 st 를 같은 순서로 주면 이미지가 거울상 없이 보인다(거울상이면 id 가 안 읽힌다)."""
+    stage = omni.usd.get_context().get_stage()
+    root = f"{tray_path}/{ARUCO_HANDLE_REL}/aruco"
+    h, z = ARUCO_SIDE_M / 2, ARUCO_TOP_Z_M
+    mesh = UsdGeom.Mesh.Define(stage, root)
+    mesh.CreatePointsAttr([(-h, -h, z), (h, -h, z), (h, h, z), (-h, h, z)])
+    mesh.CreateFaceVertexCountsAttr([4])
+    mesh.CreateFaceVertexIndicesAttr([0, 1, 2, 3])
+    mesh.CreateNormalsAttr([(0, 0, 1)] * 4)
+    UsdGeom.PrimvarsAPI(mesh).CreatePrimvar("st", Sdf.ValueTypeNames.TexCoord2fArray,
+                                            UsdGeom.Tokens.varying).Set([(0, 0), (1, 0), (1, 1), (0, 1)])
+
+    mat = UsdShade.Material.Define(stage, f"{root}/mat")
+    pbr = UsdShade.Shader.Define(stage, f"{root}/mat/pbr")
+    pbr.CreateIdAttr("UsdPreviewSurface")
+    pbr.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(0.9)   # 반사광으로 셀이 날아가지 않게
+    tex = UsdShade.Shader.Define(stage, f"{root}/mat/tex")
+    tex.CreateIdAttr("UsdUVTexture")
+    tex.CreateInput("file", Sdf.ValueTypeNames.Asset).Set(f"{ARUCO_DIR}/aruco_{marker_id}.png")
+    tex.CreateInput("wrapS", Sdf.ValueTypeNames.Token).Set("clamp")
+    tex.CreateInput("wrapT", Sdf.ValueTypeNames.Token).Set("clamp")
+    st = UsdShade.Shader.Define(stage, f"{root}/mat/st")
+    st.CreateIdAttr("UsdPrimvarReader_float2")
+    st.CreateInput("varname", Sdf.ValueTypeNames.Token).Set("st")
+    tex.CreateInput("st", Sdf.ValueTypeNames.Float2).ConnectToSource(st.CreateOutput("result", Sdf.ValueTypeNames.Float2))
+    pbr.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).ConnectToSource(tex.CreateOutput("rgb", Sdf.ValueTypeNames.Float3))
+    mat.CreateSurfaceOutput().ConnectToSource(pbr.CreateOutput("surface", Sdf.ValueTypeNames.Token))
+    UsdShade.MaterialBindingAPI.Apply(mesh.GetPrim()).Bind(mat)
+    print(f"   aruco        {tray_path}  id {marker_id} (긴급도 {'하중상'[marker_id]})")
+
+
+def spawn_tray_copies():
+    """원본 트레이를 TRAY_COPIES 개 복제해 무작위로 흩뿌리고, 전부에 긴급도 마커를 붙인다.
+    world.reset() 전에 부른다.
+
+    duplicate_prim 은 참조까지 합쳐 복사하므로 rigid body / 콜리전이 그대로 따라온다.
+    마커는 복제 뒤에 붙여야 트레이마다 다른 id 를 가진다."""
     stage = omni.usd.get_context().get_stage()
     origin = np.array(stage.GetPrimAtPath(TRAY_PRIM_PATH).GetAttribute("xformOp:translate").Get(), dtype=float)
     placed = [origin]
+    attach_aruco(TRAY_PRIM_PATH, random.choice(ARUCO_IDS))
     for i in range(1, TRAY_COPIES + 1):
         for _ in range(20):
             # sqrt 는 면적 균일 분포 (없으면 중심에 몰린다). 각도 0~pi = +y 쪽 반원
@@ -500,6 +754,7 @@ def spawn_tray_copies():
         omni.usd.duplicate_prim(stage, TRAY_PRIM_PATH, path)
         stage.GetPrimAtPath(path).GetAttribute("xformOp:translate").Set(Gf.Vec3d(*pos))
         print(f"   tray copy    {path}  world {vec(pos)}")
+        attach_aruco(path, random.choice(ARUCO_IDS))
     simulation_app.update()
     return origin
 
@@ -699,10 +954,16 @@ def build_detection_graph(color_camera_path):
                 ("pub_depth", "isaacsim.ros2.bridge.ROS2CameraHelper"),
                 ("pub_info", "isaacsim.ros2.bridge.ROS2CameraInfoHelper"),
                 ("sub_detect", "isaacsim.ros2.bridge.ROS2Subscriber"),
+                ("sub_aruco", "isaacsim.ros2.bridge.ROS2Subscriber"),
+                ("pub_mission", "isaacsim.ros2.bridge.ROS2Publisher"),
+                ("sub_nav", "isaacsim.ros2.bridge.ROS2Subscriber"),
             ],
             og.Controller.Keys.CONNECT: [
                 ("tick.outputs:tick", "rp.inputs:execIn"),
                 ("tick.outputs:tick", "sub_detect.inputs:execIn"),
+                ("tick.outputs:tick", "sub_aruco.inputs:execIn"),
+                ("tick.outputs:tick", "pub_mission.inputs:execIn"),
+                ("tick.outputs:tick", "sub_nav.inputs:execIn"),
                 ("rp.outputs:execOut", "pub_color.inputs:execIn"),
                 ("rp.outputs:execOut", "pub_depth.inputs:execIn"),
                 ("rp.outputs:execOut", "pub_info.inputs:execIn"),
@@ -713,6 +974,9 @@ def build_detection_graph(color_camera_path):
                 ("context.outputs:context", "pub_depth.inputs:context"),
                 ("context.outputs:context", "pub_info.inputs:context"),
                 ("context.outputs:context", "sub_detect.inputs:context"),
+                ("context.outputs:context", "sub_aruco.inputs:context"),
+                ("context.outputs:context", "pub_mission.inputs:context"),
+                ("context.outputs:context", "sub_nav.inputs:context"),
             ],
             og.Controller.Keys.SET_VALUES: [
                 ("rp.inputs:width", IMAGE_RESOLUTION[0]),
@@ -730,10 +994,16 @@ def build_detection_graph(color_camera_path):
                 ("pub_info.inputs:frameId", "d455_color_optical_frame"),
                 ("pub_info.inputs:frameSkipCount", IMAGE_FRAME_SKIP),
                 ("sub_detect.inputs:topicName", RESULT_TOPIC),
+                ("sub_aruco.inputs:topicName", MARKER_TOPIC),
+                ("pub_mission.inputs:topicName", MISSION_TOPIC),
+                ("sub_nav.inputs:topicName", NAV_DONE_TOPIC),
             ],
         },
     )
     set_generic_message_type(f"{DETECT_GRAPH_PATH}/sub_detect", "std_msgs", "msg", "Float32MultiArray")
+    set_generic_message_type(f"{DETECT_GRAPH_PATH}/sub_aruco", "std_msgs", "msg", "Float32MultiArray")
+    set_generic_message_type(f"{DETECT_GRAPH_PATH}/pub_mission", "std_msgs", "msg", "Float32MultiArray")
+    set_generic_message_type(f"{DETECT_GRAPH_PATH}/sub_nav", "std_msgs", "msg", "Float32MultiArray")
     # cameraPrim 은 relationship 이라 SET_VALUES 로는 못 넣는다
     set_targets(
         prim=omni.usd.get_context().get_stage().GetPrimAtPath(f"{DETECT_GRAPH_PATH}/rp"),
@@ -743,39 +1013,107 @@ def build_detection_graph(color_camera_path):
     for name, topic in (("color", COLOR_TOPIC), ("depth", DEPTH_TOPIC), ("info", INFO_TOPIC)):
         print(f"   pub {name:<6s}   /{topic}")
     print(f"   sub detect   /{RESULT_TOPIC}  (std_msgs/Float32MultiArray)")
+    print(f"   sub aruco    /{MARKER_TOPIC}  (std_msgs/Float32MultiArray)")
+    print(f"   pub mission  /{MISSION_TOPIC}  (1 = 적재 완료, 주행 시작해도 됨)")
+    print(f"   sub nav      /{NAV_DONE_TOPIC}  (1 = 도킹 완료, 하역 시작)")
+
+
+def build_rear_lidar_graph():
+    """후방 2D 라이다를 /scan_rear 로 발행하고 TF 에 얹는다 (run_human_scene.py 와 같은 일).
+
+    씬의 액션그래프를 건드리지 않고 **DetectGraph 에 노드 2개만 더한다** — tick/context 를
+    그대로 재사용하면 되고, 참조로 올라온 그래프 안에 프림을 만들지 않아도 된다.
+    TF 는 씬 그래프의 tf_sensors 에 대상만 추가한다(참조 위에 over 로 얹힌다).
+    이게 빠지면 토픽은 나오는데 costmap 이 전부 버린다 — 조용한 실패다."""
+    lidar = find_rtx_lidar(REAR_RPLIDAR_PATH)
+    if lidar is None:
+        print(f"   rear lidar   못 찾음: {REAR_RPLIDAR_PATH} — 후방 장애물이 costmap 에 안 찍힌다")
+        return False
+    lidar_path = str(lidar.GetPath())
+
+    # ROS2PublishTransformTree 는 프림 이름(또는 nameOverride)을 프레임 이름으로 쓴다
+    ov = lidar.GetAttribute("isaac:nameOverride")
+    if not ov:
+        ov = lidar.CreateAttribute("isaac:nameOverride", Sdf.ValueTypeNames.String)
+    if ov.Get() != REAR_FRAME:
+        ov.Set(REAR_FRAME)
+
+    g = DETECT_GRAPH_PATH
+    og.Controller.edit(g, {
+        og.Controller.Keys.CREATE_NODES: [
+            ("rp_rear", "isaacsim.core.nodes.IsaacCreateRenderProduct"),
+            ("pub_rear", "isaacsim.ros2.bridge.ROS2RtxLidarHelper"),
+        ],
+        og.Controller.Keys.SET_VALUES: [
+            ("rp_rear.inputs:width", 1),
+            ("rp_rear.inputs:height", 1),
+            ("pub_rear.inputs:topicName", REAR_TOPIC),
+            ("pub_rear.inputs:frameId", REAR_FRAME),
+            ("pub_rear.inputs:type", "laser_scan"),   # 2D 라 point_cloud 가 아니다
+            ("pub_rear.inputs:fullScan", True),       # 360도 한 바퀴를 한 메시지로
+            ("pub_rear.inputs:enabled", True),
+            ("pub_rear.inputs:resetSimulationTimeOnStop", False),
+        ],
+        og.Controller.Keys.CONNECT: [
+            (g + "/tick.outputs:tick", "rp_rear.inputs:execIn"),
+            ("rp_rear.outputs:execOut", "pub_rear.inputs:execIn"),
+            ("rp_rear.outputs:renderProductPath", "pub_rear.inputs:renderProductPath"),
+            (g + "/context.outputs:context", "pub_rear.inputs:context"),
+        ],
+    })
+    set_targets(prim=omni.usd.get_context().get_stage().GetPrimAtPath(f"{g}/rp_rear"),
+                attribute="inputs:cameraPrim", target_prim_paths=[lidar_path])
+
+    tf = omni.usd.get_context().get_stage().GetPrimAtPath(TF_SENSORS_NODE)
+    if not tf.IsValid():
+        print(f"   tf_sensors   노드 없음: {TF_SENSORS_NODE} — /{REAR_TOPIC} 는 나가지만 costmap 이 버린다")
+        return False
+    rel = tf.GetRelationship("inputs:targetPrims")
+    targets = list(rel.GetTargets())
+    if Sdf.Path(lidar_path) not in targets:
+        rel.SetTargets(targets + [Sdf.Path(lidar_path)])
+    print(f"   pub rear     /{REAR_TOPIC}  (laser_scan, frame={REAR_FRAME})")
+    return True
+
+
+def read_sub_data(node_name, verbose=False):
+    """DetectGraph 의 제네릭 ROS2Subscriber 가 받은 최신 Float32MultiArray data. 못 읽으면 None.
+
+    제네릭 ROS2Subscriber 는 메시지 필드를 동적 output 어트리뷰트로 만든다.
+    경로 문자열로 읽는 법과 노드 객체로 읽는 법 두 가지가 있어 둘 다 시도한다."""
+    node_path = f"{DETECT_GRAPH_PATH}/{node_name}"
+    data, why = None, []
+    try:
+        data = og.Controller.attribute(f"{node_path}.outputs:data").get()
+    except Exception as exc:
+        why.append(f"경로로 읽기 실패: {exc}")
+    if data is None:
+        try:
+            node = og.Controller.node(node_path)
+            data = node.get_attribute("outputs:data").get()
+        except Exception as exc:
+            why.append(f"노드로 읽기 실패: {exc}")
+    if data is None:
+        if verbose:
+            print(f"   {node_name} 에서 outputs:data 를 못 읽었다:")
+            for line in why:
+                print(f"      {line}")
+        return None
+    if len(data) < 2:
+        if verbose:
+            print(f"   {node_name} data 길이가 {len(data)} 다 — 아직 수신 전이거나 형식이 다르다")
+        return None
+    return data
 
 
 def read_detections(verbose=False):
     """관제 PC 가 보낸 최신 검출 결과를 읽는다.
 
-    반환: (seq, [(np.array([x, y, z]), conf), ...])  카메라 광학 프레임, **화면 왼쪽부터**.
-    seq 는 관제 PC 의 발행 카운터. 값이 올라갔다는 건 새로 찍은 프레임이라는 뜻이다.
-
-    제네릭 ROS2Subscriber 는 메시지 필드를 동적 output 어트리뷰트로 만든다.
-    경로 문자열로 읽는 법과 노드 객체로 읽는 법 두 가지가 있어 둘 다 시도한다."""
-    node_path = f"{DETECT_GRAPH_PATH}/sub_detect"
-    data, why = None, []
-    try:
-        data = og.Controller.attribute(f"{node_path}.outputs:data").get()
-    except Exception as exc:
-        why.append(f"경로 문자열: {exc}")
+    반환: (seq, [(np.array([x, y, z]), conf), ...])  카메라 광학 프레임, **가까운 것부터**.
+    seq 는 관제 PC 의 발행 카운터. 값이 올라갔다는 건 새로 찍은 프레임이라는 뜻이다."""
+    data = read_sub_data("sub_detect", verbose)
     if data is None:
-        try:
-            data = og.Controller.attribute("outputs:data", og.Controller.node(node_path)).get()
-        except Exception as exc:
-            why.append(f"노드 객체: {exc}")
-
-    if data is None:
-        if verbose:
-            print("   구독자에서 outputs:data 를 못 읽었다:")
-            for line in why:
-                print(f"      {line}")
         return -1, []
-    if len(data) < 2:
-        if verbose:
-            print(f"   구독자 data 길이가 {len(data)} 다 — 아직 수신 전이거나 형식이 다르다")
-        return -1, []
-
     seq, count = int(data[0]), int(data[1])
     out = []
     for i in range(count):
@@ -784,6 +1122,42 @@ def read_detections(verbose=False):
     if verbose:
         print(f"   구독자 수신: seq {seq}, {count}개")
     return seq, out
+
+
+def read_markers(verbose=False):
+    """관제 PC 가 보낸 최신 ArUco 마커. 반환: (seq, [(id, slot), ...]).
+    slot 은 관제 PC 가 랙 ROI 를 가로 3등분해 매긴 칸 0/1/2 (화면 왼쪽부터 = 랙 1/2/3번)."""
+    data = read_sub_data("sub_aruco", verbose)
+    if data is None:
+        return -1, []
+    seq, count = int(data[0]), int(data[1])
+    return seq, [(int(data[2 + i * 2]), int(data[3 + i * 2])) for i in range(count)]
+
+
+def publish_mission_state(value):
+    """주행 프로세스에 적재 완료 여부를 알린다. 노드는 매 틱 이 값을 발행한다."""
+    og.Controller.attribute(f"{DETECT_GRAPH_PATH}/pub_mission.inputs:data").set([float(value)])
+
+
+def clear_nav_done():
+    """구독 노드가 들고 있는 /nav_done 값을 0 으로 지운다 (정지할 때 호출).
+
+    제네릭 ROS2Subscriber 는 마지막으로 받은 값을 계속 들고 있다. 주행을 한 번 끝낸
+    세션에서 Play 를 다시 누르면 이전 주행의 1 이 그대로 남아 있어, 적재+관측이 끝나자마자
+    wait_unload 가 통과돼 **주행 없이 하역이 시작된다.**"""
+    try:
+        og.Controller.attribute(f"{DETECT_GRAPH_PATH}/sub_nav.outputs:data").set([0.0])
+    except Exception as exc:
+        print(f"   nav_done 초기화 실패 (무시): {exc}")
+
+
+def nav_done():
+    """주행 프로세스가 도킹까지 끝냈으면 True. 한 번이라도 1 을 받으면 구독 노드가 값을 들고 있다."""
+    try:
+        data = og.Controller.attribute(f"{DETECT_GRAPH_PATH}/sub_nav.outputs:data").get()
+    except Exception:
+        return False
+    return data is not None and len(data) >= 1 and float(data[0]) >= 1.0
 
 
 def optical_to_world(point_optical, color_camera_path):
@@ -808,7 +1182,10 @@ def grasp_point_base(tray_world, base_pos, base_quat):
 
 
 def find_first_tray_optical(verbose=False):
-    """가장 왼쪽 트레이의 원본 검출점(카메라 광학 프레임)과 conf. 없으면 None.
+    """가장 가까운 트레이의 원본 검출점(카메라 광학 프레임)과 conf. 없으면 None.
+
+    관제 PC 가 카메라에서 가까운 순으로 보내주므로 앞에서부터 쓰면 된다. 앞엣것을 먼저
+    집어야 뒤/옆 트레이를 건드리지 않는다.
 
     깊이 범위만 거른다 — base 도달거리 게이트는 파지점을 계산한 뒤에만 의미가
     있어서(원본 점 자체는 base 기준이 아니다) 여기서는 보지 않는다."""
@@ -824,7 +1201,7 @@ def find_first_tray_optical(verbose=False):
 
 
 def first_tray_grasp(color_camera_path, base_pos, base_quat, verbose=False):
-    """가장 왼쪽 트레이의 파지점(base)과 월드 좌표를 구한다. 없으면 None.
+    """가장 가까운 트레이의 파지점(base)과 월드 좌표를 구한다. 없으면 None.
 
     base 에서의 도달 거리를 여기서 본다 — 팔이 실제로 움직이는 건 이쪽이라
     받은 값을 그대로 믿으면 안 된다 (벽 오검출을 여기서 거른다)."""
@@ -944,9 +1321,9 @@ def camera_world_right(color_camera_path):
     return right / np.linalg.norm(right)
 
 
-def build_descend_step(ik_solver, base_pos, base_quat, target_z_base, color_camera_path):
+def build_descend_step(ik_solver, base_pos, base_quat, target_z_base, color_camera_path, pitch_deg=PITCH_DOWN_DEG):
     """스캔 회전 직후 현재 위치를 유지한 채, **base 기준** z 만 target_z_base 로 낮추고
-    카메라를 PITCH_DOWN_DEG 만큼 아래로 기울인다.
+    카메라를 pitch_deg(기본 PITCH_DOWN_DEG) 만큼 아래로 기울인다. 랙 관측 숙임에도 재사용한다.
 
     z 만 바꾸고 자세(quat)를 그대로 두면 보는 '방향'은 안 바뀐다 — 저장된 검출
     이미지로 확인해보니 카메라가 책상보다 위(벽)를 보고 있었다. 카메라의 현재
@@ -964,16 +1341,54 @@ def build_descend_step(ik_solver, base_pos, base_quat, target_z_base, color_came
     right = camera_world_right(color_camera_path)
     # 카메라 up 이 대략 world +Z 라는 가정 하에 +각도가 아래로 기운다(수치로 검산함).
     # 반대로 기울면 PITCH_DOWN_DEG 부호부터 뒤집을 것 — SCAN_ROTATE_DEG 와 같은 처지다.
-    tilt_q = quat_from_axis(right, PITCH_DOWN_DEG)
+    tilt_q = quat_from_axis(right, pitch_deg)
     target_quat = quat_mul(tilt_q, quat)
     target_quat /= np.linalg.norm(target_quat)
 
     return [{
         "type": "pose",
-        "label": f"디텍션 하강+하향({PITCH_DOWN_DEG:+.0f}deg, base z={target_z_base:.2f})",
+        "label": f"디텍션 하강+하향({pitch_deg:+.0f}deg, base z={target_z_base:.2f})",
         "target": (target_world, target_quat),
         "gripper": "open",
     }]
+
+
+def observe_tcp_base():
+    """랙 관측 TCP 위치 (base). 가운데 칸에서 로봇 쪽으로 OBSERVE_BACK_M, 위로 OBSERVE_UP_M."""
+    return RACK_SLOTS[1] + np.array([0.0, -OBSERVE_BACK_M, OBSERVE_UP_M])
+
+
+def build_observe_go_step(base_pos, base_quat):
+    """관측점으로 이동. 자세는 놓을 때와 같은 POINT4_RPY(랙 쪽을 봄) — 숙임은 도착 후 별도 스텝."""
+    tcp = observe_tcp_base()
+    return [{"type": "pose", "label": f"랙 관측점 이동 (base {vec(tcp)})",
+             "target": base_to_world(tcp, POINT4_RPY, base_pos, base_quat), "gripper": None}]
+
+
+def assign_slots(markers):
+    """[(id, slot)] -> 칸별 id [s0, s1, s2] (없으면 -1). 같은 칸에 둘이면 먼저 온 것.
+
+    이전엔 마커를 3D 로 옮겨 RACK_SLOTS 와 x 거리를 쟀는데, 깊이 오차가 양옆 칸 x 로 번져
+    반 피치 밖으로 밀려나 버려지는 일이 있었다(실측 [0, 11, 2]). 칸은 관제 PC 의 픽셀 3등분."""
+    out = [-1] * len(RACK_SLOTS)
+    for mid, slot in markers:
+        if 0 <= slot < len(out) and out[slot] < 0:
+            out[slot] = mid
+    return out
+
+
+def merge_urgencies(votes):
+    """프레임별 칸 배정 결과 [[s0,s1,s2], ...] -> 칸별 최빈 id (-1 은 표로 안 친다). 한 번도 없으면 -1."""
+    out = []
+    for k in range(len(RACK_SLOTS)):
+        seen = [v[k] for v in votes if v[k] >= 0]
+        out.append(max(set(seen), key=seen.count) if seen else -1)
+    return out
+
+
+def format_urgencies(urg):
+    return "   ".join(f"{k + 1}번: " + (f"긴급도 {URGENCY_NAMES.get(u, '?')}({u})" if u >= 0 else "미검출(-1)")
+                      for k, u in enumerate(urg))
 
 
 def build_center_step(ik_solver, color_camera_path, point_optical):
@@ -998,7 +1413,75 @@ def build_center_step(ik_solver, color_camera_path, point_optical):
     }]
 
 
-def build_pick_steps(grasp_base, base_pos, base_quat, slot):
+def tcp_pose_base(lula, joints, base_pos, base_quat):
+    """관절각이 joints 일 때 TCP 가 어디인지 (base 기준). 팔을 안 움직이고 미리 본다."""
+    pos, rot = lula.compute_forward_kinematics(EE_LINK_NAME, np.asarray(joints, dtype=float))
+    return world_to_base_pos(pos + rot @ TCP_OFFSET, base_pos, base_quat)
+
+
+def joint_retreat_step(lula, base_pos, base_quat):
+    """회전 전 후퇴를 관절 공간으로 한다. IK 를 안 거치니 손목 특이점에 안 걸린다.
+
+    어깨/팔꿈치를 접고 joint_5 로 되돌려 도구 기울기(= 트레이 기울기)를 유지한다.
+    접는 부호는 FK 로 양쪽을 재서 수평 도달거리가 줄어드는 쪽을 고른다."""
+    def target(start):
+        delta = np.radians([0.0, RETREAT_SHOULDER_DEG, RETREAT_ELBOW_DEG, 0.0,
+                            -(RETREAT_SHOULDER_DEG + RETREAT_ELBOW_DEG), 0.0])
+        here = tcp_pose_base(lula, start, base_pos, base_quat)
+        best, best_reach = None, None
+        for sign in (1.0, -1.0):
+            cand = start + sign * delta
+            there = tcp_pose_base(lula, cand, base_pos, base_quat)
+            reach = float(np.linalg.norm(there[:2]))
+            print(f"   retreat      {sign:+.0f}: 수평 도달 {np.linalg.norm(here[:2]):.3f} -> {reach:.3f} m, "
+                  f"z {here[2]:.3f} -> {there[2]:.3f}")
+            if best_reach is None or reach < best_reach:
+                best, best_reach = cand, reach
+        return best
+
+    return {"type": "joint", "label": "로봇 쪽 후퇴(관절)", "target": target, "gripper": None}
+
+
+def home_step():
+    return {"type": "joint", "label": "홈 복귀",
+            "target": np.array(READY_JOINTS_RAD, dtype=float), "gripper": None}
+
+
+def wrist_unlock_step():
+    """joint_5 를 0(손목 특이점) 에서 WRIST_UNLOCK_DEG 만큼 띄운다. 실패한 스텝 재시도 전에 쓴다.
+
+    joint_3 으로 같은 양을 되돌리므로 도구 기울기는 그대로다 — 들고 있는 트레이가 안 기운다."""
+    def target(start):
+        unlock = np.radians(WRIST_UNLOCK_DEG) * (-1.0 if start[4] <= 0 else 1.0)
+        delta = np.zeros(6)
+        delta[2], delta[4] = -unlock, unlock
+        return start + delta
+
+    return {"type": "joint", "label": "손목 풀기(재시도)", "target": target, "gripper": None}
+
+
+def build_return_steps(grasp_base, base_pos, base_quat):
+    """들고 있던 트레이를 원래 집은 자리에 되돌려 놓고 홈으로. 적재 실패 복구용.
+
+    그 자리는 방금 집어 온 곳이라 비어 있다 — 아무 데나 떨어뜨리는 것보다 안전하다."""
+    direction, grasp_quat = grasp_frame(grasp_base)
+
+    def to_world_q(tcp):
+        return base_pose_to_world(tcp, grasp_quat, base_pos, base_quat)
+
+    above = np.array([grasp_base[0], grasp_base[1], LIFT_Z_M])
+    approach = grasp_base - direction * APPROACH_BACKOFF_M
+    return [
+        {"type": "pose", "label": "되돌려놓기 위", "target": to_world_q(above), "gripper": None},
+        {"type": "pose", "label": "원래 자리",     "target": to_world_q(grasp_base), "gripper": None,
+         "tol": STEP_CONTACT_TOL_M},
+        {"type": "hold", "label": "그리퍼 열기",   "gripper": "open"},
+        {"type": "pose", "label": "후퇴",          "target": to_world_q(approach), "gripper": None},
+        home_step(),
+    ]
+
+
+def build_pick_steps(lula, grasp_base, base_pos, base_quat, slot):
     """검출로 구한 grasp_base(파지점, base 기준)로 집어서 RACK_SLOTS[slot] 에 놓는다.
 
     build_sequence 와 같은 형태지만 POINT1/POINT2(파지 지점)만 검출값으로
@@ -1016,7 +1499,6 @@ def build_pick_steps(grasp_base, base_pos, base_quat, slot):
 
     approach = grasp_base - direction * APPROACH_BACKOFF_M
     lift = np.array([grasp_base[0], grasp_base[1], LIFT_Z_M])
-    lift_back = lift - direction * LIFT_BACK_M
     place = RACK_SLOTS[slot]
     p4 = to_world(place, POINT4_RPY)
     # 슬롯 바로 위 — x, y 는 놓는 위치와 같고 z 만 높다. 여기서 수직으로 내려간다
@@ -1031,7 +1513,7 @@ def build_pick_steps(grasp_base, base_pos, base_quat, slot):
         {"type": "pose",  "label": "파지 위치",          "target": to_world_q(grasp_base), "gripper": None},
         {"type": "hold",  "label": "그리퍼 닫기",        "gripper": "close"},
         {"type": "pose",  "label": "들어올리기",         "target": to_world_q(lift), "gripper": None},
-        {"type": "pose",  "label": f"로봇 쪽 후퇴({LIFT_BACK_M * 100:.0f}cm)", "target": to_world_q(lift_back), "gripper": None},
+        joint_retreat_step(lula, base_pos, base_quat),
         {"type": "joint", "label": f"joint_1 {np.degrees(joint1_delta[0]):+.1f}deg",
          "target": lambda start: start + joint1_delta, "gripper": None},
         # 놓는 위치로 대각선으로 내려가면 트레이가 랙 테두리에 걸린다.
@@ -1039,7 +1521,7 @@ def build_pick_steps(grasp_base, base_pos, base_quat, slot):
         {"type": "pose",  "label": f"놓기 위 안전 위치(+{RACK_ABOVE_Z_M * 100:.0f}cm)",
          "target": p4_above, "gripper": None},
         {"type": "hold",  "label": "하강 전 대기(1s)",   "gripper": None, "steps": RACK_PLACE_WAIT_STEPS},
-        {"type": "pose",  "label": f"랙 {slot + 1}번 놓기(수직 하강)", "target": p4, "gripper": None},
+        {"type": "pose",  "label": f"랙 {slot + 1}번 놓기(수직 하강)", "target": p4, "gripper": None, "tol": STEP_CONTACT_TOL_M},
         {"type": "hold",  "label": "그리퍼 열기",        "gripper": "open"},
         {"type": "pose",  "label": "후퇴 안전 위치",     "target": p5, "gripper": None},
         {"type": "joint", "label": "홈 복귀",            "target": np.array(READY_JOINTS_RAD, dtype=float), "gripper": None},
@@ -1047,7 +1529,7 @@ def build_pick_steps(grasp_base, base_pos, base_quat, slot):
 
 
 
-def build_unload_steps(slot, desk_z, base_pos, base_quat):
+def build_unload_steps(lula, slot, desk_z, base_pos, base_quat):
     """RACK_SLOTS[slot] 의 트레이를 꺼내 DESK_SLOTS[slot] 에 놓는다. build_pick_steps 의 역순.
 
     랙 쪽은 적재와 같은 고정 자세(POINT4/5_RPY), 책상 쪽은 세 자리 모두
@@ -1076,14 +1558,13 @@ def build_unload_steps(slot, desk_z, base_pos, base_quat):
         {"type": "pose",  "label": f"랙 {slot + 1}번 진입",      "target": to_world(place, POINT4_RPY), "gripper": None},
         {"type": "hold",  "label": "그리퍼 닫기",              "gripper": "close"},
         {"type": "pose",  "label": f"수직 들어올리기(+{RACK_ABOVE_Z_M * 100:.0f}cm)", "target": to_world(p_above, POINT4_RPY), "gripper": None},
-        # 회전 반경을 줄인다 (0.79 -> 0.54m). RACK_RETREAT(15cm) 로는 책상 위 트레이 손잡이에 닿았다
-        {"type": "pose",  "label": f"로봇 쪽 후퇴(회전 전, {LIFT_BACK_M * 100:.0f}cm)",
-         "target": to_world(p_above + np.array([0.0, -LIFT_BACK_M, 0.0]), POINT4_RPY), "gripper": None},
+        # 회전 반경을 줄인다. RACK_RETREAT(15cm) 로는 책상 위 트레이 손잡이에 닿았다
+        joint_retreat_step(lula, base_pos, base_quat),
         {"type": "joint", "label": f"joint_1 {np.degrees(joint1_delta[0]):+.1f}deg",
          "target": lambda start: start + joint1_delta, "gripper": None},
         {"type": "pose",  "label": "책상 위(후퇴 반경)",        "target": to_world_q(lift_back), "gripper": None},
         {"type": "pose",  "label": "책상 위",                  "target": to_world_q(lift), "gripper": None},
-        {"type": "pose",  "label": f"책상 {slot + 1}자리 내려놓기(수직 하강)", "target": to_world_q(desk), "gripper": None},
+        {"type": "pose",  "label": f"책상 {slot + 1}자리 내려놓기(수직 하강)", "target": to_world_q(desk), "gripper": None, "tol": STEP_CONTACT_TOL_M},
         {"type": "hold",  "label": "그리퍼 열기",              "gripper": "open"},
         {"type": "pose",  "label": "후퇴",                     "target": to_world_q(approach), "gripper": None},
         # 홈 복귀는 관절 보간이라 데카르트 경로를 보장하지 않는다. 트레이 높이에서 바로 돌리면
@@ -1113,6 +1594,8 @@ class PickPlaceSequence:
         self.start_joints = None
         self.gripper = "open"
         self.done = False
+        self.failed = None       # 도달 실패로 중단됐으면 사유 문자열
+        self.step_rejects = 0    # 현재 스텝에서 IK 가 거부된 틱 수
 
     @property
     def current(self):
@@ -1180,17 +1663,34 @@ class PickPlaceSequence:
             )
 
         self._robot.apply_action(self._robot.gripper.forward(action=self.gripper))
+        self.step_rejects += 0 if solved else 1
 
         self.step_tick += 1
         if self.step_tick >= self.n_steps:
+            if step["type"] == "pose":
+                pos_err, rot_err = self._pose_error()
+                if pos_err > step.get("tol", STEP_POS_TOL_M) or rot_err > STEP_ROT_TOL_DEG:
+                    if self.step_tick < self.n_steps + STEP_EXTRA_TICKS:
+                        return solved            # 목표(alpha=1)를 계속 주며 더 기다린다
+                    self.failed = (f"step {self.index} '{step['label']}' 도달 실패 — 위치 오차 "
+                                   f"{pos_err * 100:.1f}cm, 자세 오차 {rot_err:.1f}deg, IK 거부 {self.step_rejects}틱")
+                    self.done = True
+                    return False
             self.index += 1
             self.step_tick = 0
+            self.step_rejects = 0
             self.start_pos = self.start_quat = self.start_joints = None
             if self.index >= len(self.steps):
                 self.done = True
                 print("   [DONE] pick & place 완료")
 
         return solved
+
+    def _pose_error(self):
+        """현재 TCP 와 목표의 위치(m)/자세(deg) 오차"""
+        pos, quat = self._current_flange_pose()
+        dot = float(np.clip(abs(np.dot(quat, self.target_quat)), -1.0, 1.0))
+        return float(np.linalg.norm(pos - self.target_pos)), float(np.degrees(2.0 * np.arccos(dot)))
 
 
 # ══════════════════════════════════════════════════════════════
@@ -1202,7 +1702,14 @@ def main():
     world = World(stage_units_in_meters=1.0)
 
     section("SCENE")
+    setup_people()          # 반드시 load_scene() 앞 (캐릭터 스크립트가 초기화 때 한 번만 읽는다)
     load_scene()
+    try:
+        setup_characters()  # 반드시 load_scene() 뒤 (SkelRoot 가 올라와 있어야 한다)
+    except Exception as exc:
+        # 사람이 안 걸을 뿐 적재/주행은 할 수 있다 — 여기서 실행을 죽이지 않는다
+        print(f"   characters   연결 실패 (무시): {exc}")
+    bake_navmesh()          # 매 실행 다시 구워야 한다 (USD 에 저장 안 됨)
     set_viewport_lighting()
     tray_origin = spawn_tray_copies()
     setup_arm_drives()
@@ -1218,6 +1725,7 @@ def main():
     color_camera_path = find_color_camera()
     print(f"   color cam    {color_camera_path}")
     build_detection_graph(color_camera_path)
+    build_rear_lidar_graph()
 
     section("SOLVER")
     lula, ik_solver = create_ik_solver(robot)
@@ -1241,7 +1749,12 @@ def main():
     #   center  -> ROI(검출된 트레이)가 화면 중앙에 오도록 카메라 기준 수평 이동
     #   pick    -> 중앙 정렬 후 다시 검출한 좌표로 접근/파지/들어올리기/회전/
     #              놓기/후퇴/홈복귀 실행
-    #   wait_unload -> 랙이 다 찼다. 홈에서 UNLOAD_KEY 를 기다린다
+    #   observe_go/observe_tilt/observe_settle/observe_home
+    #           -> 랙이 다 찬 뒤 랙을 대각선 위에서 보고 ArUco 로 칸별 긴급도를 출력한 뒤 홈으로.
+    #              적재/하역 로직과는 무관하고, 못 읽어도 미검출(-1)로 찍고 그냥 진행한다
+    #   recover -> 스텝/검출 실패 복구. 들고 있으면 원래 자리에 되돌려 놓고, 아니면 홈으로 빠진다.
+    #              끝나면 남은 칸이 있으면 scan, 아니면 관측으로 — 어떤 경우에도 미션을 멈추지 않는다
+    #   wait_unload -> 주행 프로세스의 도킹 완료(/nav_done 1)를 기다린다. UNLOAD_KEY 로 수동 진행도 된다
     #   unload  -> 랙 3번부터 꺼내 책상 위 DESK_SLOTS 에 가로로 놓는다
     pick_state = None
     settle_next = None      # settle 완료 후 갈 곳: "center" | "pick"
@@ -1253,10 +1766,32 @@ def main():
     unload_slot = -1         # 하역 중인 랙 칸 (3번 -> 1번 순)
     desk_z = 0.0             # 하역 시작 시 확정 (DESK_Z_M 또는 측정값)
     grasp_log = []           # 적재 때 쓴 파지점(base). 하역 z 상수 검증용
+    votes, last_marker_seq, collect_start = [], -1, -1   # 랙 관측 누적 (observe_settle)
+    step_retries = 0         # 현재 시퀀스에서 손목을 풀고 재시도한 횟수
+    stage_fails = 0          # 적재 단계를 통째로 실패한 횟수
 
     was_playing = False
     fail_streak = 0
     tick_count = 0
+
+    def begin_recover(reason, grasp=None):
+        """적재 쪽 실패를 복구한다. 들고 있으면 원래 자리에 되돌려 놓고, 아니면 홈으로만 빠진다.
+
+        여기서 미션을 멈추지 않는다 — 복구가 끝나면 남은 칸에 따라 다음 트레이 스캔 또는
+        관측 단계로 넘어간다 (아래 pick_state == "recover" 처리)."""
+        nonlocal pick_state, sequence, stage_fails, step_retries, tick_count
+        held = sequence.gripper      # 새 시퀀스는 reset 에서 open 으로 시작한다 — 들고 있으면 놓아버린다
+        stage_fails += 1
+        step_retries = 0
+        where = "트레이를 원래 자리에 되돌려 놓고" if grasp is not None else "홈으로 빠져"
+        print(f"   복구         {reason} — {where} 계속한다 (적재 실패 {stage_fails}/{MAX_STAGE_FAILS})")
+        sequence = PickPlaceSequence(
+            robot, ik_solver, arm_indices,
+            build_return_steps(grasp, base_pos, base_quat) if grasp is not None else [home_step()])
+        sequence.reset()
+        sequence.gripper = held
+        pick_state = "recover"
+        tick_count = 0
 
     # Ctrl+C 로 끄면 simulation_app.close() 를 못 거치고 atexit 로 직행해서, render
     # product 와 replicator writer 가 붙은 채로 omni.graph / syntheticdata 가 해제되며
@@ -1267,6 +1802,11 @@ def main():
             time.sleep(0.005)
 
             is_playing = world.is_playing()
+            if was_playing and not is_playing:
+                # 정지하면 주행 프로세스와의 핸드셰이크를 양쪽 다 지운다.
+                # 안 지우면 다음 Play 때 이전 주행의 /nav_done 1 이 남아 주행을 건너뛴다.
+                publish_mission_state(0)
+                clear_nav_done()
             if is_playing and not was_playing:
                 init_robot(robot, world)
                 pick_state = "scan"
@@ -1274,8 +1814,10 @@ def main():
                 sequence.reset()
                 seq_mark, wait_frames, retry_count = -1, 0, 0
                 slot_index, unload_slot, grasp_log = 0, -1, []
+                step_retries, stage_fails = 0, 0
                 fail_streak = 0
                 tick_count = 0
+                publish_mission_state(0)
             was_playing = is_playing
 
             if not is_playing or pick_state is None:
@@ -1285,7 +1827,9 @@ def main():
             base_pos, base_quat = sync_base_pose(lula, robot)
 
             if pick_state == "wait_unload":
-                if UNLOAD_KEY in keys.take():
+                # 주행 프로세스가 도킹을 끝내면 자동으로, 안 되면 UNLOAD_KEY 로 수동 진행한다
+                if UNLOAD_KEY in keys.take() or nav_done():
+                    publish_mission_state(0)      # 주행 프로세스를 다시 띄워도 바로 출발하지 않게
                     unload_slot = len(RACK_SLOTS) - 1
                     measured_z = float(np.mean([g[2] for g in grasp_log]))
                     desk_z = measured_z if DESK_Z_M is None else DESK_Z_M
@@ -1293,10 +1837,34 @@ def main():
                           + ("  (DESK_Z_M 이 None 이라 측정값 사용. 이 값을 DESK_Z_M 에 고정할 것)" if DESK_Z_M is None else ""))
                     print(f"   unload       랙 {unload_slot + 1}번 -> 책상 {unload_slot + 1}자리")
                     sequence = PickPlaceSequence(robot, ik_solver, arm_indices,
-                                                 build_unload_steps(unload_slot, desk_z, base_pos, base_quat))
+                                                 build_unload_steps(lula, unload_slot, desk_z, base_pos, base_quat))
                     sequence.reset()
                     pick_state = "unload"
                     tick_count = 0
+                continue
+
+            if pick_state == "observe_settle":
+                wait_frames += 1
+                seq_now, markers = read_markers()
+                fresh = seq_now - seq_mark >= FRESH_SEQ_ADVANCE
+                if wait_frames < DETECT_SETTLE_FRAMES or not (fresh or wait_frames > FRESH_TIMEOUT_FRAMES):
+                    continue
+                if fresh and seq_now != last_marker_seq:      # 새 메시지마다 한 표
+                    last_marker_seq = seq_now
+                    votes.append(assign_slots(markers))
+                    if collect_start < 0:
+                        collect_start = wait_frames
+                if fresh and wait_frames - collect_start < OBSERVE_COLLECT_FRAMES and wait_frames <= FRESH_TIMEOUT_FRAMES:
+                    continue
+                if not votes:
+                    print(f"   observe      마커 토픽을 {FRESH_TIMEOUT_FRAMES} 프레임 동안 못 받았다 — 미검출로 진행")
+                urg = merge_urgencies(votes)
+                print(f"   observe      {len(votes)}프레임 누적 (칸별 판독 횟수 "
+                      f"{[sum(v[k] >= 0 for v in votes) for k in range(len(RACK_SLOTS))]}) -> 랙 {format_urgencies(urg)}")
+                pick_state = "observe_home"
+                sequence = PickPlaceSequence(robot, ik_solver, arm_indices, [home_step()])
+                sequence.reset()
+                tick_count = 0
                 continue
 
             if pick_state == "settle":
@@ -1304,8 +1872,7 @@ def main():
                 seq_now, _ = read_detections()
                 if wait_frames < DETECT_SETTLE_FRAMES or seq_now - seq_mark < FRESH_SEQ_ADVANCE:
                     if wait_frames > FRESH_TIMEOUT_FRAMES:
-                        print(f"   pick         새 검출을 {FRESH_TIMEOUT_FRAMES} 프레임 동안 못 받았다 — 중단")
-                        pick_state = None
+                        begin_recover(f"새 검출을 {FRESH_TIMEOUT_FRAMES} 프레임 동안 못 받았다")
                     continue
 
                 if settle_next == "center":
@@ -1313,8 +1880,7 @@ def main():
                     if found is None:
                         retry_count += 1
                         if retry_count > MAX_DETECT_RETRIES:
-                            print(f"   pick         {MAX_DETECT_RETRIES}번 재시도해도 트레이를 못 찾았다 — 중단")
-                            pick_state = None
+                            begin_recover(f"{MAX_DETECT_RETRIES}번 재시도해도 트레이를 못 찾았다")
                         else:
                             print(f"   pick         트레이를 못 찾음 — 재시도 ({retry_count}/{MAX_DETECT_RETRIES})")
                             seq_mark, wait_frames = read_detections()[0], 0
@@ -1340,8 +1906,7 @@ def main():
                 if found is None:
                     retry_count += 1
                     if retry_count > MAX_DETECT_RETRIES:
-                        print(f"   pick         {MAX_DETECT_RETRIES}번 재시도해도 트레이를 못 찾았다 — 중단")
-                        pick_state = None
+                        begin_recover(f"{MAX_DETECT_RETRIES}번 재시도해도 트레이를 못 찾았다")
                     else:
                         print(f"   pick         트레이를 못 찾음 — 재시도 ({retry_count}/{MAX_DETECT_RETRIES})")
                         seq_mark, wait_frames = read_detections()[0], 0
@@ -1350,7 +1915,7 @@ def main():
 
                 grasp, _tray_world = found
                 grasp_log.append(grasp)
-                steps = build_pick_steps(grasp, base_pos, base_quat, slot_index)
+                steps = build_pick_steps(lula, grasp, base_pos, base_quat, slot_index)
                 sequence = PickPlaceSequence(robot, ik_solver, arm_indices, steps)
                 sequence.reset()
                 pick_state = "pick"
@@ -1365,6 +1930,42 @@ def main():
                 fail_streak += 1
                 if fail_streak == 1 or fail_streak % LOG_INTERVAL == 0:
                     carb.log_warn(f"IK 미수렴 ({fail_streak})  [{pick_state}] step {sequence.index}")
+
+            if sequence.failed:
+                print(f"   [{pick_state}] {sequence.failed}")
+                held = sequence.gripper   # 복구 시퀀스로 갈아끼워도 잡은 건 계속 잡고 있어야 한다
+                if step_retries < MAX_STEP_RETRIES:
+                    # 손목을 특이점에서 띄우고 실패한 스텝부터 다시 — 뒤 스텝은 절대 목표라 그대로 이어진다
+                    step_retries += 1
+                    print(f"   복구         손목을 풀고 실패 스텝부터 재시도 ({step_retries}/{MAX_STEP_RETRIES})")
+                    sequence = PickPlaceSequence(robot, ik_solver, arm_indices,
+                                                 [wrist_unlock_step()] + sequence.steps[sequence.index:])
+                    sequence.reset()
+                    sequence.gripper = held
+                    tick_count = 0
+                    continue
+                step_retries = 0
+                if pick_state == "recover":
+                    # 복구 동작까지 실패했다. 관절 보간은 IK 를 안 거치니 홈 복귀만은 된다
+                    print("   복구         복구 동작도 실패 — 홈으로만 빠지고 관측 단계로 넘어간다")
+                    stage_fails = MAX_STAGE_FAILS
+                    sequence = PickPlaceSequence(robot, ik_solver, arm_indices, [home_step()])
+                elif pick_state in ("observe_go", "observe_tilt", "observe_home", "unload"):
+                    # 상태는 그대로 두고 홈으로만 뺀다. 홈 복귀가 끝나면 아래 done 처리가
+                    # 원래 흐름(다음 관측 단계 / 다음 하역 칸)을 그대로 이어간다
+                    print(f"   복구         [{pick_state}] 건너뛰고 홈으로 — 다음 단계로 이어간다"
+                          + ("  (트레이를 든 채다 — 다음 칸 시퀀스 첫 스텝에서 랙 앞에 놓는다)"
+                             if held == "close" else ""))
+                    sequence = PickPlaceSequence(robot, ik_solver, arm_indices, [home_step()])
+                else:
+                    # 적재 계열. 그리퍼가 닫혀 있으면 트레이를 들고 있다는 뜻이다
+                    holding = grasp_log[-1] if (sequence.gripper == "close" and grasp_log) else None
+                    begin_recover("재시도해도 스텝을 못 끝냈다", holding)
+                    continue
+                sequence.reset()
+                sequence.gripper = held
+                tick_count = 0
+                continue
 
             if tick_count % LOG_INTERVAL == 0 and not sequence.done:
                 print(f"   [{pick_state}] step {sequence.index} '{sequence.current['label']}'   "
@@ -1387,6 +1988,38 @@ def main():
                 elif pick_state == "center":
                     pick_state, settle_next = "settle", "pick"
                     seq_mark, wait_frames = read_detections()[0], 0
+                elif pick_state == "recover":
+                    if stage_fails >= MAX_STAGE_FAILS or slot_index >= len(RACK_SLOTS):
+                        print(f"   복구         적재 실패 {stage_fails}회 — 남은 칸을 포기하고 관측으로 넘어간다")
+                        pick_state = "observe_go"
+                        sequence = PickPlaceSequence(robot, ik_solver, arm_indices,
+                                                     build_observe_go_step(base_pos, base_quat))
+                    else:
+                        print(f"   복구         복구 완료 — 다음 트레이 스캔 (랙 {slot_index + 1}번부터 다시)")
+                        pick_state = "scan"
+                        sequence = PickPlaceSequence(robot, ik_solver, arm_indices, build_scan_steps())
+                        seq_mark, wait_frames, retry_count = -1, 0, 0
+                    sequence.reset()
+                    tick_count = 0
+                elif pick_state == "observe_go":
+                    pick_state = "observe_tilt"
+                    z_now = world_to_base_pos(current_tcp_pose(ik_solver)[0], base_pos, base_quat)[2]
+                    sequence = PickPlaceSequence(
+                        robot, ik_solver, arm_indices,
+                        build_descend_step(ik_solver, base_pos, base_quat, z_now, color_camera_path, OBSERVE_PITCH_DEG),
+                    )
+                    sequence.reset()
+                elif pick_state == "observe_tilt":
+                    pick_state = "observe_settle"
+                    seq_mark, wait_frames = read_markers()[0], 0
+                    votes, last_marker_seq, collect_start = [], -1, -1
+                elif pick_state == "observe_home":
+                    publish_mission_state(1)
+                    print(f"   observe      홈 복귀 완료 — /{MISSION_TOPIC} 1 발행. 주행 프로세스가 "
+                          f"도킹을 끝내(/{NAV_DONE_TOPIC} 1) 알려오면 하역한다 "
+                          f"(수동 진행: 뷰포트 클릭 후 '{UNLOAD_KEY}' 키)")
+                    keys.take()      # 관측 중 눌린 키는 버린다
+                    pick_state = "wait_unload"
                 elif pick_state == "unload":
                     unload_slot -= 1
                     if unload_slot < 0:
@@ -1395,15 +2028,18 @@ def main():
                     else:
                         print(f"   unload       랙 {unload_slot + 1}번 -> 책상 {unload_slot + 1}자리")
                         sequence = PickPlaceSequence(robot, ik_solver, arm_indices,
-                                                     build_unload_steps(unload_slot, desk_z, base_pos, base_quat))
+                                                     build_unload_steps(lula, unload_slot, desk_z, base_pos, base_quat))
                         sequence.reset()
                         tick_count = 0
                 else:  # pick 완료 — 다음 칸이 남았으면 홈에서 다시 스캔한다
                     slot_index += 1
+                    step_retries = 0
                     if slot_index >= len(RACK_SLOTS):
-                        print(f"   pick         랙이 다 찼다 — 뷰포트 클릭 후 '{UNLOAD_KEY}' 키를 누르면 3번부터 하역한다")
-                        keys.take()      # 적재 중 눌린 키는 버린다
-                        pick_state = "wait_unload"
+                        print("   pick         랙이 다 찼다 — 랙을 위에서 관측해 긴급도를 읽는다")
+                        pick_state = "observe_go"
+                        sequence = PickPlaceSequence(robot, ik_solver, arm_indices, build_observe_go_step(base_pos, base_quat))
+                        sequence.reset()
+                        tick_count = 0
                     else:
                         print(f"   pick         랙 {slot_index}번 완료 — 다음 트레이 스캔")
                         pick_state = "scan"

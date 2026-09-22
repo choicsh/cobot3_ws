@@ -1,0 +1,82 @@
+
+<!--
+  nav2_bt_navigator/navigate_through_poses_w_replanning_and_recovery.xml 복사본.
+  두 값만 바꿨다. 나머지는 원본 그대로다.
+
+    RateController hz        0.333 -> 1.0
+    RemovePassedGoals radius 0.7   -> 0.7 (원복. 아래 참고)
+
+  이유: RemovePassedGoals 는 "통과했는가"를 판정하지 않는다. tick 하는 그 순간에
+  로봇이 radius 안에 있는지만 보는 스냅샷 검사이고 기억이 없다.
+
+      while (goal_poses.size() > 1) {
+        if (euclidean_distance(goal_poses[0].pose, current_pose.pose) > radius) break;
+        goal_poses.erase(goal_poses.begin());
+      }
+
+  원본 조합(hz 0.333 = 3초, radius 0.7 = 지름 1.4m)은 max_vel_x 0.5 에서
+  tick 사이에 1.5m 를 이동한다. 1.5m > 1.4m 라 로봇이 통과 창을 통째로 건너뛸 수 있다.
+  그러면 경유지가 안 지워지고, ComputePathThroughPoses 가 '로봇 -> 뒤에 있는 경유지'
+  경로를 다시 만들어 로봇이 되돌아간다. (실측된 현상)
+
+  hz 1.0 이면 tick 사이 이동이 0.5m 라 창(지름 1.4m)을 건너뛸 수 없다. 즉 hz 하나로 해결된다.
+  hz 를 올린 덕에 동적 장애물 전역 재계획 지연도 3초 -> 1초로 같이 줄어든다.
+
+  radius 는 1.2 로 올려 봤다가 되돌렸다. 올리면 경유지를 일찍 버려 코너를 미리 깎는데,
+  좁은 곳에서 그러면 회전이 불가능한 자리에서 돌기 시작한다. 실측:
+
+    WP1 까지 1.16m 지점 (-0.78, 3.40)   통과폭 1.98 m
+    WP1 까지 0.70m 지점 (-1.24, 3.40)   통과폭 2.68 m
+    로봇 회전 지름 sqrt(1.86^2 + 1.0^2)  2.11 m
+
+  1.2 에서는 1.98m 자리에서 90도 회전을 시도해 모든 궤적이 풋프린트 충돌로 걸러졌고
+  DWB 가 0 을 내며 72초 정지 후 FAILED 했다. 0.7 이면 2.68m 자리에서 돌아 여유가 생긴다.
+  여유 0.57m 가 빠듯하면 0.5 로 더 내린다 (노드 자체 기본값이 0.5).
+-->
+<root BTCPP_format="4" main_tree_to_execute="MainTree">
+  <BehaviorTree ID="MainTree">
+    <RecoveryNode number_of_retries="6" name="NavigateRecovery">
+      <PipelineSequence name="NavigateWithReplanning">
+        <ControllerSelector selected_controller="{selected_controller}" default_controller="FollowPath" topic_name="controller_selector"/>
+        <PlannerSelector selected_planner="{selected_planner}" default_planner="GridBased" topic_name="planner_selector"/>
+        <RateController hz="1.0">
+          <RecoveryNode number_of_retries="1" name="ComputePathThroughPoses">
+            <ReactiveSequence>
+              <RemovePassedGoals input_goals="{goals}" output_goals="{goals}" radius="0.7"/>
+              <ComputePathThroughPoses goals="{goals}" path="{path}" planner_id="{selected_planner}" error_code_id="{compute_path_error_code}"/>
+            </ReactiveSequence>
+            <Sequence>
+              <WouldAPlannerRecoveryHelp error_code="{compute_path_error_code}"/>
+              <ClearEntireCostmap name="ClearGlobalCostmap-Context" service_name="global_costmap/clear_entirely_global_costmap"/>
+            </Sequence>
+          </RecoveryNode>
+        </RateController>
+        <RecoveryNode number_of_retries="1" name="FollowPath">
+          <FollowPath path="{path}" controller_id="{selected_controller}" error_code_id="{follow_path_error_code}"/>
+          <Sequence>
+            <WouldAControllerRecoveryHelp error_code="{follow_path_error_code}"/>
+            <ClearEntireCostmap name="ClearLocalCostmap-Context" service_name="local_costmap/clear_entirely_local_costmap"/>
+          </Sequence>
+        </RecoveryNode>
+      </PipelineSequence>
+      <Sequence>
+        <Fallback>
+          <WouldAControllerRecoveryHelp error_code="{follow_path_error_code}"/>
+          <WouldAPlannerRecoveryHelp error_code="{compute_path_error_code}"/>
+        </Fallback>
+        <ReactiveFallback name="RecoveryFallback">
+          <GoalUpdated/>
+          <RoundRobin name="RecoveryActions">
+            <Sequence name="ClearingActions">
+              <ClearEntireCostmap name="ClearLocalCostmap-Subtree" service_name="local_costmap/clear_entirely_local_costmap"/>
+              <ClearEntireCostmap name="ClearGlobalCostmap-Subtree" service_name="global_costmap/clear_entirely_global_costmap"/>
+            </Sequence>
+            <Spin spin_dist="1.57" error_code_id="{spin_error_code}"/>
+            <Wait wait_duration="5.0"/>
+            <BackUp backup_dist="0.30" backup_speed="0.15" error_code_id="{backup_error_code}"/>
+          </RoundRobin>
+        </ReactiveFallback>
+      </Sequence>
+    </RecoveryNode>
+  </BehaviorTree>
+</root>

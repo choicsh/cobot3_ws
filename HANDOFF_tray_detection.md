@@ -17,7 +17,11 @@ Isaac Sim 안에서 **합성 데이터로 YOLO를 학습시키고, 그 모델로
 [1단계 데이터 생성]  Isaac Replicator ──> 합성 이미지 + 자동 라벨 ──> YOLO 데이터셋
 [2단계 학습]         YOLO26s 학습 ──> best.pt
 [3단계 실행]         Isaac Sim (로봇/카메라)  <──ROS2──>  관제 PC (YOLO 추론)
+                                    └──ROS2──>  Nav2 스택 + 주행 미션 (적재 후 주행/도킹)
 ```
+
+전체 시나리오는 **적재(3개) → 랙 ArUco 관측 → 주행 → 도킹 → 책상 하역** 이고,
+프로세스 4개로 나뉜다 (아래 [3-1](#3-1-실행-전체-시나리오-터미널-4개)).
 
 3단계는 **반드시 두 프로세스**여야 한다. Isaac Sim은 자체 Python 3.11 + numpy 1.26을
 쓰고 ultralytics는 Python 3.12 환경이라 한 프로세스에 합칠 수 없다.
@@ -32,15 +36,23 @@ Isaac Sim 안에서 **합성 데이터로 YOLO를 학습시키고, 그 모델로
 | `isaacpjt/sdg/tray_sdg.yaml` | 데이터 생성 설정 (해상도, 프레임 수, distractor 등) |
 | `isaacpjt/sdg/to_yolo.py` | Replicator 출력(npy/json) → YOLO 라벨(txt) 변환 |
 | `isaacpjt/sdg/train_yolo.py` | YOLO26s 학습 |
+| `isaacpjt/sdg/make_markers.py` | 긴급도 ArUco 마커 PNG 생성 (1회) |
 | `admin_ws/src/tray_detector/tray_detector/detect_node.py` | **관제 PC 노드** — 이미지 구독, YOLO 추론, 3D 좌표 발행 |
-| `isaacpjt/M0609/teleop/pick_and_place_detection.py` | **Isaac 메인** — 카메라 발행, 검출 구독, 자동 pick & place |
+| `isaacpjt/M0609/teleop/pick_and_place_detection.py` | **Isaac 메인** — 씬/사람/후방 라이다 + 카메라 발행, 검출 구독, 적재 → 관측 → (주행 대기) → 하역 |
+| `src/nova_carter/nav_to_goal/nav_to_goal/through_pose_human_test.py` | **주행 미션** — 적재 완료 신호 대기 → undock → goThroughPoses → dock → 완료 신호 |
+| `src/nova_carter/nav_to_goal/nav_to_goal/straight_drive.py` | undock/dock 구간용 cmd_vel 직진 드라이버 (회전하지 않는다) |
+| `src/nova_carter/carter_navigation/launch/nav2_human_test.launch.py` | 단일 로봇 Nav2 스택 (+ pointcloud_to_laserscan, rviz) |
 
 **건드리지 않은 원본** (참고용, 검출 기능 없음):
 `pick_and_place.py`, `pnp_teleop.py`, `pickup_place_go_nova.py`(네비게이션 포함), `nav_mission.py`
 
 > `pick_and_place_detection.py`는 `pick_and_place.py`를 복사해 만들었지만,
 > 씬을 `integration_human.usd`로 바꾸면서 **nova_carter(모바일 베이스) 구조**로
-> 전환했다. 네비게이션(Nav2 주행)은 이 파일에 **없다** — 그건 `pickup_place_go_nova.py` 계열이다.
+> 전환했다. 주행(Nav2)은 이 파일이 직접 하지 않는다 — Isaac 번들 파이썬에서 rclpy 를
+> 못 쓰기 때문이다. 대신 **`/mission_state` · `/nav_done` 두 토픽으로 주행 프로세스와
+> 손을 잡는다**(아래 5. 통신 규약). 이 파일이 `run_human_scene.py` 의 일(사람 확장 ·
+> navmesh 베이크 · 후방 라이다 발행)까지 겸하므로 주행용 씬을 따로 띄우지 않는다.
+> (`run_human_scene.py` 는 주행만 단독 시험할 때 계속 쓴다.)
 
 ---
 
@@ -144,18 +156,43 @@ cd ~/cobot3_ws && source /opt/ros/jazzy/setup.bash
 `python.sh`는 `setup_ros_env.sh`를 source하지 않아서, 브리지가 ROS2 라이브러리를
 못 찾고 **에러 없이 조용히** 실패한다. `ROS_DOMAIN_ID=136`은 `~/.bashrc`에 있다.
 
-### 3-1. 실행 (터미널 2개)
+### 3-1. 실행 (전체 시나리오, 터미널 4개)
+
+순서대로 띄운다. **A → B(Play) → C → D.** C(Nav2)는 Isaac 이 `/clock` 과 TF 를
+내보내기 시작한 뒤에 띄워야 AMCL 이 정상적으로 초기화된다.
 
 **A. 관제 PC 검출 노드** (먼저 켜기)
 ```bash
 cd ~/cobot3_ws && source /opt/ros/jazzy/setup.bash && PYTHONPATH=/opt/ros/jazzy/lib/python3.12/site-packages:$PYTHONPATH ~/yolo-venv/bin/python admin_ws/src/tray_detector/tray_detector/detect_node.py runs/detect/isaacpjt/sdg/runs/tray-2/weights/best.pt
 ```
 
-**B. Isaac Sim**
+**B. Isaac Sim** (씬 + 사람 + 팔 + 후방 라이다)
 ```bash
 cd ~/cobot3_ws && source /opt/ros/jazzy/setup.bash && ~/isaacsim/python.sh isaacpjt/M0609/teleop/pick_and_place_detection.py
 ```
-뷰포트 클릭 후 **Play**만 누르면 자동 진행. 완료 후 Play를 다시 누르면 재시도.
+뷰포트 클릭 후 **Play**. 적재 3개 → 랙 관측 → 홈 복귀까지 자동 진행하고,
+그 다음은 D 가 도킹을 끝낼 때까지 기다린다.
+
+**C. Nav2 스택**
+```bash
+cd ~/cobot3_ws && source /opt/ros/jazzy/setup.bash && source install/setup.bash && ros2 launch carter_navigation nav2_human_test.launch.py
+```
+
+**D. 주행 미션**
+```bash
+cd ~/cobot3_ws && source /opt/ros/jazzy/setup.bash && source install/setup.bash && ros2 run nav_to_goal through_pose_human_test
+```
+`/mission_state` 가 1 이 될 때까지 대기하다가 undock → 경유지 4개 → dock 을 하고
+`/nav_done` 1 을 발행한다. 그러면 Isaac 이 하역을 시작한다.
+주행만 단독으로 시험하려면 `--solo` 를 붙인다(대기 없이 바로 출발).
+
+> **다시 돌릴 때는 Isaac 에서 Stop 을 먼저 누를 것.** 정지 시점에
+> `/mission_state` 0 발행과 `/nav_done` 값 초기화(`clear_nav_done`)를 한다.
+> Stop 없이 Play 만 다시 누르면 이전 주행의 `/nav_done` 1 이 구독 노드에 남아
+> **주행을 건너뛰고 바로 하역이 시작된다.**
+> Isaac 을 재시작하지 않고 반복할 때는 D 도 매번 다시 실행한다.
+
+수동 진행: 주행 없이 하역만 보고 싶으면 대기 상태에서 뷰포트를 클릭하고 `U` 키.
 
 ### 3-2. 데이터 재생성 / 재학습 (필요할 때만)
 
@@ -213,6 +250,18 @@ Play를 누르면 상태 기계가 아래 순서로 진행한다 (`main()` 안).
 | `settle` | 다시 정지 + 새 검출 대기 |
 | `pick` | 재측정한 좌표로 접근→파지→들어올리기→회전→**슬롯 위**→1초 대기→**수직 하강**→놓기→후퇴→홈 |
 
+랙 3칸이 다 차면 `scan`으로 돌아가지 않고 아래로 넘어간다.
+
+| 상태 | 하는 일 |
+|---|---|
+| `observe_go/tilt/settle/home` | 랙을 대각선 위에서 보고 ArUco로 칸별 긴급도를 읽어 출력한 뒤 홈 복귀 (7.의 긴급도 절 참고) |
+| (홈 복귀 직후) | `/mission_state` 1 발행 — 주행 프로세스가 이걸 보고 출발한다 |
+| `wait_unload` | 홈에서 대기. `/nav_done` 1 수신(또는 `U` 키)이면 하역 시작 |
+| `unload` | 랙 **3번부터** 꺼내 `DESK_SLOTS`(base 기준)에 가로로 놓는다. 3칸 끝나면 종료 |
+
+> `DESK_SLOTS`/`DESK_Z_M`은 **출발 책상**에서 실측한 base 기준 값이다. 도착 책상에서
+> 그대로 맞는지는 도킹 후 `V` 키로 확인할 것 — 책상 높이나 도킹 정확도가 다르면 여기가 어긋난다.
+
 ### 왜 2번 검출하나
 비스듬히 본 박스의 중심은 트레이 중심과 어긋난다. 중앙에 맞춘 뒤 다시 재면
 훨씬 안정적이다. 그래서 `center`로 정렬 → 재검출 → 최종 파지점 확정 순서다.
@@ -240,8 +289,49 @@ Isaac ──> 관제 PC
 관제 PC ──> Isaac
   /tray_detection   std_msgs/Float32MultiArray
       data = [seq, n, x1,y1,z1,conf1, x2,y2,z2,conf2, ...]
-      좌표는 카메라 광학 프레임(ROS 규약) 미터, 화면 왼쪽부터 정렬
+      좌표는 카메라 광학 프레임(ROS 규약) 미터, **카메라에서 가까운 순** 정렬
+      (왼쪽부터 집던 때는 왼쪽 트레이를 잡으러 들어가다 앞의 오른쪽 트레이를 건드렸다.
+       정렬 키는 `cam_dist2` = x²+y²+z². 광축 z 만 보면 양옆으로 벌어진 트레이를 잘못 고른다.)
+  /aruco_markers    std_msgs/Float32MultiArray
+      data = [seq, n, id1,slot1, id2,slot2, ...]
+      트레이 윗판 ArUco(DICT_4X4_50). id = 긴급도 0/1/2(하/중/상).
+      slot = 관제 PC 가 RACK_ROI 를 가로 3등분한 칸 0/1/2 (화면 왼쪽 = 랙 1번).
+      적재/하역과 무관 — 적재 완료 후 랙 관측 상태에서만 읽는다.
+
+Isaac <──> 주행 프로세스 (through_pose_human_test.py)   둘 다 std_msgs/Float32MultiArray, data[0] 만 쓴다
+  /mission_state  Isaac -> 주행 : 1 = 적재+관측 끝났다, 출발해도 된다 (매 틱 발행)
+  /nav_done       주행 -> Isaac : 1 = 도킹까지 끝났다, 하역해도 된다 (5초간 반복 발행)
 ```
+
+### 주행 핸드셰이크 (2026-09-22 추가)
+- Isaac 쪽은 검출과 같은 제네릭 ROS2 노드(`pub_mission` / `sub_nav`)를 쓴다. 번들 파이썬에
+  rclpy 가 없어서 노드를 따로 못 띄운다.
+- **제네릭 `ROS2Subscriber` 는 마지막 값을 계속 들고 있다.** 그래서 `/nav_done` 은
+  Stop 시점에 `clear_nav_done()` 으로 0 으로 지운다. 안 지우면 다음 Play 때 주행을 건너뛴다.
+- `/nav_done` 을 5초간 반복 발행하는 이유: Isaac 쪽이 OmniGraph 구독이라 latched(transient
+  local)를 못 믿는다. 한 번만 쏘면 놓칠 수 있다.
+
+### 긴급도 ArUco 마커 (2026-09-22 추가)
+- 마커 PNG: `isaacpjt/sdg/make_markers.py` → `isaacpjt/assets/markers/aruco_{0,1,2}.png` (흰 여백 포함 7셀, 검은 마커 6셀)
+- 부착: `pick_and_place_detection.py`의 `attach_aruco()` — `spawn_tray_copies()`가 원본·복제본 전부에
+  `random.choice(0,1,2)`로 붙인다. 손잡이 윗판(`handle/Cube_01`, 5×10cm, 윗면 z=0.1474 handle 기준) 위
+  4.9cm 사각형 + `UsdPreviewSurface` 텍스처. 시각 전용(콜리전 없음). 배정 결과는 시작 로그 `aruco` 줄.
+- 읽기: `detect_node.py`의 `read_markers()` → `/aruco_markers`로 따로 발행. 저장 이미지에 `aruco N`
+  텍스트가 같이 찍힌다 — **마커가 안 읽히면 이 이미지부터 볼 것**.
+- **스캔 자세에서는 못 읽는다** (앙각 ≈15°라 윗판 마커가 40×10px로 찌그러짐, 실측 27프레임 0검출).
+  수직판(`Cube_02`)은 로봇 쪽에서 보면 기둥에 가려 불가. 그래서 **적재 완료 후 별도 관측 상태**로 읽는다.
+- 관측 흐름 (`observe_go → observe_tilt → observe_settle → observe_home → wait_unload`):
+  `RACK_SLOTS[1]`에서 로봇 쪽 `OBSERVE_BACK_M`(0.30), 위 `OBSERVE_UP_M`(0.35)로 이동(POINT4_RPY) →
+  `build_descend_step` 재사용으로 `OBSERVE_PITCH_DEG`(−50°) 숙임 → `OBSERVE_COLLECT_FRAMES` 동안
+  마커 메시지를 누적해 칸별 최빈 id (`assign_slots`/`merge_urgencies`) → 로그
+  `observe  랙 1번: 긴급도 상(2)  2번: 미검출(-1)  3번: ...` → 홈 → `U` 대기.
+  못 읽어도 `-1`로 찍고 진행한다. `OBSERVE_UP_M`은 0.35→0.30 실측 조정. 랙에 닿거나 IK 안 풀리면 이것부터.
+- 관제 PC 는 `RACK_ROI`(관측 자세에서 랙이 보이는 픽셀 영역)만 `ARUCO_ZOOM`(3)배 키워서 읽는다 —
+  원본 크기(~28px, 4px/셀)로는 2번 칸이 0/56 프레임이었다. **관측 자세를 바꾸면 저장 이미지의
+  노란 ROI 사각형이 랙을 덮는지 보고 `RACK_ROI`를 맞출 것.** 칸 배정도 이 ROI 의 가로 3등분이다.
+  마커를 3D 로 옮겨 `RACK_SLOTS` 와 x 거리를 재던 방식은 깊이 오차로 양옆 칸이 버려져([0,11,2]) 폐기.
+- 마커가 읽힌 프레임은 `~/tray_detections/` 에 전부 저장된다(진단용). 필요 없어지면
+  `_log_and_save` 의 `if markers or ...` 에서 `markers or` 를 빼면 된다.
 
 depth와 color는 **같은 render product**에 붙어 있어 픽셀 단위로 정렬돼 있다.
 별도 정합이 필요 없다. (`type="depth"`는 `DistanceToImagePlane` = 광축 방향 Z라
@@ -317,11 +407,49 @@ POINT4/5_RPY = (-89.3, 0.1, 180.0)
 - `cameraPrim`은 relationship이라 `SET_VALUES`로 못 넣는다 → `set_targets()`.
 - yaml에서 온 리스트는 `GfVec2f` 속성에 그대로 못 넣는다 → 튜플 변환 필요.
 
+### 사람(omni.anim.people)
+- **확장·carb 설정만으로는 안 걷는다.** 명령을 읽어 실행하는 주체는 캐릭터 SkelRoot 에 붙은
+  `character_behavior.py`(omni.kit.scripting BehaviorScript) 다. GUI People 확장의
+  'Setup characters' 를 눌러야 USD 에 저장되는데 `integration_human.usd` 에는 **없다**
+  (실측: `/World/Characters/Character{,_01}` 에 `omni:scripting:scripts` 도 `AnimationGraphAPI` 도 없다).
+  → `setup_characters()` 가 실행할 때마다 붙인다. `load_scene()` **뒤**, `bake_navmesh()` 앞.
+  `run_human_scene.py` / `pickup_place_go_nova.py` 에는 아직 이 단계가 없다 — 그쪽으로 사람을
+  움직이려면 같은 함수를 옮겨 넣을 것.
+- 순서: 확장 + carb 설정(씬 로드 **앞**) → 씬 로드(`is_stage_loading()` 이 끝날 때까지 대기) →
+  캐릭터 연결 → navmesh 베이크 → Play. navmesh 가 없으면 `GoTo` 가 전부 invalid command 로 거부된다.
+- `command.txt` 의 첫 토큰은 **캐릭터 프림 이름**이다 (`Character`, `Character_01`). 이름이 다르면 조용히 무시된다.
+- `people/config.yaml` 은 Replicator Agent(UI) 가 읽는 파일이라 standalone 실행에서는 아무도 안 읽는다.
+
 ### 로봇 / IK
+- **손목 특이점 — 회전 전 후퇴는 관절 공간으로 (2026-09-22)**: `로봇 쪽 후퇴(25cm)`는 자세를
+  고정한 채 TCP 를 당기는 직교 보간이었다. 그러면 `joint_5 ≈ −(joint_2+joint_3)` 로 묶여
+  **경로가 joint_5 = 0 을 관통**한다 (실측: `IK 거부 161틱, 25cm 중 7cm 만 가고 중단`).
+  가드를 풀면 팔이 뒤틀리므로 가드 문제가 아니다. → `joint_retreat_step()` 으로 바꿨다.
+  어깨(`RETREAT_SHOULDER_DEG`)/팔꿈치(`RETREAT_ELBOW_DEG`)를 접고 **`joint_5` 로 같은 양을 되돌려
+  도구 기울기(= 트레이 기울기)를 유지**한다. IK 를 안 거치니 특이점이 없다. 접는 **부호는 FK 로
+  양쪽을 미리 재서** 수평 도달거리가 줄어드는 쪽을 고른다. 크기는 실측 튜닝값 —
+  로그 `retreat  +1: 수평 도달 0.870 -> 0.6xx m, z ...` 를 보고 맞출 것. 적재·하역이 같은 함수를 쓴다.
+- **스텝이 실패해도 미션은 안 멈춘다 (2026-09-22)**: 예전엔 `sequence.failed` 면
+  `pick_state = None` 으로 정지했다. 주행까지 묶인 뒤로는 그러면 안 된다.
+  1) `wrist_unlock_step()` 으로 `joint_5` 를 0 에서 `WRIST_UNLOCK_DEG` 띄우고(joint_3 로 기울기 보상)
+     **실패한 스텝부터** 재개 (`MAX_STEP_RETRIES` 회).
+  2) 적재 계열이면 `begin_recover()` — 들고 있으면 **원래 집은 자리에 되돌려 놓고**
+     (`build_return_steps`), 아니면 홈으로만 빠진 뒤 다음 트레이 스캔.
+  3) 관측/하역이면 홈으로만 빼고 **상태는 유지** — 홈 복귀가 끝나면 원래 흐름이 그대로 이어진다.
+  4) 적재를 `MAX_STAGE_FAILS` 회 실패하면 남은 칸을 포기하고 관측 → 주행 → 하역으로 넘어간다.
+  검출 실패(`FRESH_TIMEOUT_FRAMES` / `MAX_DETECT_RETRIES` 초과)도 중단이 아니라 2) 로 간다.
+  **복구 시퀀스로 갈아끼울 때 `sequence.gripper` 를 반드시 넘길 것** — `reset()` 이 `open` 으로
+  시작하므로 안 넘기면 들고 있던 트레이를 그 자리에서 놓아버린다.
 - **손목 특이점**: `joint_5`가 0 근처면 `joint_4`/`joint_6` 축이 일직선이 되어
   IK가 다른 해로 튀고 팔이 뒤틀린다. `SingularityGuardedIK`가 한 프레임에 20°
-  넘게 튀는 해를 걸러낸다. 다만 이건 **안전망이지 해결이 아니다** — 걸리면
-  그 스텝은 목표에 못 미친 채 끝난다.
+  넘게 튀는 해를 걸러낸다. 다만 이건 **안전망이지 해결이 아니다**.
+- **스텝 도달 확인 (2026-09-22 추가)**: 예전엔 `PickPlaceSequence`가 틱 수만 세고 넘겨서,
+  IK 가 계속 거부된 스텝(특히 `로봇 쪽 후퇴 25cm`)에서 팔이 제자리인데 다음 스텝(joint_1 회전)이
+  시작됐다 — "올린 뒤 후퇴 없이 회전" 증상. 이제 pose 스텝 끝에 TCP 오차(`STEP_POS_TOL_M` 1cm /
+  `STEP_ROT_TOL_DEG` 5°)를 재서 크면 `STEP_EXTRA_TICKS`(120) 더 기다리고, 그래도 못 가면
+  `step N '…' 도달 실패 — 위치 오차 …, IK 거부 …틱` 을 찍고 **시퀀스를 중단**한다.
+  바닥에 닿는 두 스텝(랙/책상 수직 하강)은 `tol=STEP_CONTACT_TOL_M`(3cm)으로 느슨하다.
+  이 로그가 자주 뜨는 스텝이 있으면 그 구간에 경유점을 넣거나 관절 공간으로 바꿀 것.
 - `default_q`의 `joint_5`가 0(특이점)이지만 warm start는 현재 관절값이라 큰 영향은 없다.
 - 드라이브가 한 스텝에 목표를 못 따라와 몇 cm 못 미친 채로 그리퍼가 닫히는 일이
   있다 → 같은 pose를 한 번 더 주는 패턴이 원본 코드에 있다.
