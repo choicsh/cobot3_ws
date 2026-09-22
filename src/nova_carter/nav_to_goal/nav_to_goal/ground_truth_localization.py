@@ -14,7 +14,7 @@ import sys
 
 import rclpy
 from rclpy.node import Node
-from geometry_msgs.msg import TransformStamped
+from geometry_msgs.msg import PoseWithCovarianceStamped, TransformStamped
 from tf2_ros import StaticTransformBroadcaster
 
 START_POSE_PATH = os.path.expanduser('~/cobot3_ws/isaacpjt/assets/start_pose.json')
@@ -42,6 +42,29 @@ class GroundTruthLocalization(Node):
         self.get_logger().info(
             f'map->odom 정적 TF 발행 (Isaac ground truth): x={x:.3f} y={y:.3f} yaw={math.degrees(yaw):.1f}deg'
         )
+
+        # AMCL 은 결과를 쓰지 않지만(tf_broadcast: false) 초기 위치가 없으면 2초마다 경고를 찍으므로 한 번 넣어준다.
+        self._init_pose = PoseWithCovarianceStamped()
+        self._init_pose.header.frame_id = 'map'
+        self._init_pose.pose.pose.position.x = x
+        self._init_pose.pose.pose.position.y = y
+        self._init_pose.pose.pose.orientation.z = math.sin(yaw / 2.0)
+        self._init_pose.pose.pose.orientation.w = math.cos(yaw / 2.0)
+        self._init_pose.pose.covariance[0] = self._init_pose.pose.covariance[7] = 0.25
+        self._init_pose.pose.covariance[35] = math.radians(10.0) ** 2
+        self._init_pub = self.create_publisher(PoseWithCovarianceStamped, 'initialpose', 10)
+        self._init_timer = self.create_timer(1.0, self._publish_initial_pose)
+        self._init_count = 0
+
+    def _publish_initial_pose(self):
+        # sim 클록이 아직 0 이면 stamp 가 무효라 건너뛴다. 몇 번 보낸 뒤 타이머를 멈춘다.
+        if self.get_clock().now().nanoseconds == 0:
+            return
+        self._init_pose.header.stamp = self.get_clock().now().to_msg()
+        self._init_pub.publish(self._init_pose)
+        self._init_count += 1
+        if self._init_count >= 5:
+            self._init_timer.cancel()
 
 
 def main():
