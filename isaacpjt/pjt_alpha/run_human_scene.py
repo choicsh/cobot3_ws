@@ -62,16 +62,17 @@ simulation_app.update()
 # 초기화 시점에 한 번만 읽으므로 반드시 open_stage() 앞에서 설정해야 한다.
 import carb
 
-PEOPLE_COMMAND_FILE = "/home/rokey/cobot3_ws/isaacpjt/assets/people/command.txt"
+PEOPLE_COMMAND_FILE = str(Path(__file__).resolve().parents[1] / "assets/people/command.txt")
 _settings = carb.settings.get_settings()
 _settings.set("/exts/omni.anim.people/command_settings/command_file_path", PEOPLE_COMMAND_FILE)
 _settings.set("/exts/omni.anim.people/command_settings/number_of_loop", "inf")  # 기본 "0" 은 1회 재생 후 정지
 _settings.set("/exts/omni.anim.people/navigation_settings/navmesh_enabled", True)
 _settings.set("/exts/omni.anim.people/navigation_settings/dynamic_avoidance_enabled", True)
+_settings.set("/app/scripting/ignoreWarningDialog", True)
 simulation_app.update()
 
 import omni.usd
-from pxr import Sdf, Usd
+from pxr import Sdf, Usd, UsdSkel
 
 from isaacsim.core.api import World
 from isaacsim.core.api.robots import Robot
@@ -81,7 +82,7 @@ from isaacsim.core.utils.stage import is_stage_loading, open_stage
 import pick_and_place as _pnp
 
 
-USD_PATH = Path("/home/rokey/cobot3_ws/isaacpjt/assets/integration_human.usd")
+USD_PATH = Path(__file__).resolve().parents[1] / "assets/integration_human.usd"
 
 MOVE_ROOT_PATH = "/World/robot_nova"
 ROBOT_PRIM_PATH = MOVE_ROOT_PATH + "/nova_carter"
@@ -102,6 +103,50 @@ TF_SENSORS_NODE = "/World/nova_carter_ros/transform_tree_odometry/tf_sensors"
 
 def section(title):
     print(f"\n=== {title} " + "=" * max(0, 50 - len(title)))
+
+
+CHARACTERS_ROOT = "/World/Characters"
+BIPED_SETUP_PATH = CHARACTERS_ROOT + "/Biped_Setup"
+
+
+def setup_characters():
+    """캐릭터마다 애니메이션 그래프와 behavior 스크립트를 연결한다."""
+    import omni.kit.app
+    import omni.kit.commands
+
+    stage = omni.usd.get_context().get_stage()
+    root = stage.GetPrimAtPath(CHARACTERS_ROOT)
+    if not root.IsValid():
+        return 0
+
+    skelroots = [prim for prim in Usd.PrimRange(root)
+                 if prim.IsA(UsdSkel.Root) and not str(prim.GetPath()).startswith(BIPED_SETUP_PATH)]
+    if not skelroots:
+        return 0
+
+    biped = stage.GetPrimAtPath(BIPED_SETUP_PATH)
+    graph = next((prim for prim in Usd.PrimRange(biped) if prim.GetTypeName() == "AnimationGraph"),
+                 None) if biped.IsValid() else None
+
+    paths = [prim.GetPath() for prim in skelroots]
+    if graph is not None:
+        omni.kit.commands.execute("RemoveAnimationGraphAPICommand", paths=paths)
+        omni.kit.commands.execute("ApplyAnimationGraphAPICommand", paths=paths,
+                                  animation_graph_path=graph.GetPath())
+
+    script = (omni.kit.app.get_app().get_extension_manager()
+              .get_extension_path_by_module("omni.anim.people")
+              + "/omni/anim/people/scripts/character_behavior.py")
+    omni.kit.commands.execute("RemoveScriptingAPICommand", paths=paths)
+    omni.kit.commands.execute("ApplyScriptingAPICommand", paths=paths)
+    for prim in skelroots:
+        prim.GetAttribute("omni:scripting:scripts").Set([script])
+    for _ in range(10):
+        simulation_app.update()
+
+    names = ", ".join(prim.GetName() for prim in skelroots)
+    print(f"   characters   {len(skelroots)}명 연결 ({names})")
+    return len(skelroots)
 
 
 def bake_navmesh(timeout_s=30.0):
@@ -266,6 +311,7 @@ def main():
     while is_stage_loading():
         simulation_app.update()
 
+    setup_characters()
     bake_navmesh()
 
     stage = omni.usd.get_context().get_stage()

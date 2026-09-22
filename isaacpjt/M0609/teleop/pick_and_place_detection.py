@@ -2,7 +2,7 @@
 Pick & Place + 손목 카메라 검출 — pick_and_place.py 에 검출 연동을 붙인 판.
 
     source /opt/ros/jazzy/setup.bash
-    ~/isaacsim/python.sh pick_and_place_detection.py
+    isaac_python pick_and_place_detection.py
 
 pick_and_place.py 와 달리 파지 좌표(POINT1/POINT2)를 손으로 찾은 값 대신 검출로
 구한다. 대신 place 좌표(POINT4/POINT5)는 그대로 고정값을 쓴다 — 이번 변경은
@@ -31,7 +31,7 @@ Isaac Sim 은 자체 python3.11 이라 한 프로세스에 합칠 수 없다.
 주행(Nav2)까지 묶은 전체 시나리오 — 프로세스 3개다 (rclpy 를 번들 파이썬에서 못 쓴다).
 
     1) 관제 PC 검출 노드     detect_node.py            (~/yolo-venv)
-    2) 이 파일               ~/isaacsim/python.sh      씬 + 사람 + 팔 + 후방 라이다
+    2) 이 파일               isaac_python              씬 + 사람 + 팔 + 후방 라이다
     3) Nav2 스택 + 주행 미션 ros2 launch carter_navigation nav2_human_test.launch.py
                              ros2 run nav_to_goal through_pose_human_test
 
@@ -66,7 +66,7 @@ from isaacsim.core.utils.prims import set_targets
 
 from isaacsim.core.api import World
 from isaacsim.core.prims import SingleXFormPrim
-from isaacsim.core.utils.stage import is_stage_loading
+from isaacsim.core.utils.stage import open_stage, is_stage_loading
 from isaacsim.core.utils.types import ArticulationAction
 from isaacsim.robot.manipulators.grippers import ParallelGripper
 from isaacsim.robot.manipulators.manipulators import SingleManipulator
@@ -112,7 +112,7 @@ PEOPLE_EXTENSIONS = [
     "omni.anim.retarget.ui",
     "omni.kit.scripting",
 ]
-PEOPLE_COMMAND_FILE = "/home/rokey/cobot3_ws/isaacpjt/assets/people/command.txt"
+PEOPLE_COMMAND_FILE = str(M0609_DIR.parent / "assets/people/command.txt")
 # 캐릭터에 애니메이션 그래프 + behavior 스크립트를 붙일 위치. 씬 USD 에는 이게 안 들어 있다.
 CHARACTERS_ROOT     = "/World/Characters"
 BIPED_SETUP_PATH    = CHARACTERS_ROOT + "/Biped_Setup"
@@ -545,6 +545,7 @@ def setup_people():
     st.set("/exts/omni.anim.people/command_settings/number_of_loop", "inf")   # 기본 "0" 은 1회 재생
     st.set("/exts/omni.anim.people/navigation_settings/navmesh_enabled", True)
     st.set("/exts/omni.anim.people/navigation_settings/dynamic_avoidance_enabled", True)
+    st.set("/app/scripting/ignoreWarningDialog", True)
     simulation_app.update()
     print(f"   people       확장 {len(PEOPLE_EXTENSIONS)}개 + {Path(PEOPLE_COMMAND_FILE).name}")
 
@@ -595,7 +596,8 @@ def setup_characters():
     omni.kit.commands.execute("ApplyScriptingAPICommand", paths=paths)
     for prim in skelroots:
         prim.GetAttribute("omni:scripting:scripts").Set([script])
-    simulation_app.update()
+    for _ in range(10):
+        simulation_app.update()
 
     names = ", ".join(prim.GetName() for prim in skelroots)
     print(f"   characters   {len(skelroots)}명 연결 ({names}) — 그래프 {'O' if graph else 'X'}, behavior 스크립트 O")
@@ -645,17 +647,9 @@ def find_rtx_lidar(root_path):
 
 
 def load_scene():
-    """PnP 씬을 /World 아래 참조로 올린다"""
-    stage = omni.usd.get_context().get_stage()
-    world_prim = stage.GetPrimAtPath("/World")
-    if not world_prim.IsValid():
-        world_prim = UsdGeom.Xform.Define(stage, "/World").GetPrim()
-
-    world_prim.GetReferences().AddReference(SCENE_USD, "/World")
-    for _ in range(30):
-        simulation_app.update()
-    # 캐릭터/로봇 에셋은 원격 참조라 30프레임으로는 안 끝날 수 있다. 다 올라와야 그 뒤의
-    # setup_characters() 가 SkelRoot 를 찾는다
+    """PnP 씬을 연다"""
+    if not open_stage(SCENE_USD):
+        raise RuntimeError(f"Could not open USD: {SCENE_USD}")
     while is_stage_loading():
         simulation_app.update()
 
@@ -1699,8 +1693,6 @@ class PickPlaceSequence:
 def main():
     check_math()
 
-    world = World(stage_units_in_meters=1.0)
-
     section("SCENE")
     setup_people()          # 반드시 load_scene() 앞 (캐릭터 스크립트가 초기화 때 한 번만 읽는다)
     load_scene()
@@ -1714,6 +1706,8 @@ def main():
     tray_origin = spawn_tray_copies()
     setup_arm_drives()
     setup_gripper_drive()
+
+    world = World(stage_units_in_meters=1.0)
     robot = register_robot(world)
 
     world.reset()
