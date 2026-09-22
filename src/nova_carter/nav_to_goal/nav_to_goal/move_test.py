@@ -1,6 +1,12 @@
 import math
+import os
 import time
 import rclpy
+from ament_index_python.packages import get_package_share_directory
+from rclpy.parameter import Parameter
+from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSDurabilityPolicy
+from rclpy.time import Time
+from nav_msgs.msg import Path
 from nav2_simple_commander.robot_navigator import BasicNavigator, TaskResult
 from geometry_msgs.msg import PoseStamped
 
@@ -79,72 +85,219 @@ def create_pose(navigator, x, y, yaw_deg):
     
     pose.pose.orientation.x = q[0]
     pose.pose.orientation.y = q[1]
-    pose.pose.orientation.z = q[2]  
+    pose.pose.orientation.z = q[2]
     pose.pose.orientation.w = q[3]
     return pose
+
+PATH_STEP = 0.05   # 경로 포즈 간격 [m]
+
+
+def sample_route(route):
+    """route 의 line/arc 조각을 PATH_STEP 간격의 (x, y, yaw_rad) 로 펼친다.
+
+    ('line', (x0, y0), (x1, y1))              : 직선
+    ('arc',  (cx, cy), r, a0_deg, a1_deg)     : 중심 (cx, cy), 반지름 r, 각도 a0 -> a1 (증가 = 반시계 = 좌회전)
+    """
+    pts = []
+    for seg in route:
+        if seg[0] == 'line':
+            (x0, y0), (x1, y1) = seg[1], seg[2]
+            length = math.hypot(x1 - x0, y1 - y0)
+            yaw = math.atan2(y1 - y0, x1 - x0)
+            n = max(1, int(length / PATH_STEP))
+            for i in range(n + 1):
+                t = i / n
+                pts.append((x0 + (x1 - x0) * t, y0 + (y1 - y0) * t, yaw))
+        else:
+            (cx, cy), r, a0, a1 = seg[1], seg[2], math.radians(seg[3]), math.radians(seg[4])
+            ccw = a1 > a0
+            n = max(1, int(abs(a1 - a0) * r / PATH_STEP))
+            for i in range(n + 1):
+                a = a0 + (a1 - a0) * i / n
+                yaw = a + (math.pi / 2 if ccw else -math.pi / 2)
+                pts.append((cx + r * math.cos(a), cy + r * math.sin(a), yaw))
+    return pts
+
+
+def path_length(route):
+    total = 0.0
+    for seg in route:
+        if seg[0] == 'line':
+            total += math.hypot(seg[2][0] - seg[1][0], seg[2][1] - seg[1][1])
+        else:
+            total += abs(math.radians(seg[4]) - math.radians(seg[3])) * seg[2]
+    return total
+
+
+def build_path(nav, route, final_yaw_deg):
+    path = Path()
+    path.header.frame_id = 'map'
+    path.header.stamp = nav.get_clock().now().to_msg()
+    pts = sample_route(route)
+    for x, y, yaw in pts:
+        path.poses.append(create_pose(nav, x, y, math.degrees(yaw)))
+    path.poses[-1] = create_pose(nav, pts[-1][0], pts[-1][1], final_yaw_deg)
+    return path
+
+
+def wait_until_nav2_active(nav):
+    """controller_server 활성화 + map->base_link TF(ground_truth_localization + Isaac odom)까지 기다린다.
+
+    nav.waitUntilNav2Active() 는 AMCL 전제라 쓰지 않는다 (amcl 노드를 기다리고, 기본값 (0,0,0)을
+    /initialpose 로 쏜다).
+    """
+    from tf2_ros import Buffer, TransformListener
+    nav._waitForNodeToActivate('controller_server')
+    tf_buffer = Buffer()
+    nav._tf_listener = TransformListener(tf_buffer, nav)
+    nav.get_logger().info('map->base_link TF 대기 중...')
+    while rclpy.ok() and not tf_buffer.can_transform('map', 'base_link', Time()):
+        rclpy.spin_once(nav, timeout_sec=0.5)
+    nav.get_logger().info('Nav2 준비 완료')
+    return tf_buffer
+
+
+def remaining_path(path, tf_buffer, start_index):
+    """로봇에서 가장 가까운 포즈(start_index 이후만 탐색)부터 끝까지 잘라낸 Path 와 그 인덱스."""
+    try:
+        t = tf_buffer.lookup_transform('map', 'base_link', Time()).transform.translation
+    except Exception:
+        return None, start_index
+    best_i, best_d = start_index, float('inf')
+    for i in range(start_index, len(path.poses)):
+        p = path.poses[i].pose.position
+        d = (p.x - t.x) ** 2 + (p.y - t.y) ** 2
+        if d < best_d:
+            best_i, best_d = i, d
+    rest = Path()
+    rest.header = path.header
+    rest.poses = path.poses[best_i:]
+    return rest, best_i
+
 
 def main():
     rclpy.init()
     nav = BasicNavigator()
+    # launch 쪽 Nav2 가 Isaac Sim 클록(use_sim_time)으로 돌므로 goal stamp 도 같은 클록이어야 한다.
+    nav.set_parameters([Parameter('use_sim_time', Parameter.Type.BOOL, True)])
 
-    # 1. 출발점 설정: intergration_nova.usd 의 /World/robot_nova 배치값 그대로.
-    # Isaac 월드 좌표 == 맵 좌표 이므로 변환 없이 넣는다 (yaw -90deg).
-    # 씬에서 카트를 옮기면 이 값도 같이 고쳐야 AMCL 이 처음부터 제대로 붙는다.
-    init_pose = create_pose(nav, 1.2303, 3.36282, 180.0)
-    nav.setInitialPose(init_pose)
-    nav.waitUntilNav2Active()
+    # 1. 출발점/현재 위치는 여기서 정하지 않는다. Isaac Sim 이 기록한 start_pose.json 으로
+    # launch 의 ground_truth_localization 이 map->odom 을 잡으므로, 씬에서 카트를 옮겨도 손댈 곳이 없다.
+    tf_buffer = wait_until_nav2_active(nav)
 
-    # 2. 순차 방문할 좌표를 (x[m], y[m], yaw[deg]) 형식으로 입력한다.
-    # 예: (2.0, 1.0, 90.0)
-    # 맵 제작 시 free space 기준점이 책상과 겹쳐 씬 전체를 x축으로 -1.84091 옮겼으므로
-    # 좌표를 그만큼 옮겼다.
+    # 2. 경로를 직접 그려서 controller_server 의 FollowPath 로 보낸다.
+    #    planner(NavFn)와 경유점 통과 판정(RemovePassedGoals)을 아예 쓰지 않으므로
+    #    "경유점을 지나쳐서 되돌아가는" 일이 구조적으로 없고, 코너는 우리가 정한 반경의 호 그대로 돈다.
     #
-    # 책상 옆(x = -0.761)은 로봇 옆면과 책상 사이가 1cm 뿐이라 '직진만' 되는 구간이다.
-    # 그래서 출발 직후엔 남쪽으로 빠져나오고, 도착할 때도 위(y=19.5)에서 -90deg 로
-    # 방향을 맞춘 뒤 남쪽으로 진입한다. 도착 지점에서 제자리 회전을 시키면 책상에 부딪힌다.
-    waypoint_specs = [
-        (-1.937, 3.416, 180.0),
-        (-1.958, -0.352, 270.0),
-        (6.641, 0.138, 90.0),
-        (7.398, 17.238, 150.0),
-        (5.826, 19.193, 180.0),
-        (1.618, 19.349, 180.0),
-        #(-2.5, 3.36282, -90.0),
-        #(-2.5, -1.0,    0),
-        #(6.0, -1.0,   90),
-        #(6.0, 18.0,  0),    # 내려놓는 자세 바로 위
-        #(1.2303, 18.0,  0)    # 남쪽으로 진입 = 팔이 트레이를 내려놓는 자세
+    #    ㄷ자 동선을 세 구간으로 잘라 구간마다 방식을 바꾼다:
+    #      ① room1 탈출 : FollowPath 고정 경로 + DWB  + transit checker (xy 0.3 / yaw 0.3, 경계에서 바로 다음 구간으로)
+    #      ② corridor   : FollowPath 고정 직선 + MPPI + transit checker  (CORRIDOR_MODE = 'followpath')
+    #                     -> 경로는 그대로 두고 MPPI 가 예측 horizon 안에서 장애물을 비켜 갔다가 경로로 복귀한다.
+    #                        horizon(time_steps*model_dt) 안에 우회가 다 들어와야 하므로 콘/사람 정도의 작은 장애물용.
+    #                        복도를 통째로 막는 큰 장애물은 planner 가 있어야 한다 -> CORRIDOR_MODE = 'navigate'
+    #                        (NavigateToPose, planner 1 Hz 재계획 + MPPI) 로 바꾸면 우회 경로를 planner 가 그린다.
+    #      ③ room2 도킹 : FollowPath 고정 경로 + DWB  + general checker (xy 0.05 / yaw 0.03, 도킹 정밀도)
+    #    방 안은 책상/벽 12 cm 간격이라 검증된 고정 호를 정확히 따라가야 하므로 planner 에 맡기지 않고 DWB 로 고정 경로를 탄다.
+    #
+    # 씬 기준값 (intergration_nova.usd / intergration_nova.png):
+    #   시작 base_link = (1.233, 3.363, 180deg), 아래 책상 x[-0.02, 2.92] y >= 3.986 -> 옆면~책상 12cm
+    #   위 책상은 아래 책상보다 정확히 +15.8m -> 시작과 같은 간격/방향의 도킹 pose = (1.233, 19.163, 180deg)
+    #   아래 방 x[-3.9, 4.0] y[-2.8, 5.2] / 복도 x[4.0, 10.0] (중앙 7.0) / 위 방 y[12.1, 21.1]
+    #
+    # footprint 앞 0.48 / 뒤 1.38 / 폭 1.0. 좌회전 때 꼬리 바깥 모서리가 회전 중심에서
+    # sqrt((R+0.5)^2 + 1.38^2) 만큼 바깥으로 쓸려 나간다 (R=0.6 -> 1.76 m, R=1.5 -> 2.43 m).
+    #
+    # 서쪽 포켓(책상 끝 -0.02 ~ 벽 -3.875, 3.85 m)은 이 로봇이 큰 호로 U턴하기엔 좁다:
+    #   - 꼬리가 책상 끝을 지난 뒤(x <= -1.6)에야 좌회전을 시작할 수 있고
+    #   - 남향 구간에서 다시 좌회전할 때 꼬리가 서쪽 벽 쪽으로 약 1.3 m 쓸려 나간다.
+    #   => U턴은 R=0.6 (전진하며 도는 타이트한 U턴), 나머지 코너는 여유 있게 R=1.5.
+    #
+    # 복도 구간은 중앙(7.0)이 아니라 동쪽으로 1 m 치우친 x=8.0 으로 그린다 (북진 기준 우측통행).
+    #   동쪽 벽까지 2.0 m (폭 절반 0.5 빼면 1.5 m), 서쪽으로 4.0 m 가 MPPI 의 회피 공간.
+    #   진입/이탈 호(R=1.5, 중심 x=6.5) 꼬리 쓸림 2.43 m -> 동쪽 최대 x=8.93 (벽 10.0 까지 1.07 m),
+    #   진입 호 남쪽 최저 y=-0.33 (벽 -2.8), 이탈 호 북쪽 최고 y=20.09 (벽 21.1 까지 1.0 m).
+    CORRIDOR_X = 8.0
+    room1_route = [
+        ('line', (1.233, 3.363), (-1.6, 3.363)),          # 책상 옆 서쪽 직진. 끝날 때 꼬리 x=-0.22 (책상 밖)
+        ('arc',  (-1.6, 2.763), 0.6, 90.0, 180.0),        # 좌회전 -> 남향 (꼬리 모서리 최대 y=4.5, 벽까지 0.9)
+        ('line', (-2.2, 2.763), (-2.2, 1.2)),             # 남쪽으로
+        ('arc',  (-1.6, 1.2), 0.6, 180.0, 270.0),         # 좌회전 -> 동향 (꼬리 모서리 벽까지 0.35)
+        ('line', (-1.6, 0.6), (CORRIDOR_X - 1.5, 0.6)),   # 아래 방 가운데로 동진 (남쪽 벽/책상 각 3.4 m)
+        ('arc',  (CORRIDOR_X - 1.5, 2.1), 1.5, 270.0, 360.0),   # 좌회전 -> 북향, 복도 x=8.0 진입
     ]
-
-    if not waypoint_specs:
-        nav.get_logger().error(
-            'waypoint_specs가 비어 있습니다. (x, y, yaw_deg) 좌표를 입력하세요.'
-        )
-        rclpy.shutdown()
-        return
-
-    waypoints = [
-        create_pose(nav, x, y, yaw_deg)
-        for x, y, yaw_deg in waypoint_specs
+    corridor_route = [
+        ('line', (CORRIDOR_X, 2.1), (CORRIDOR_X, 17.663)),      # 복도 북진 (MPPI, followpath 모드)
     ]
+    corridor_goal = (CORRIDOR_X, 17.663, 90.0)                  # 복도 출구 (navigate 모드: 경로는 planner 가 그린다)
+    CORRIDOR_MODE = 'followpath'                                # 'followpath' | 'navigate'
+    room2_route = [
+        ('arc',  (CORRIDOR_X - 1.5, 17.663), 1.5, 0.0, 90.0),   # 좌회전 -> 서향, 도킹 라인 y=19.163 에 정렬
+        ('line', (CORRIDOR_X - 1.5, 19.163), (1.233, 19.163)),  # 5.3 m 직진 진입 -> 도킹 (책상 구간 전 3.1 m 정렬)
+    ]
+    dock_yaw_deg = 180.0   # 시작과 같은 방향
 
-    # 3. 입력된 waypoint를 순서대로 방문한다.
-    nav.followWaypoints(waypoints)
+    corridor_bt = os.path.join(get_package_share_directory('carter_navigation'),
+                               'behavior_trees', 'navigate_to_pose_corridor.xml')   # MPPI + transit checker, Spin/BackUp 없음
 
-    while not nav.isTaskComplete():
-        feedback = nav.getFeedback()
-        if feedback:
-            current_index = feedback.current_waypoint
-            print(
-                f"현재 waypoint: {current_index + 1}/{len(waypoints)}"
-            )
+    # RViz 의 Global Planner > Path 디스플레이(/plan)에 그린 경로를 띄운다. planner 를 안 쓰므로 직접 발행.
+    plan_pub = nav.create_publisher(Path, 'plan', QoSProfile(
+        depth=1, reliability=QoSReliabilityPolicy.RELIABLE, durability=QoSDurabilityPolicy.TRANSIENT_LOCAL))
 
-        time.sleep(0.5)
+    def run_follow_path(name, route, final_yaw_deg, controller_id, goal_checker_id):
+        path = build_path(nav, route, final_yaw_deg)
+        end = path.poses[-1].pose.position
+        print(f"[{name}] FollowPath({controller_id}, {goal_checker_id}) {len(path.poses)} 포즈 "
+              f"{path_length(route):.1f} m -> ({end.x:.3f}, {end.y:.3f}, {final_yaw_deg:.0f}deg)")
+        plan_pub.publish(path)
+        nav.followPath(path, controller_id=controller_id, goal_checker_id=goal_checker_id)
+
+        last_print = 0.0
+        passed_index = 0
+        while not nav.isTaskComplete():
+            feedback = nav.getFeedback()
+            now = time.time()
+            if feedback and now - last_print > 3.0:
+                last_print = now
+                print(f"-> 남은 거리 {feedback.distance_to_goal:.1f} m, 속도 {feedback.speed:.2f} m/s")
+
+            # 지나간 구간은 RViz 표시에서 지운다 (planner 가 매초 다시 그리던 것과 같은 느낌)
+            rest, passed_index = remaining_path(path, tf_buffer, passed_index)
+            if rest is not None:
+                plan_pub.publish(rest)
+            time.sleep(0.5)
+        return nav.getResult()
+
+    def run_navigate(name, goal):
+        print(f"[{name}] NavigateToPose(FollowPathMPPI, transit_goal_checker, 재계획 1 Hz) -> {goal}")
+        nav.goToPose(create_pose(nav, *goal), behavior_tree=corridor_bt)
+        last_print = 0.0
+        while not nav.isTaskComplete():
+            feedback = nav.getFeedback()
+            now = time.time()
+            if feedback and now - last_print > 3.0:
+                last_print = now
+                print(f"-> 남은 거리 {feedback.distance_remaining:.1f} m, 복구 {feedback.number_of_recoveries}회")
+            time.sleep(0.5)
+        return nav.getResult()
+
+    # 구간 끝 yaw 는 다음 구간 시작 yaw 와 같게 둬서 경계에서 제자리 회전이 생기지 않게 한다 (①,② 끝 = 북향 90).
+    stages = [
+        ('① room1',    lambda: run_follow_path('① room1', room1_route, 90.0, 'FollowPath', 'transit_goal_checker')),
+        ('② corridor', (lambda: run_navigate('② corridor', corridor_goal)) if CORRIDOR_MODE == 'navigate'
+                       else (lambda: run_follow_path('② corridor', corridor_route, 90.0, 'FollowPathMPPI', 'transit_goal_checker'))),
+        ('③ room2',    lambda: run_follow_path('③ room2', room2_route, dock_yaw_deg, 'FollowPathDock', 'general_goal_checker')),   # 도킹은 0.5 m/s 전용 DWB (0.8 은 5~6 cm 지나침)
+    ]
+    result = TaskResult.UNKNOWN
+    for name, run in stages:
+        result = run()
+        if result != TaskResult.SUCCEEDED:
+            print(f"[{name}] 실패: {result.name}")
+            break
+        print(f"[{name}] 완료")
 
     # 4. 결과 처리
-    result = nav.getResult()
     if result == TaskResult.SUCCEEDED:
-        print('\n🎉 모든 waypoint 도착 완료!')
+        print('\n🎉 도킹 지점 도착 완료!')
     elif result == TaskResult.CANCELED:
         print('주행 취소됨')
     elif result == TaskResult.FAILED:

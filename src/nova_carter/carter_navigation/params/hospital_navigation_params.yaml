@@ -1,3 +1,4 @@
+# 병원 사람 회피 전용 파라미터. 기존 carter 설정에서 분리하여 검증한다.
 amcl:
   ros__parameters:
     use_sim_time: True
@@ -145,8 +146,10 @@ velocity_smoother:
     smoothing_frequency: 20.0 
     scale_velocities: false 
     feedback: "OPEN_LOOP"   # CLOSED_LOOP 는 램프가 이론값(0.60s)의 3.3배(2.00s) 로 늘어져 최종 회전이 좌우로 헌팅함 (실측)
-    max_velocity: [0.8, 0.0, 0.9]    # 전체 상한 (DWB/MPPI 모두 0.8). 각속도 0.9: R=0.6 U턴을 0.5 m/s 로 돌 수 있게 (v=R*w)
-    min_velocity: [-0.3, 0.0, -0.9] 
+    # DWB 자체 상한은 0.9, MPPI만 1.2를 쓸 수 있게 smoother의 공통 상한을 맞춘다.
+    # 이전 값 0.9에서는 FollowPathMPPI.wz_max=1.2가 downstream에서 잘려 효과가 없었다.
+    max_velocity: [0.8, 0.0, 1.2]
+    min_velocity: [-0.3, 0.0, -1.2]
     # deadband_velocity: [0.0, 0.0, 0.0] 
     velocity_timeout: 1.0 
     max_accel: [0.5, 0.0, 1.5]     # 기본값(2.5/3.2)은 390kg 로봇에 공격적. 직진 가속은 유지, 각가속만 상향
@@ -162,10 +165,10 @@ controller_server:
     min_x_velocity_threshold: 0.001
     min_y_velocity_threshold: 0.5
     min_theta_velocity_threshold: 0.001
-    failure_tolerance: 0.3
+    failure_tolerance: 6.0  # 일시적인 회피 궤적 부재 시 정지하며 다시 최적화
     progress_checker_plugins: ["progress_checker"]
-    # goal checker 는 두 개: 구간 경계(방->복도, 복도->방)는 transit, 도킹 끝만 general(정밀).
-    # 컨트롤러도 두 개: 방 안은 DWB(FollowPath), 복도는 MPPI(FollowPathMPPI). move_test 가 구간마다 골라 보낸다.
+    # 구간 경계는 transit, 정류장은 general. 도킹은 현재 미션에 포함하지 않는다.
+    # 모든 턴은 DWB, 복도 중앙 직선만 MPPI. hospital_mission이 선택한다.
     goal_checker_plugins: ["general_goal_checker", "transit_goal_checker"]
     controller_plugins: ["FollowPath", "FollowPathDock", "FollowPathMPPI"]
     use_realtime_priority: false
@@ -188,16 +191,17 @@ controller_server:
     general_goal_checker:
       stateful: True
       plugin: "nav2_controller::SimpleGoalChecker"
-      # 도킹 정밀도. 경로 전체를 FollowPath 로 보내므로 이 값은 경로 끝(도킹 지점)에만 적용된다.
-      # DWB 로 실질적으로 맞출 수 있는 하한 (xy 0.05 / yaw 0.03). 더 줄이려면 도킹 구간 컨트롤러를 바꿔야 한다.
+      # 좌표 5cm는 유지. 다음 레인의 접선 방향을 유지하되 도킹 수준의
+      # 1.7도 미세 정렬 대신 5.7도 허용으로 불필요한 끝점 회전을 줄인다.
       xy_goal_tolerance: 0.05
-      yaw_goal_tolerance: 0.03   # 1.7도
+      yaw_goal_tolerance: 0.10   # 5.7도; lab -90도 / specimen +90도
     transit_goal_checker:
-      # 구간 경계용. 여기서 정밀 정렬을 하면 복도 입구에서 도킹하듯 멈춰 서므로 느슨하게 두고 바로 다음 구간으로 넘긴다.
+      # 구간 경계용. 실제 시험에서 사람 옆에서 yaw 17도 수렴을 기다리며 18초 정체했다.
+      # 최종 정류장 자세는 general에서 유지하고, 컨트롤러 전환점만 0.8rad로 완화한다.
       stateful: False
       plugin: "nav2_controller::SimpleGoalChecker"
       xy_goal_tolerance: 0.3
-      yaw_goal_tolerance: 0.3
+      yaw_goal_tolerance: 0.8
   # DWB parameters
     FollowPath:
       plugin: "dwb_core::DWBLocalPlanner"
@@ -247,18 +251,19 @@ controller_server:
       debug_trajectory_details: True
       min_vel_x: 0.0   # NavFn 은 후진 경로를 만들지 않음
       min_vel_y: 0.0
-      max_vel_x: 0.5   # 도킹 구간 전용. 0.8 로 진입하면 제동 관성으로 목표를 5~6 cm 지나친다 (실측)
+      # 정류장 도착 구간 전용. 0.8 로 들어오면 제동 관성 때문에 마지막 회전이 과회전한다 (실측).
+      max_vel_x: 0.55
       max_vel_y: 0.0
-      max_vel_theta: 0.9   # R=0.6 U턴에서 속도가 0.3 으로 떨어지지 않게 (0.5/0.6=0.83 필요). 직진 0.5 는 도킹 정밀도 때문에 유지
+      max_vel_theta: 0.6   # 0.9 -> 0.6: 도착 정렬에서 과회전(오버슈트) 방지. 원호는 transit 쪽 DWB 가 담당한다
       min_speed_xy: 0.0
-      max_speed_xy: 0.5
+      max_speed_xy: 0.55
       min_speed_theta: 0.0
       acc_lim_x: 1.0   # 급출발 억제
       acc_lim_y: 0.0
-      acc_lim_theta: 1.5
+      acc_lim_theta: 1.0   # 각가속도 낮춰 정렬을 부드럽게
       decel_lim_x: -1.5   # 감속은 상대적으로 강하게 (안전)
       decel_lim_y: 0.0
-      decel_lim_theta: -3.5
+      decel_lim_theta: -2.0   # 과회전 후 되돌아오는 진동 완화
       vx_samples: 20
       vy_samples: 5
       vtheta_samples: 20
@@ -310,17 +315,20 @@ controller_server:
       vy_std: 0.0
       wz_std: 0.2             # 기본 0.4. 회전 노이즈가 크면 (1) 출력 wz 가 흔들려 좌우 1~2 cm 요동, (2) 빠른 샘플일수록
                               # 옆으로 새서 PathAlign 벌점이 커져 속도가 0.2 m/s 근처에 묶인다 (실측 0.17)
-      vx_max: 0.8             # 복도 전용. 방 안(DWB) 은 0.5
+      vx_max: 0.6             # 보행자 시험: 제동 여유를 확보한 초기 상한
       vx_min: 0.0             # 후진 금지. 꼬리 1.38 m 가 라이다 사각에서 벽/사람에 닿는다
       vy_max: 0.0
-      wz_max: 0.9
+      wz_max: 1.2             # 0.9 -> 1.2: 직진 속도를 올리는 대신 "빨리 트는" 쪽으로 민첩성 확보.
+                              # 0.6 m/s 에서 최소 회전반경 0.5 m -> 0.6 m 옆으로 비키는 데 필요한 시간이 짧아진다.
       iteration_count: 1
       prune_distance: 5.0     # critic 에 주는 경로 길이 (horizon 4.5 s * 0.8 = 3.6 m 보다 길게). horizon 거리보다 길어야 장애물 너머의 경로점이 보여 PathFollow 가 그쪽으로 당긴다
       transform_tolerance: 0.2
       temperature: 0.3
       gamma: 0.015
       motion_model: "DiffDrive"
-      visualize: true         # RViz 에서 후보 궤적 확인 (/trajectories)
+      # 후보 1000개 시각화는 제어에 필요 없고 Isaac+RViz 동시 실행 시 큰 부하다.
+      # 궤적 디버깅할 때만 true로 일시 변경한다.
+      visualize: false
       regenerate_noises: true
       TrajectoryVisualizer:
         trajectory_step: 5
@@ -333,21 +341,26 @@ controller_server:
         threshold_to_consider: 0.5
       CostCritic:
         # 장애물 회피의 핵심. 로봇이 길어 내접원(0.48) 대신 footprint 전체로 충돌 검사한다.
+        # 실측(2026-09-22 자유보행): 접촉 3초 전부터 예측점 10/11 개가 경로 위(전방 0.7~3.4 m)에 있었고
+        # 로봇 앞 1 m 비용이 raw ~239 였는데도 0.53~0.60 m/s 직진 -> 접촉(-0.44 m).
+        # 240 은 inscribed(253) 미만이라 critical 로 안 세고, 가중치 5 가 PathFollow 8 / PathAlign 8 에 밀린 것.
+        # 5 -> 25 로 올려 "예측/인플레이션 위를 지나가는 것" 이 경로 이탈보다 확실히 비싸게 만든다.
         enabled: true
         cost_power: 1
-        cost_weight: 3.81
+        cost_weight: 25.0
         critical_cost: 300.0
         consider_footprint: true
         collision_cost: 1000000.0
         near_goal_distance: 1.0
-        trajectory_point_step: 2
+        trajectory_point_step: 1
       PathAlignCritic:
         # 경로 위 점의 5% 이상이 장애물에 가려지면 자동으로 꺼져서(max_path_occupancy_ratio) 우회를 허용한다.
         # 가중치는 기본 14 -> 8. 이 critic 은 후보 궤적이 1 m(offset_from_furthest 20 포즈) 이상 뻗을 때만 켜져서
         # 빠른 샘플에만 벌점을 주므로, PathFollow 보다 세면 속도 상한처럼 작용한다.
+        # 8 -> 4: 사람을 비켜 갈 때의 횡이탈 비용을 낮춘다 (복귀는 PathFollow 가 담당).
         enabled: true
         cost_power: 1
-        cost_weight: 8.0
+        cost_weight: 4.0
         max_path_occupancy_ratio: 0.05
         trajectory_point_step: 4
         threshold_to_consider: 0.5
@@ -375,7 +388,7 @@ local_costmap:
     ros__parameters:
       use_sim_time: True
       footprint_padding: 0.01   # 책상까지 여유가 5cm 뿐이라 이 이상은 파지 자세가 충돌 판정된다
-      update_frequency: 5.0
+      update_frequency: 10.0
       publish_frequency: 2.0
       global_frame: odom
       robot_base_frame: base_link
@@ -394,7 +407,11 @@ local_costmap:
       #    MPPI 가 "Optimizer fail" / "Failed to make progress" 로 멈췄다 (실측 2회).
       #  - /scan 은 pointcloud_to_laserscan 이 z 0.1~3.9 m 를 한 줄로 눌러 만든 LaserScan 이라 빔마다 맞은 점까지의 칸을
       #    통째로 지운다 (높이 개념이 없어 잔상이 안 남는다). 글로벌 costmap 이 이 방식이고 사람이 깨끗하게 지워지는 걸 확인했다.
-      plugins: ["static_map_layer", "scan_layer", "inflation_layer"]
+      plugins: ["static_map_layer", "scan_layer", "prediction_layer", "inflation_layer"]
+      prediction_layer:
+        plugin: "hospital_dynamic_layer::PredictionLayer"
+        enabled: true
+        timeout: 0.6
       static_map_layer:
         plugin: "nav2_costmap_2d::StaticLayer"
         map_subscribe_transient_local: True
@@ -403,10 +420,9 @@ local_costmap:
         plugin: "nav2_costmap_2d::InflationLayer"
         enabled: True
         cost_scaling_factor: 3.0   # 거리에 따라 빠르게 감쇠 (붉은 띠 좁아짐)
-        # 0.6 고정. 책상 옆 경로는 로봇 중심~책상 0.62 m 라, 반경을 0.62 보다 키우면 그 자리에 비용 165 + "책상에서 멀어질수록
-        # 낮아지는 기울기" 가 생겨 DWB(BaseObstacle) 가 로봇을 책상 반대쪽으로 민다 -> 출발 덜컹, 턴 이탈, 도킹 진행 실패 (실측 1.0 에서).
-        # 사람에게 줄 여유는 여기서가 아니라 글로벌 costmap(플래너 전용, 1.0) 의 우회 경로로 확보한다.
-        inflation_radius: 0.6      # 내접 반경 0.48 + 여유 0.12
+        # 현재 정류장은 도킹 지점이 아니다. 긴 로봇의 외접반경 1.481m를
+        # 포함하는 비용장을 MPPI에 제공한다. 실제 사람 간격은 audit으로 검증.
+        inflation_radius: 1.6
 
       scan_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
@@ -483,26 +499,40 @@ collision_monitor:
     cmd_vel_out_topic: "cmd_vel"
     state_topic: "collision_monitor_state"
     transform_tolerance: 0.2
-    # Isaac Sim 라이다(/scan ~4.5Hz)가 주기적으로 1.0~1.2초씩 끊긴다. 1.0 이면 그때마다 로봇을 세운다.
-    source_timeout: 2.5
+    # 시뮬레이션 시간 기준 스캔 약 8Hz. 자기 반사 제거 후 입력이 끊기면 정지.
+    source_timeout: 0.6
     base_shift_correction: True
     stop_pub_timeout: 2.0
     # Polygons represent zone around the robot for "stop", "slowdown" and "limit" action types,
     # and robot footprint for "approach" action type.
-    polygons: ["FootprintApproach"]
+    # 실측 근거(2026-09-22 자유보행 시험): 횡단 보행자가 5 m -> 1 m 로 다가오는 3 초 동안
+    # MPPI 명령이 0.53~0.60 m/s 로 유지됐고, 1 m 에서야 조향을 시작했다가 모든 궤적이 막혀
+    # "Optimizer fail to compute path" 후 정지 — 이미 접촉(-0.44 m) 한 뒤였다.
+    # 정적 costmap 은 "아직 경로 위에 없는" 횡단자를 표현하지 못하므로, 컨트롤러와 무관하게
+    # 전방에 사람이 있으면 먼저 속도를 낮춰 판단/회피 시간을 번다 (감속 -> 접근 속도 감소 -> horizon 여유).
+    polygons: ["SlowdownFront", "FootprintApproach"]
+    SlowdownFront:
+      type: "polygon"
+      # base_link 기준 전방 3.5 m, 좌우 +-1.1 m (로봇 폭 1.0 + 여유). 꼬리(-1.38) 는 포함하지 않는다.
+      points: "[[3.5, 1.1], [3.5, -1.1], [0.48, -1.1], [0.48, 1.1]]"
+      action_type: "slowdown"
+      slowdown_ratio: 0.4       # 0.6 m/s -> 0.24 m/s. 사람 1.1 m/s 와의 접근 속도가 1.7 -> 1.34 m/s
+      min_points: 4             # 스캔 4점 이상 (사람 폭이면 충분, 노이즈 1~2점은 무시)
+      visualize: True
+      enabled: True
     FootprintApproach:
       type: "polygon"
       action_type: "approach"
       footprint_topic: "/local_costmap/published_footprint"
-      time_before_collision: 1.2
+      time_before_collision: 1.5
       simulation_time_step: 0.1
-      min_points: 6000000000
+      min_points: 6
       visualize: False
       enabled: True
     observation_sources: ["scan"]
     scan:
       type: "scan"
-      topic: "/scan"
+      topic: "/scan_body_filtered"
       min_height: 0.3
       max_height: 4.0
       enabled: True

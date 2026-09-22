@@ -58,6 +58,7 @@
   <build_depend>nav2_waypoint_follower</build_depend>
   <build_depend>pointcloud_to_laserscan</build_depend>
   <exec_depend>nav_to_goal</exec_depend>
+  <exec_depend>hospital_dynamic_layer</exec_depend>
 
 
   <export>
