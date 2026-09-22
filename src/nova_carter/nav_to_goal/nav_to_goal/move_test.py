@@ -285,7 +285,7 @@ def main():
         ('① room1',    lambda: run_follow_path('① room1', room1_route, 90.0, 'FollowPath', 'transit_goal_checker')),
         ('② corridor', (lambda: run_navigate('② corridor', corridor_goal)) if CORRIDOR_MODE == 'navigate'
                        else (lambda: run_follow_path('② corridor', corridor_route, 90.0, 'FollowPathMPPI', 'transit_goal_checker'))),
-        ('③ room2',    lambda: run_follow_path('③ room2', room2_route, dock_yaw_deg, 'FollowPath', 'general_goal_checker')),
+        ('③ room2',    lambda: run_follow_path('③ room2', room2_route, dock_yaw_deg, 'FollowPathDock', 'general_goal_checker')),   # 도킹은 0.5 m/s 전용 DWB (0.8 은 5~6 cm 지나침)
     ]
     result = TaskResult.UNKNOWN
     for name, run in stages:
