@@ -1,8 +1,6 @@
 import math
-import os
 import time
 import rclpy
-from ament_index_python.packages import get_package_share_directory
 from rclpy.parameter import Parameter
 from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSDurabilityPolicy
 from rclpy.time import Time
@@ -185,19 +183,10 @@ def main():
     # launch 의 ground_truth_localization 이 map->odom 을 잡으므로, 씬에서 카트를 옮겨도 손댈 곳이 없다.
     tf_buffer = wait_until_nav2_active(nav)
 
-    # 2. 경로를 직접 그려서 controller_server 의 FollowPath 로 보낸다.
+    # 2. 경로를 직접 그려서 controller_server 의 FollowPath(DWB) 로 한 번에 보낸다.
     #    planner(NavFn)와 경유점 통과 판정(RemovePassedGoals)을 아예 쓰지 않으므로
     #    "경유점을 지나쳐서 되돌아가는" 일이 구조적으로 없고, 코너는 우리가 정한 반경의 호 그대로 돈다.
-    #
-    #    ㄷ자 동선을 세 구간으로 잘라 구간마다 방식을 바꾼다:
-    #      ① room1 탈출 : FollowPath 고정 경로 + DWB  + transit checker (xy 0.3 / yaw 0.3, 경계에서 바로 다음 구간으로)
-    #      ② corridor   : FollowPath 고정 직선 + MPPI + transit checker  (CORRIDOR_MODE = 'followpath')
-    #                     -> 경로는 그대로 두고 MPPI 가 예측 horizon 안에서 장애물을 비켜 갔다가 경로로 복귀한다.
-    #                        horizon(time_steps*model_dt) 안에 우회가 다 들어와야 하므로 콘/사람 정도의 작은 장애물용.
-    #                        복도를 통째로 막는 큰 장애물은 planner 가 있어야 한다 -> CORRIDOR_MODE = 'navigate'
-    #                        (NavigateToPose, planner 1 Hz 재계획 + MPPI) 로 바꾸면 우회 경로를 planner 가 그린다.
-    #      ③ room2 도킹 : FollowPath 고정 경로 + DWB  + general checker (xy 0.05 / yaw 0.03, 도킹 정밀도)
-    #    방 안은 책상/벽 12 cm 간격이라 검증된 고정 호를 정확히 따라가야 하므로 planner 에 맡기지 않고 DWB 로 고정 경로를 탄다.
+    #    출발 -> 복도 -> 도킹까지 전 구간을 하나의 고정 경로 + DWB + general_goal_checker 로 탄다.
     #
     # 씬 기준값 (intergration_nova.usd / intergration_nova.png):
     #   시작 base_link = (1.233, 3.363, 180deg), 아래 책상 x[-0.02, 2.92] y >= 3.986 -> 옆면~책상 12cm
@@ -213,87 +202,51 @@ def main():
     #   => U턴은 R=0.6 (전진하며 도는 타이트한 U턴), 나머지 코너는 여유 있게 R=1.5.
     #
     # 복도 구간은 중앙(7.0)이 아니라 동쪽으로 1 m 치우친 x=8.0 으로 그린다 (북진 기준 우측통행).
-    #   동쪽 벽까지 2.0 m (폭 절반 0.5 빼면 1.5 m), 서쪽으로 4.0 m 가 MPPI 의 회피 공간.
+    #   동쪽 벽까지 2.0 m (폭 절반 0.5 빼면 1.5 m).
     #   진입/이탈 호(R=1.5, 중심 x=6.5) 꼬리 쓸림 2.43 m -> 동쪽 최대 x=8.93 (벽 10.0 까지 1.07 m),
     #   진입 호 남쪽 최저 y=-0.33 (벽 -2.8), 이탈 호 북쪽 최고 y=20.09 (벽 21.1 까지 1.0 m).
     CORRIDOR_X = 8.0
-    room1_route = [
+    route = [
         ('line', (1.233, 3.363), (-1.6, 3.363)),          # 책상 옆 서쪽 직진. 끝날 때 꼬리 x=-0.22 (책상 밖)
         ('arc',  (-1.6, 2.763), 0.6, 90.0, 180.0),        # 좌회전 -> 남향 (꼬리 모서리 최대 y=4.5, 벽까지 0.9)
         ('line', (-2.2, 2.763), (-2.2, 1.2)),             # 남쪽으로
         ('arc',  (-1.6, 1.2), 0.6, 180.0, 270.0),         # 좌회전 -> 동향 (꼬리 모서리 벽까지 0.35)
         ('line', (-1.6, 0.6), (CORRIDOR_X - 1.5, 0.6)),   # 아래 방 가운데로 동진 (남쪽 벽/책상 각 3.4 m)
         ('arc',  (CORRIDOR_X - 1.5, 2.1), 1.5, 270.0, 360.0),   # 좌회전 -> 북향, 복도 x=8.0 진입
-    ]
-    corridor_route = [
-        ('line', (CORRIDOR_X, 2.1), (CORRIDOR_X, 17.663)),      # 복도 북진 (MPPI, followpath 모드)
-    ]
-    corridor_goal = (CORRIDOR_X, 17.663, 90.0)                  # 복도 출구 (navigate 모드: 경로는 planner 가 그린다)
-    CORRIDOR_MODE = 'followpath'                                # 'followpath' | 'navigate'
-    room2_route = [
+        ('line', (CORRIDOR_X, 2.1), (CORRIDOR_X, 17.663)),      # 복도 북진
         ('arc',  (CORRIDOR_X - 1.5, 17.663), 1.5, 0.0, 90.0),   # 좌회전 -> 서향, 도킹 라인 y=19.163 에 정렬
         ('line', (CORRIDOR_X - 1.5, 19.163), (1.233, 19.163)),  # 5.3 m 직진 진입 -> 도킹 (책상 구간 전 3.1 m 정렬)
     ]
     dock_yaw_deg = 180.0   # 시작과 같은 방향
 
-    corridor_bt = os.path.join(get_package_share_directory('carter_navigation'),
-                               'behavior_trees', 'navigate_to_pose_corridor.xml')   # MPPI + transit checker, Spin/BackUp 없음
+    path = build_path(nav, route, dock_yaw_deg)
+    end = path.poses[-1].pose.position
+    print(f"FollowPath(FollowPath, general_goal_checker) {len(path.poses)} 포즈 {path_length(route):.1f} m "
+          f"-> ({end.x:.3f}, {end.y:.3f}, {dock_yaw_deg:.0f}deg)")
 
     # RViz 의 Global Planner > Path 디스플레이(/plan)에 그린 경로를 띄운다. planner 를 안 쓰므로 직접 발행.
     plan_pub = nav.create_publisher(Path, 'plan', QoSProfile(
         depth=1, reliability=QoSReliabilityPolicy.RELIABLE, durability=QoSDurabilityPolicy.TRANSIENT_LOCAL))
+    plan_pub.publish(path)
 
-    def run_follow_path(name, route, final_yaw_deg, controller_id, goal_checker_id):
-        path = build_path(nav, route, final_yaw_deg)
-        end = path.poses[-1].pose.position
-        print(f"[{name}] FollowPath({controller_id}, {goal_checker_id}) {len(path.poses)} 포즈 "
-              f"{path_length(route):.1f} m -> ({end.x:.3f}, {end.y:.3f}, {final_yaw_deg:.0f}deg)")
-        plan_pub.publish(path)
-        nav.followPath(path, controller_id=controller_id, goal_checker_id=goal_checker_id)
+    # 3. 전 구간 FollowPath: DWB 로 고정 경로를 그대로 따라가고 도킹 정밀도는 general_goal_checker 로 판정.
+    nav.followPath(path, controller_id='FollowPath', goal_checker_id='general_goal_checker')
 
-        last_print = 0.0
-        passed_index = 0
-        while not nav.isTaskComplete():
-            feedback = nav.getFeedback()
-            now = time.time()
-            if feedback and now - last_print > 3.0:
-                last_print = now
-                print(f"-> 남은 거리 {feedback.distance_to_goal:.1f} m, 속도 {feedback.speed:.2f} m/s")
+    last_print = 0.0
+    passed_index = 0
+    while not nav.isTaskComplete():
+        feedback = nav.getFeedback()
+        now = time.time()
+        if feedback and now - last_print > 3.0:
+            last_print = now
+            print(f"-> 남은 거리 {feedback.distance_to_goal:.1f} m, 속도 {feedback.speed:.2f} m/s")
 
-            # 지나간 구간은 RViz 표시에서 지운다 (planner 가 매초 다시 그리던 것과 같은 느낌)
-            rest, passed_index = remaining_path(path, tf_buffer, passed_index)
-            if rest is not None:
-                plan_pub.publish(rest)
-            time.sleep(0.5)
-        return nav.getResult()
-
-    def run_navigate(name, goal):
-        print(f"[{name}] NavigateToPose(FollowPathMPPI, transit_goal_checker, 재계획 1 Hz) -> {goal}")
-        nav.goToPose(create_pose(nav, *goal), behavior_tree=corridor_bt)
-        last_print = 0.0
-        while not nav.isTaskComplete():
-            feedback = nav.getFeedback()
-            now = time.time()
-            if feedback and now - last_print > 3.0:
-                last_print = now
-                print(f"-> 남은 거리 {feedback.distance_remaining:.1f} m, 복구 {feedback.number_of_recoveries}회")
-            time.sleep(0.5)
-        return nav.getResult()
-
-    # 구간 끝 yaw 는 다음 구간 시작 yaw 와 같게 둬서 경계에서 제자리 회전이 생기지 않게 한다 (①,② 끝 = 북향 90).
-    stages = [
-        ('① room1',    lambda: run_follow_path('① room1', room1_route, 90.0, 'FollowPath', 'transit_goal_checker')),
-        ('② corridor', (lambda: run_navigate('② corridor', corridor_goal)) if CORRIDOR_MODE == 'navigate'
-                       else (lambda: run_follow_path('② corridor', corridor_route, 90.0, 'FollowPathMPPI', 'transit_goal_checker'))),
-        ('③ room2',    lambda: run_follow_path('③ room2', room2_route, dock_yaw_deg, 'FollowPath', 'general_goal_checker')),
-    ]
-    result = TaskResult.UNKNOWN
-    for name, run in stages:
-        result = run()
-        if result != TaskResult.SUCCEEDED:
-            print(f"[{name}] 실패: {result.name}")
-            break
-        print(f"[{name}] 완료")
+        # 지나간 구간은 RViz 표시에서 지운다 (planner 가 매초 다시 그리던 것과 같은 느낌)
+        rest, passed_index = remaining_path(path, tf_buffer, passed_index)
+        if rest is not None:
+            plan_pub.publish(rest)
+        time.sleep(0.5)
+    result = nav.getResult()
 
     # 4. 결과 처리
     if result == TaskResult.SUCCEEDED:
