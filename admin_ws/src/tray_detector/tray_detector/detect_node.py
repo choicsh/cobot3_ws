@@ -35,8 +35,14 @@ MAX_TRAYS = 3            # 랙 자리가 3개다
 # 손목 카메라 화면 아래쪽은 늘 그리퍼가 차지한다. 거기 뜨는 오검출은 신뢰도로 못 거른다
 # (0.85 를 넘겨서 올라온다). 물리적으로 말이 안 되는 거리로 거른다.
 MIN_DEPTH_M = 0.15       # 이보다 가까우면 그리퍼다
-MAX_DEPTH_M = 1.5        # 이보다 멀면 팔이 닿지 않는다
-PATCH_FRAC = 0.2         # 박스 중앙 이 비율만큼만 깊이 표본으로 쓴다
+MAX_DEPTH_M = 1.0        # 이보다 멀면 팔이 닿지 않는다 (1.5 -> 1.0: 1.1m 대 벽/연기 오검출 차단)
+# 트레이는 손잡이+랙+시험관이 붙은 비대칭 조립체라, 박스의 '기하학적 중앙'이
+# 물체가 아니라 손잡이-랙 사이 빈틈에 떨어지기 쉽다 — 거기를 패치로 찍으면
+# 물체를 뚫고 뒤 배경(책상/벽)이 잡힌다. 그래서 중앙 패치 대신 박스 전체에서
+# 표본을 모으고, '카메라는 배경보다 물체에 항상 더 가깝다'는 사실을 이용해
+# 하위 퍼센타일(가까운 쪽)을 쓴다 — 배경이 박스의 대부분을 차지해도 안전하다.
+DEPTH_PERCENTILE = 15    # 유효 표본 중 이 퍼센타일(가까운 쪽)을 물체 깊이로 본다
+MIN_DEPTH_SAMPLES = 20   # 유효 표본이 이보다 적으면 신뢰하지 않는다
 OUT_DIR = Path.home() / "tray_detections"
 
 
@@ -62,19 +68,17 @@ def depth_to_meters(msg):
 
 
 def sample_depth(depth, x0, y0, x1, y1):
-    """박스 중앙 패치의 깊이 중앙값. 표본이 없으면 None.
+    """박스 전체에서 하위 DEPTH_PERCENTILE(가까운 쪽)의 깊이. 표본이 부족하면 None.
 
-    트레이는 시험관 랙이라 구멍이 많다. 중심 픽셀 하나만 보면 구멍 바닥이나
-    뒤 배경을 찍을 수 있어서, 패치를 떠서 유효값의 중앙값을 쓴다."""
-    cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
-    hw = max(1, int((x1 - x0) * PATCH_FRAC / 2))
-    hh = max(1, int((y1 - y0) * PATCH_FRAC / 2))
-    patch = depth[
-        max(0, int(cy - hh)) : min(depth.shape[0], int(cy + hh) + 1),
-        max(0, int(cx - hw)) : min(depth.shape[1], int(cx + hw) + 1),
-    ]
+    박스 안에는 물체(가까움)와 배경(멂)이 섞여 있을 수 있다. 어느 쪽이 몇 %를
+    차지하는지 몰라도, '물체가 항상 배경보다 카메라에 가깝다'는 사실 하나로
+    가까운 쪽 퍼센타일을 뽑으면 배경이 절반을 넘게 섞여 있어도 물체 깊이를
+    골라낼 수 있다."""
+    patch = depth[max(0, int(y0)):int(y1), max(0, int(x0)):int(x1)]
     valid = patch[np.isfinite(patch) & (patch > 0)]
-    return float(np.median(valid)) if valid.size else None
+    if valid.size < MIN_DEPTH_SAMPLES:
+        return None
+    return float(np.percentile(valid, DEPTH_PERCENTILE))
 
 
 def deproject(u, v, z, fx, fy, cx, cy):
@@ -181,11 +185,19 @@ def demo():
     x, y, z = deproject(420, 340, 2.0, 400, 400, 320, 240)
     assert (x, y, z) == (0.5, 0.5, 2.0), (x, y, z)
 
-    depth = np.full((100, 100), np.nan, dtype=np.float32)
-    depth[45:56, 45:56] = 1.5
-    depth[50, 50] = 0.0                      # 구멍 — 유효값이 아니다
-    assert sample_depth(depth, 20, 20, 80, 80) == 1.5
+    # 박스 대부분은 물체(0.75m), 딱 중앙(기하학적 중심, 옛 patch 방식이 찍던 자리)만
+    # 배경(3.0m)이 뚫려 보이는 상황 — 손잡이-랙 사이 빈틈을 흉내낸 것이다.
+    # 중앙만 보던 옛 방식이면 3.0 을 골랐을 것이고, 새 방식은 0.75 를 골라야 맞다.
+    # (0.75 는 이진수로 정확히 표현되는 값이라 float32/float64 비교가 안전하다)
+    depth = np.full((100, 100), 0.75, dtype=np.float32)
+    depth[45:56, 45:56] = 3.0
+    assert sample_depth(depth, 0, 0, 100, 100) == 0.75
+
+    depth[50, 50] = 0.0                      # 구멍 — 유효값이 아니다 (여전히 걸러져야 한다)
+    assert sample_depth(depth, 0, 0, 100, 100) == 0.75
+
     assert sample_depth(np.full((10, 10), np.nan, np.float32), 0, 0, 9, 9) is None
+    assert sample_depth(np.full((3, 3), 1.0, np.float32), 0, 0, 3, 3) is None  # 표본 부족
 
     m = type("M", (), {"height": 1, "width": 2, "encoding": "32FC1"})()
     m.data = np.array([[1.0, 2.0]], dtype=np.float32).tobytes()
