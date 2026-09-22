@@ -30,6 +30,7 @@ setup(
             'nav_through_pose = nav_to_goal.nav_through_pose:main',
             'image_saver_node = nav_to_goal.image_saver_node:main',
             'ground_truth_localization = nav_to_goal.ground_truth_localization:main',
+            'hospital_mission = nav_to_goal.hospital_mission:main',
             'nav_to_multi_pose = nav_to_goal.nav_to_multi_pose:main',
         ],
     },
