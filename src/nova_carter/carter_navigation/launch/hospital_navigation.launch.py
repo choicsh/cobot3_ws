@@ -5,6 +5,7 @@ import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
@@ -23,7 +24,7 @@ def generate_launch_description():
         carter_share, "maps", "integration_hospital.yaml"
     )
     default_params_file = os.path.join(
-        carter_share, "params", "carter_navigation_params.yaml"
+        carter_share, "params", "hospital_navigation_params.yaml"
     )
     rviz_config = os.path.join(
         carter_share, "rviz2", "carter_navigation.rviz"
@@ -44,10 +45,16 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "use_sim_time", default_value="True"
             ),
+            DeclareLaunchArgument(
+                "use_rviz",
+                default_value="True",
+                description="RViz 실행 여부 (선택적으로 use_rviz:=False)",
+            ),
             IncludeLaunchDescription(
                 PythonLaunchDescriptionSource(
                     os.path.join(nav2_launch_dir, "rviz_launch.py")
                 ),
+                condition=IfCondition(LaunchConfiguration("use_rviz")),
                 launch_arguments={
                     "namespace": "",
                     "use_namespace": "False",
@@ -99,6 +106,23 @@ def generate_launch_description():
                         "use_sim_time": use_sim_time,
                     }
                 ],
+            ),
+            Node(
+                package="nav_to_goal",
+                executable="hospital_scan_self_filter",
+                name="hospital_scan_self_filter",
+                output="screen",
+                parameters=[{
+                    "use_sim_time": use_sim_time,
+                    "body_bounds": [-1.38, 0.48, -0.5, 0.5],
+                }],
+            ),
+            Node(
+                package="nav_to_goal",
+                executable="hospital_moving_obstacle_predictor",
+                name="hospital_moving_obstacle_predictor",
+                output="screen",
+                parameters=[{"use_sim_time": use_sim_time}],
             ),
         ]
     )
