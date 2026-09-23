@@ -141,6 +141,33 @@ def lane_for_path(path):
                      math.dist(a[:2], b[:2]))
 
 
+def densify_planner_path(path, step=.05):
+    """Give the planner's sparse XY path continuous forward headings.
+
+    This does not smooth corners; forward_path_valid must still reject turns
+    that the long chassis cannot follow.
+    """
+    xy = []
+    for pose in path:
+        point = pose[:2]
+        if not all(math.isfinite(value) for value in point):
+            return []
+        if not xy or math.dist(xy[-1], point) > 1e-4:
+            xy.append(point)
+    if len(xy) < 2:
+        return []
+    sampled = [xy[0]]
+    for a, b in zip(xy, xy[1:]):
+        count = max(1, math.ceil(math.dist(a, b)/step))
+        sampled.extend((a[0]+(b[0]-a[0])*i/count,
+                        a[1]+(b[1]-a[1])*i/count)
+                       for i in range(1, count+1))
+    return [(p[0], p[1], math.atan2(
+        sampled[min(i+1, len(sampled)-1)][1]-sampled[max(i-1, 0)][1],
+        sampled[min(i+1, len(sampled)-1)][0]-sampled[max(i-1, 0)][0]))
+        for i, p in enumerate(sampled)]
+
+
 def footprint_points(pose, settings=SafetySettings(), step=.10):
     """Interior AND perimeter samples; grid checker adds cell/sampling padding."""
     c, s = math.cos(pose[2]), math.sin(pose[2])

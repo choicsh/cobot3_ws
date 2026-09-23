@@ -12,8 +12,8 @@ from rclpy.qos import QoSProfile, QoSDurabilityPolicy
 from std_msgs.msg import String
 
 from nav_to_goal.hospital_avoidance import (
-    SafetySettings, choose_candidate, forward_path_valid, lane_for_path,
-    offset_candidates, path_clearance, tail_clear_for_rejoin, wrap,
+    SafetySettings, choose_candidate, densify_planner_path, forward_path_valid,
+    lane_for_path, offset_candidates, path_clearance, tail_clear_for_rejoin, wrap,
 )
 from nav_to_goal.hospital_safety import SafetyObservations, yaw_of
 
@@ -26,8 +26,9 @@ def follow_stage(navigator, tf_buffer, plan_publisher, stage_name, route,
                  controller_id, goal_checker_id, final_yaw=None, blockage_monitor=None):
     # Deferred import keeps geometry reusable without ROS and avoids import cycles.
     from nav_to_goal.hospital_mission import (
-        MissionStatus, build_path, create_pose, remaining_path, request_detour,
-        task_result_to_status,
+        MissionStatus, STATIC_BLOCK_PERSISTENCE_S,
+        STATIC_BLOCK_POSITION_TOLERANCE_M, build_path, create_pose,
+        remaining_path, request_detour, task_result_to_status,
     )
 
     settings = SafetySettings()
@@ -52,8 +53,10 @@ def follow_stage(navigator, tf_buffer, plan_publisher, stage_name, route,
     rejoin_s = math.inf
     wait_since = clear_since = stale_since = None
     last_replan = -math.inf
+    last_plan_pub = -math.inf
     static_since = None
     static_xy = None
+    stopped_tracks = {}
     planner_last_s = -math.inf
     failure_count = 0
     previous_now = None
@@ -189,30 +192,46 @@ def follow_stage(navigator, tf_buffer, plan_publisher, stage_name, route,
             if in_detour and lane.local(pose)[0] >= rejoin_s-4.0:
                 risk = risk or not tail_clear_for_rejoin(lane, pose, tracks, settings)
             blockage = blockage_monitor.observe(reference, reference_index) if mppi and blockage_monitor else None
-            # No prediction is not proof of a static obstacle. Require fresh
-            # tracks, costmap AND spatially persistent observed blockage.
-            static_block = blockage is not None and not blockage['dynamic']
+            # A person who remains in the route is also a persistent blockage.
+            # Keep a recently stopped track in the moving branch for 1.5 s,
+            # then allow the same bounded planner fallback as for a cone.
+            near = ([t for t in tracks if math.dist((t.x, t.y), blockage['map_xy']) < 2.0]
+                    if blockage is not None else [])
+            stopped_tracks = {t.track_id: stopped_tracks.get(t.track_id, now)
+                              for t in near if math.hypot(t.vx, t.vy) < .2}
+            settled = (bool(near) and len(stopped_tracks) == len(near) and
+                       all(now-stopped_tracks[t.track_id] >= STATIC_BLOCK_PERSISTENCE_S
+                           for t in near))
+            static_block = (blockage is not None and
+                            (not blockage['dynamic'] or settled) and
+                            not any(math.hypot(t.vx, t.vy) >= .2 for t in near))
             if static_block:
-                # A known moving/stopped track near the blockage suppresses NavFn.
-                static_block = not any(math.dist((t.x, t.y), blockage['map_xy']) < 2.0
-                                       for t in tracks)
-            if static_block:
-                if static_xy is None or math.dist(static_xy, blockage['map_xy']) > .5:
+                if (static_xy is None or math.dist(static_xy, blockage['map_xy']) >
+                        STATIC_BLOCK_POSITION_TOLERANCE_M):
                     static_xy, static_since = blockage['map_xy'], now
             else:
                 static_xy = static_since = None
-            static_ready = static_since is not None and now-static_since >= 1.5
-            need_path = risk or (static_ready and not in_detour)
+            static_ready = (static_since is not None and
+                            now-static_since >= STATIC_BLOCK_PERSISTENCE_S)
+            # Try the validated FollowPath offset as soon as a blockage is
+            # visible. Persistence gates only the slower NavFn fallback.
+            blocked_reference = blockage is not None and not in_detour
+            need_path = risk or blocked_reference
 
             if mppi and need_path and now-last_replan >= 1.0:
                 last_replan = now
                 clear_after = None
-                if static_ready:
+                if blockage is not None:
                     blocked_s = lane.local((*blockage['map_xy'], 0.))[0]
                     clear_after = blocked_s+settings.rear+settings.preferred_gap+.5
+                selection_started = time.monotonic()
                 selected = choose_candidate(offset_candidates(lane, pose, settings, side, clear_after),
                     pose, velocity, tracks, lambda p: observations.path_clear(p, settings),
                     settings, side)
+                selection_seconds = time.monotonic()-selection_started
+                if selection_seconds > .25:
+                    navigator.get_logger().info(
+                        f'[AVOIDANCE] candidate evaluation took {selection_seconds:.2f}s')
                 if selected is not None:
                     side, chosen, candidate_gap = selected
                     join_s = lane.local(chosen[-1])[0]
@@ -220,13 +239,20 @@ def follow_stage(navigator, tf_buffer, plan_publisher, stage_name, route,
                     tail = [p for p in reference_points[reference_index:] if lane.local(p)[0] > join_s+.01]
                     combined = chosen+tail
                     if forward_path_valid(combined, lane, lane.local(pose)[0], settings):
-                        if not dispatch(as_path(combined)):
-                            return MissionStatus.FAILED
-                        in_detour = True
-                        rejoin_s = join_s
-                        wait_since = clear_since = None
-                        event('AVOIDING', f'forward_offset side={side} predicted_gap={candidate_gap:.2f}')
-                        continue
+                        # Candidate checking may consume a full sensor cycle.
+                        # Process pending observations and recheck before sending.
+                        rclpy.spin_once(navigator, timeout_sec=0.0)
+                        fresh = observations.snapshot()
+                        if (fresh is not None and math.dist(fresh[0][:2], pose[:2]) <= .2 and
+                                observations.path_clear(combined, settings) and
+                                path_clearance(combined, *fresh, settings) >= settings.minimum_gap):
+                            if not dispatch(as_path(combined)):
+                                return MissionStatus.FAILED
+                            in_detour = True
+                            rejoin_s = join_s
+                            wait_since = clear_since = None
+                            event('AVOIDING', f'forward_offset side={side} predicted_gap={candidate_gap:.2f}')
+                            continue
                 # Bounded NavFn fallback is only for persistent static evidence.
                 # A second attempt at the same progress location is suppressed.
                 progress = lane.local(pose)[0]
@@ -236,20 +262,35 @@ def follow_stage(navigator, tf_buffer, plan_publisher, stage_name, route,
                     if join_s-progress >= 4.0:
                         if not cancel():
                             return MissionStatus.FAILED
+                        navigator.get_logger().info(
+                            f'[DETOUR] requesting NavFn from s={progress:.2f} to s={join_s:.2f}')
+                        planner_started = time.monotonic()
                         detour = request_detour(navigator, tf_buffer,
                             create_pose(navigator, *lane.world(join_s, 0.)))
+                        navigator.get_logger().info(
+                            f'[DETOUR] planner and smoother took {time.monotonic()-planner_started:.2f}s')
                         if detour is not None:
-                            chosen = path_points(detour)
+                            join = lane.world(join_s, 0.)
+                            raw = path_points(detour)
+                            # NavFn may finish within its goal tolerance, not
+                            # exactly on the reference. Connect only a short,
+                            # fully validated forward segment to the lane.
+                            chosen = (densify_planner_path(raw+[join])
+                                      if math.dist(raw[-1][:2], join[:2]) <= .25 else [])
                             fresh = observations.snapshot()
-                            if fresh is None:
+                            if fresh is None or not chosen:
+                                navigator.get_logger().info(
+                                    '[DETOUR] rejected: stale observations or planner endpoint')
                                 continue
                             pose, velocity, tracks = fresh
                             tail = [p for p in reference_points[reference_index:] if lane.local(p)[0] > join_s+.01]
                             combined = chosen+tail
-                            if (math.dist(chosen[0][:2], pose[:2]) <= .3 and
-                                    forward_path_valid(combined, lane, progress, settings) and
-                                    observations.path_clear(chosen, settings) and
-                                    path_clearance(combined, pose, velocity, tracks, settings) >= settings.minimum_gap):
+                            geometry_ok = (math.dist(chosen[0][:2], pose[:2]) <= .3 and
+                                           forward_path_valid(combined, lane, lane.local(pose)[0], settings))
+                            costmap_ok = geometry_ok and observations.path_clear(chosen, settings)
+                            clearance_ok = (costmap_ok and
+                                            path_clearance(combined, pose, velocity, tracks, settings) >= settings.minimum_gap)
+                            if clearance_ok:
                                 if not dispatch(as_path(combined)):
                                     return MissionStatus.FAILED
                                 in_detour = True
@@ -257,8 +298,13 @@ def follow_stage(navigator, tf_buffer, plan_publisher, stage_name, route,
                                 wait_since = clear_since = None
                                 event('AVOIDING', 'validated_static_planner')
                                 continue
+                            navigator.get_logger().info(
+                                f'[DETOUR] rejected: geometry={geometry_ok} '
+                                f'costmap={costmap_ok} clearance={clearance_ok}')
+                        else:
+                            navigator.get_logger().info('[DETOUR] planner returned no path')
 
-            if risk or (static_ready and not in_detour):
+            if risk or blocked_reference:
                 if not cancel():
                     return MissionStatus.FAILED
                 event('YIELDING', 'no_admissible_forward_candidate')
@@ -284,7 +330,9 @@ def follow_stage(navigator, tf_buffer, plan_publisher, stage_name, route,
                         event('TRACKING', 'forward_rejoin_completed')
                     elif progress >= rejoin_s-2.0:
                         event('REJOINING', 'following_forward_detour_to_reference')
-                plan_publisher.publish(rest)
+                if now-last_plan_pub >= 1.0:
+                    plan_publisher.publish(rest)
+                    last_plan_pub = now
             if wait_since is not None and now-wait_since >= 15.0:
                 event('FAILED', 'yield_budget_exceeded_not_proof_of_lane_blockage')
                 return MissionStatus.FAILED

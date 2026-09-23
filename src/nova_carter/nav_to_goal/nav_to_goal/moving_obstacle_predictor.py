@@ -4,7 +4,7 @@ import math
 import rclpy
 from geometry_msgs.msg import Point32
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import QoSProfile, QoSDurabilityPolicy, QoSReliabilityPolicy
 from rclpy.time import Time
 from sensor_msgs.msg import ChannelFloat32, LaserScan, PointCloud
 from tf2_ros import Buffer, TransformException, TransformListener
@@ -28,17 +28,25 @@ class MovingObstaclePredictor(Node):
         self.buffer = Buffer()
         self.listener = TransformListener(self.buffer, self)
         self.tracker = Tracker()
-        self.publisher = self.create_publisher(PointCloud, "/hospital/predicted_obstacles", qos_profile_sensor_data)
+        self.last_tf_warning = -math.inf
+        sensor_qos = QoSProfile(
+            depth=1, reliability=QoSReliabilityPolicy.BEST_EFFORT,
+            durability=QoSDurabilityPolicy.VOLATILE)
+        self.publisher = self.create_publisher(PointCloud, "/hospital/predicted_obstacles", sensor_qos)
         # Keep the existing radius-only cloud contract for the C++ soft layer.
         # A separate current-state stream preserves time/identity for supervision.
         self.track_publisher = self.create_publisher(
-            PointCloud, "/hospital/tracked_obstacles", qos_profile_sensor_data)
-        self.create_subscription(LaserScan, "/scan_body_filtered", self.scan, qos_profile_sensor_data)
+            PointCloud, "/hospital/tracked_obstacles", sensor_qos)
+        self.create_subscription(LaserScan, "/scan_body_filtered", self.scan, sensor_qos)
 
     def scan(self, msg):
         try:
             t = self.buffer.lookup_transform("odom", msg.header.frame_id, Time.from_msg(msg.header.stamp))
-        except TransformException:
+        except TransformException as error:
+            now = self.get_clock().now().nanoseconds/1e9
+            if now < self.last_tf_warning or now-self.last_tf_warning >= 2.0:
+                self.get_logger().warn(f"Scan dropped: odom transform unavailable: {error}")
+                self.last_tf_warning = now
             return
         p, q = t.transform.translation, t.transform.rotation
         r00, r01 = 1 - 2*(q.y*q.y + q.z*q.z), 2*(q.x*q.y - q.z*q.w)

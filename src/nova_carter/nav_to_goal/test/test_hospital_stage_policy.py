@@ -45,12 +45,24 @@ def stage_harness(monkeypatch, mode):
 
     helper = ModuleType('nav_to_goal.hospital_mission')
     helper.MissionStatus = Status
+    helper.STATIC_BLOCK_PERSISTENCE_S = 1.5
+    helper.STATIC_BLOCK_POSITION_TOLERANCE_M = .5
     helper.create_pose = pose_message
     helper.build_path = build
     helper.remaining_path = lambda path, tf, index: (path, 0)
     helper.task_result_to_status = lambda result: result
     planner_calls = []
-    helper.request_detour = lambda *args: planner_calls.append(args)
+    def detour(*args):
+        planner_calls.append(args)
+        if mode not in ('static', 'stopped_person'):
+            return None
+        lane = geometry.LaneFrame(0, 0, 0, 40)
+        _, points = geometry.offset_candidates(lane, (0, 0, 0))[0]
+        points += [lane.world(9.5+i*.05, 0) for i in range(1, 11)]
+        path = PathMessage()
+        path.poses = [pose_message(None, *point) for point in points]
+        return path
+    helper.request_detour = detour
     monkeypatch.setitem(sys.modules, 'nav_to_goal.hospital_mission', helper)
 
     class Publisher:
@@ -73,7 +85,8 @@ def stage_harness(monkeypatch, mode):
 
         def isTaskComplete(self):
             step()
-            return self.canceled or (mode in ('clear', 'avoid') and clock.t > 2.)
+            return self.canceled or (mode in ('clear', 'avoid') and clock.t > 2.) or (
+                mode in ('static', 'stopped_person') and len(self.goals) > 1 and clock.t > 4.)
 
         def cancelTask(self):
             self.canceled = True
@@ -114,13 +127,16 @@ def stage_harness(monkeypatch, mode):
                 tracks = [geometry.MovingBody(1, 2, 0, -1.1, 0, .4)]
             elif mode == 'avoid':
                 tracks = [geometry.MovingBody(1, 6.8, 0, -1.1, 0, .4)]
+            elif mode == 'stopped_person':
+                tracks = [geometry.MovingBody(1, 4, 0, 0, 0, .4)]
             return (0, 0, 0), (.6, 0), tracks
 
         def path_clear(self, *args):
             return True
 
     namespace = {name: getattr(geometry, name) for name in (
-        'SafetySettings', 'choose_candidate', 'forward_path_valid', 'lane_for_path',
+        'SafetySettings', 'choose_candidate', 'densify_planner_path',
+        'forward_path_valid', 'lane_for_path',
         'offset_candidates', 'path_clearance', 'tail_clear_for_rejoin', 'wrap')}
     namespace.update(math=math, SafetyObservations=Observations, Path=PathMessage,
         yaw_of=lambda q: 2*math.atan2(q.z, q.w),
@@ -128,14 +144,20 @@ def stage_harness(monkeypatch, mode):
         time=NS(monotonic=lambda: clock.t, sleep=step),
         QoSProfile=lambda **kw: None, QoSDurabilityPolicy=NS(TRANSIENT_LOCAL=1),
         String=lambda **kwargs: NS(**kwargs))
+    if mode in ('static', 'stopped_person'):
+        namespace['choose_candidate'] = lambda *args, **kwargs: None
     source = FilePath(__file__).parents[1]/'nav_to_goal/hospital_stage_runner.py'
     tree = ast.parse(source.read_text())
     functions = ast.Module(body=[n for n in tree.body if isinstance(n, ast.FunctionDef)], type_ignores=[])
     exec(compile(functions, str(source), 'exec'), namespace)
     nav = Navigator()
     plan_pub = Publisher()
+    monitor = (NS(observe=lambda *args: {'map_xy': (4., 0.),
+                                        'dynamic': mode == 'stopped_person'})
+               if mode in ('static', 'stopped_person') else None)
     result = namespace['follow_stage'](nav, None, plan_pub, 'lane_upper', None,
-                                      'FollowPathMPPI', 'transit_goal_checker')
+                                      'FollowPathMPPI', 'transit_goal_checker',
+                                      blockage_monitor=monitor)
     return result, nav, plan_pub, planner_calls
 
 
@@ -163,3 +185,12 @@ def test_person_yield_does_not_trigger_six_second_planner(monkeypatch):
 def test_missing_observations_prevent_initial_goal(monkeypatch):
     result, nav, _, planner = stage_harness(monkeypatch, 'missing')
     assert result == Status.FAILED and not nav.goals and not planner
+
+
+@pytest.mark.parametrize('mode', ['static', 'stopped_person'])
+def test_persistent_obstruction_uses_validated_planner_path(monkeypatch, mode):
+    result, nav, _, planner = stage_harness(monkeypatch, mode)
+    assert result == Status.SUCCEEDED
+    assert len(planner) == 1 and len(nav.goals) == 2
+    assert any('validated_static_planner' in line for line in nav.events)
+    assert max(p.pose.position.y for p in nav.goals[-1].poses) >= 1.5

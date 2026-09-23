@@ -8,7 +8,7 @@ import math
 
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import QoSProfile, QoSDurabilityPolicy, QoSReliabilityPolicy
 from rclpy.time import Time
 from sensor_msgs.msg import LaserScan
 from tf2_ros import Buffer, TransformException, TransformListener
@@ -29,8 +29,12 @@ class ScanSelfFilter(Node):
         self.base_frame = self.get_parameter("base_frame").value
         self.buffer = Buffer()
         self.listener = TransformListener(self.buffer, self)
-        self.publisher = self.create_publisher(LaserScan, "scan_body_filtered", qos_profile_sensor_data)
-        self.create_subscription(LaserScan, "scan", self.scan, qos_profile_sensor_data)
+        self.last_tf_warning = -math.inf
+        sensor_qos = QoSProfile(
+            depth=1, reliability=QoSReliabilityPolicy.BEST_EFFORT,
+            durability=QoSDurabilityPolicy.VOLATILE)
+        self.publisher = self.create_publisher(LaserScan, "scan_body_filtered", sensor_qos)
+        self.create_subscription(LaserScan, "scan", self.scan, sensor_qos)
         self.reported = False
 
     def scan(self, msg):
@@ -38,7 +42,11 @@ class ScanSelfFilter(Node):
             # The lidar is rigidly mounted to base_link. Latest extrinsics avoid
             # waiting for the unrelated map/odom transform in this callback.
             transform = self.buffer.lookup_transform(self.base_frame, msg.header.frame_id, Time())
-        except TransformException:
+        except TransformException as error:
+            now = self.get_clock().now().nanoseconds/1e9
+            if now < self.last_tf_warning or now-self.last_tf_warning >= 2.0:
+                self.get_logger().warn(f"Scan dropped: body transform unavailable: {error}")
+                self.last_tf_warning = now
             return
         q, p = transform.transform.rotation, transform.transform.translation
         r00, r01 = 1 - 2*(q.y*q.y + q.z*q.z), 2*(q.x*q.y - q.z*q.w)

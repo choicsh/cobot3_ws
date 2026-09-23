@@ -2,8 +2,8 @@
 
 ## 먼저 알아야 할 상태
 
-- 기준 저장소: `cobot3_ws`, 브랜치 `feature/followpath`, 변경 전 HEAD `a1a7190`.
-- 이 문서는 9월 22일 실주행 기록 이후 **노트북에서 추가 구현한 변경**이다. 커밋/푸시는 하지 않았다.
+- 기준 저장소: `cobot3_ws`, 브랜치 `feature/followpath`. 최초 회피 강화 구현은 `febcecb`로 커밋했다.
+- 이 문서는 9월 22일 실주행 기록 이후 **노트북에서 추가 구현한 변경**이다. 아래 센서·Planner 흐름 보강은 그 후속 변경이다.
 - 로컬 검증은 순수 Python 기하·예측·상태 로직과 지도 충돌 검사다. **새 코드로 Nav2/Isaac 실주행에 성공했다는 뜻이 아니다.**
 - 노트북에 `nav2_msgs`가 없어 ROS 경로 테스트의 실제 import 및 Nav2 통합 실행은 검증하지 못했다. 원본 센서/audit JSONL도 확보하지 못했다. 과거 결과는 인수인계 문서에 기록된 사실로만 인용한다.
 - 사용자 의도: 회피 가능한 정면/측면 조우에서는 눈에 보이는 측방 회피를 우선한다. 긴 후방과 운동 제한 때문에 대응하기 어려운 급진입까지 완벽한 회피를 보장하는 것이 목표는 아니다. 그렇더라도 겹침을 성공으로 바꿔 기록하지 않는다.
@@ -83,10 +83,31 @@ Collision Monitor의 입력만 새 중간 토픽으로 연결했다. 최종 `/cm
 
 - `TRACKING`, `AVOIDING`, `YIELDING`, `REJOINING`, `WAITING_DATA`를 구분한다.
 - 안전한 후보를 찾지 못하면 대기하고, 위험이 해소된 상태가 0.5초 유지되면 진행 중이던 경로의 앞쪽으로 재개한다.
-- 단순 6초 정체로 Planner를 부르는 로직은 제거했다. 신선한 관측과 같은 위치의 차단 1.5초 지속이 있어야 정적 fallback을 고려한다. 알려진 동적/정지 track이 근처에 있으면 억제한다.
+- 단순 6초 정체로 Planner를 부르는 로직은 제거했다. 신선한 관측과 같은 위치의 차단 1.5초 지속이 있어야 Planner fallback을 고려한다. 계속 움직이는 track 근처에서는 억제하고, 움직이다 멈춘 track이 1.5초간 정지한 뒤에는 경로 차단으로 취급할 수 있다.
 - 대기 15초 초과는 `FAILED/yield_budget_exceeded_not_proof_of_lane_blockage`. 관제용 `BLOCKED` 판정으로 둔갑시키지 않는다. 이는 영구 정체 방지를 위한 작업 예산이지 통행 불가능의 증거가 아니다.
 - `/plan`: 실제 실행 중인 경로의 남은 부분. `/hospital/reference_plan`: 원래 기준 경로. 우회 실행 중 원경로를 실제 경로처럼 다시 표시하던 문제를 제거했다.
 - `/hospital/mission_state`, `/hospital/human_guard_state`에 상태 전이를 발행하고 로그를 남긴다. 상시 대용량 recorder를 다시 넣지는 않았다.
+
+### F. 후속 센서·우회 경로 흐름 보강
+
+```text
+/front_3d_lidar/lidar_points → pointcloud_to_laserscan → /scan
+  ├─ local/global costmap: 현재 점유·Planner 비용
+  └─ scan_self_filter → /scan_body_filtered
+       ├─ Collision Monitor: 실제 근접 제동
+       └─ moving_obstacle_predictor → /hospital/tracked_obstacles: 회피 예측·guard
+                                    → /hospital/predicted_obstacles: MPPI soft cost
+/chassis/odom + TF → 회피 감독·velocity guard
+```
+
+현재 병원 주행 회피에 카메라 인식 입력은 없다. 별도 프로세스의 guard와 Collision Monitor가 최종 명령을 계속 검사하므로, mission이 잠시 경로를 계산해도 마지막 명령 검사는 계속된다. 단, 필수 scan/odom/TF가 끊기면 정지한다.
+
+- 사람이든 콘이든 원래 FollowPath 전방의 점유 차단이 보이면 먼저 측방 offset 후보를 검사한다. Planner 호출만 1.5초의 위치 지속 조건을 기다린다. 후보의 유지 구간은 첫 차단점을 **차체 꼬리+여유**만큼 지나서 합류하도록 잡는다.
+- 이미 움직이는 것으로 추적했던 사람이 멈춰 서면 1.5초간 정지 관측 후 경로 차단 후보가 된다. 같은 위치의 점유가 추가로 1.5초 지속되고 측방 후보가 없으면 Planner도 허용한다. 이것은 사람/콘 식별이 아니라 통행 가능한 우회 경로의 판단이다.
+- Planner의 NavFn 경로는 설정된 `simple_smoother`에 한 번 전달한다. 서버가 없거나 smoothing이 실패하면 원본을 사용하되, 두 경로 모두 촘촘한 점·진행 방향으로 변환한 다음 전진 진행·곡률·선택 차선·지도/관측 costmap·track 간격을 통과해야 FollowPath에 보낸다. NavFn이 0.25m 허용오차 안에서 끝나면 앞쪽 기준 차선까지 짧은 연결을 추가하고 똑같이 검사한다. 검사 실패 사유는 `[DETOUR]` 로그로 남긴다.
+- 후보 경로 검사는 지도와 local costmap에 대한 좌표 변환을 각 후보당 한 번만 수행한다. 최종 전송 전에 관측을 갱신하고 로봇이 0.2m 이상 이동했거나 비용/예측 간격이 바뀌었으면 그 후보를 보내지 않는다. mission의 고빈도 관측 구독은 depth 1로 최신 메시지를 우선한다. `/plan`의 남은 경로 반복 표시는 최대 1Hz다.
+- 후보 평가가 0.25초를 넘으면 `[AVOIDANCE]`에 소요 시간을 남기고, Planner+Smoother 시간은 `[DETOUR]`에 남긴다. 이 로그로 실제 GPU PC에서 계산 지연과 센서 누락을 분리해 볼 수 있다.
+- scan self-filter 또는 tracker에서 TF 부족으로 scan을 버리면 2초 간격으로 원인을 기록한다. 실제 센서/TF가 0.6초 이상 없으면 기존 velocity guard의 정지 동작은 유지된다. 이는 불충분한 관측에서 우회를 강행하지 않기 위한 조건이다.
 
 ## 차체와 정류장 제어
 
@@ -127,7 +148,7 @@ Collision Monitor의 입력만 새 중간 토픽으로 연결했다. 최종 `/cm
 
 ## 로컬 검증 결과
 
-**CPU-only 33개 통과**:
+**CPU-only 35개 통과**: 최초 33개에 정적 차단 및 멈춰 선 사람의 Planner 수락 사례 2개를 기존 stage 시험에 추가했다. 후속 변경 Python 6개 AST와 `git diff --check`도 통과했다. Nav2/Isaac 런타임 동작은 아직 검증하지 않았다.
 
 - 기존 Tracker 4개.
 - 신규 차체/회전 쓸림, 시간차 횡단, 유한 제동거리, 명령 판단, 양방향 전방 후보, 후진/유턴 거부, 조기/늦은 정면 접근, 회피 방향 유지/변경, 정지한 track 유지, costmap 내부 점유/unknown, YAML 계약.

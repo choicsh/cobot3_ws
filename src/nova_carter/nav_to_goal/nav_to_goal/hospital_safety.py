@@ -3,12 +3,17 @@ import math
 
 from nav_msgs.msg import OccupancyGrid, Odometry
 from nav2_msgs.msg import Costmap
-from rclpy.qos import QoSProfile, QoSDurabilityPolicy, qos_profile_sensor_data
+from rclpy.qos import QoSProfile, QoSDurabilityPolicy, QoSReliabilityPolicy
 from rclpy.time import Time
 from sensor_msgs.msg import PointCloud
 
 from nav_to_goal.hospital_avoidance import MovingBody, SafetySettings, wrap
 from nav_to_goal.hospital_costmap import Grid
+
+
+LATEST_SENSOR_QOS = QoSProfile(
+    depth=1, reliability=QoSReliabilityPolicy.BEST_EFFORT,
+    durability=QoSDurabilityPolicy.VOLATILE)
 
 
 def yaw_of(q):
@@ -27,13 +32,13 @@ class SafetyObservations:
         self.tracks = self.odom = self.local = self.static = None
         self.subscriptions = [
             node.create_subscription(PointCloud, '/hospital/tracked_obstacles',
-                                     self._tracks, qos_profile_sensor_data),
-            node.create_subscription(Odometry, '/chassis/odom', self._odom, qos_profile_sensor_data),
+                                     self._tracks, LATEST_SENSOR_QOS),
+            node.create_subscription(Odometry, '/chassis/odom', self._odom, LATEST_SENSOR_QOS),
         ]
         if with_maps:
             self.subscriptions += [
                 node.create_subscription(Costmap, '/local_costmap/costmap_raw',
-                                         self._local, qos_profile_sensor_data),
+                                         self._local, LATEST_SENSOR_QOS),
                 node.create_subscription(OccupancyGrid, '/map', self._map,
                     QoSProfile(depth=1, durability=QoSDurabilityPolicy.TRANSIENT_LOCAL)),
             ]
@@ -119,11 +124,21 @@ class SafetyObservations:
         if self.static is None or self.local is None or not 0 <= self.now()-self.local.stamp <= 1.0:
             return False
         try:
+            # Resolve each frame once for the entire candidate. Thousands of
+            # per-pose TF lookups can starve this node's sensor callbacks.
+            static_tf = self.transform_pose((0., 0., 0.), 'map', self.static.frame)
+            local_tf = self.transform_pose((0., 0., 0.), 'map', self.local.frame)
+
+            def apply(pose, transform):
+                c, s = math.cos(transform[2]), math.sin(transform[2])
+                return (transform[0]+c*pose[0]-s*pose[1],
+                        transform[1]+s*pose[0]+c*pose[1], wrap(pose[2]+transform[2]))
+
             for pose in path:
-                if not self.static.body_clear(self.transform_pose(pose, 'map', self.static.frame), settings):
+                if not self.static.body_clear(apply(pose, static_tf), settings):
                     return False
-                if not self.local.body_clear(self.transform_pose(pose, 'map', self.local.frame),
-                                             settings, require_inside=False):
+                if not self.local.body_clear(apply(pose, local_tf), settings,
+                                             require_inside=False):
                     return False
         except Exception:
             return False

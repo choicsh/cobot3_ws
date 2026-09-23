@@ -22,7 +22,6 @@ from rclpy.qos import (
     QoSDurabilityPolicy,
     QoSProfile,
     QoSReliabilityPolicy,
-    qos_profile_sensor_data,
 )
 from rclpy.time import Time
 from sensor_msgs.msg import PointCloud
@@ -42,6 +41,9 @@ STATIC_BLOCK_POSITION_TOLERANCE_M = 0.5
 STATIC_BLOCK_COST = 253
 MOVING_PREDICTION_CLEARANCE_M = 0.8
 PREDICTION_MAX_AGE_S = 0.8
+LATEST_SENSOR_QOS = QoSProfile(
+    depth=1, reliability=QoSReliabilityPolicy.BEST_EFFORT,
+    durability=QoSDurabilityPolicy.VOLATILE)
 
 # hospital_integration.usd에 사용자가 배치한 로봇의 base_link가 lab 정류장이다.
 # specimen 정류장은 사용자가 지정한 (-36, 8)이며 순환 경로의 접선 자세를 쓴다.
@@ -179,13 +181,13 @@ class AheadBlockageMonitor:
                 Costmap,
                 "/local_costmap/costmap_raw",
                 self._costmap_callback,
-                qos_profile_sensor_data,
+                LATEST_SENSOR_QOS,
             ),
             navigator.create_subscription(
                 PointCloud,
                 "/hospital/predicted_obstacles",
                 self._prediction_callback,
-                qos_profile_sensor_data,
+                LATEST_SENSOR_QOS,
             ),
         ]
 
@@ -391,7 +393,7 @@ def request_detour(navigator, tf_buffer, goal_pose):
     """planner 에게 현재 위치 -> goal_pose 우회 경로를 한 번 요청한다.
 
     성공하면 nav_msgs/Path, 실패하면 None. 전역 재계획을 상시 도는 것이 아니라
-    FollowPath 가 실패한 시점에만 호출한다.
+    지속 차단에서 측방 후보가 없을 때만 호출한다.
     """
     try:
         translation = tf_buffer.lookup_transform(
@@ -416,6 +418,19 @@ def request_detour(navigator, tf_buffer, goal_pose):
         return None
     if detour is None or len(detour.poses) < 2:
         return None
+    # NavFn's grid path can contain sharp corners. The configured smoother
+    # gets one bounded attempt; geometry and costmap validation still decide
+    # whether the resulting path is safe to follow.
+    try:
+        if navigator.smoother_client.wait_for_server(timeout_sec=0.0):
+            smoothed = navigator.smoothPath(
+                detour, smoother_id="simple_smoother", max_duration=1.0,
+                check_for_collision=True,
+            )
+            if smoothed is not None and len(smoothed.poses) >= 2:
+                detour = smoothed
+    except Exception as error:
+        print(f"  [DETOUR] smoother 사용 불가; 원본 경로 검증: {error}")
     return detour
 
 
