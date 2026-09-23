@@ -1,0 +1,57 @@
+isaacsim.replicator.agent:
+  version: 0.7.0
+  character:
+    asset_path: https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.1/Isaac/People/Characters/
+    command_file: /home/rokey/cobot3_ws/isaacpjt/assets/people/command.txt
+    filters:
+    - medical
+    navigation_area:
+    - Walkable
+    num: 3
+    spawn_area:
+    - Walkable
+  global:
+    seed: 123456789
+    simulation_length: 1800
+  replicator:
+    writer: IRABasicWriter
+    parameters:
+      object_info_bounding_box_2d_tight: false
+      object_info_bounding_box_2d_loose: false
+      object_info_bounding_box_3d: false
+      agent_info_skeleton_data: false
+      output_dir: /home/rokey/ReplicatorResult
+      semantic_filter_predicate: class:character|robot;id:*
+      image_output_format: png
+      rgb: true
+      camera_params: true
+      semantic_segmentation: false
+      instance_id_segmentation: false
+      instance_segmentation: false
+      distance_to_camera: false
+      distance_to_image_plane: false
+      colorize_depth: false
+      colorize_semantic_segmentation: true
+      colorize_instance_id_segmentation: true
+      colorize_instance_segmentation: true
+      occlusion: false
+      normals: false
+      motion_vectors: false
+      pointcloud: false
+      pointcloud_include_unlabelled: false
+      use_common_output_dir: false
+  response:
+    response_list: []
+  robot:
+    command_file: /home/rokey/cobot3_ws/isaacpjt/assets/people/robot_command.txt
+    iw_hub_num: 0
+    navigation_area: []
+    nova_carter_num: 0
+    spawn_area: []
+    write_data: false
+  scene:
+    asset_path: /home/rokey/cobot3_ws/isaacpjt/assets/hospital_integration_human.usd
+  sensor:
+    camera_num: 0
+  event:
+    event_list: []

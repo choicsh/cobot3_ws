@@ -255,7 +255,7 @@ local_costmap:
       transform_tolerance: 0.3
       footprint: "[ [0.48, 0.5], [0.48, -0.5], [-1.38, -0.5], [-1.38, 0.5] ]"
       mark_threshold: 2
-      always_send_full_costmap: True
+      always_send_full_costmap: False   # 240x240=57,600 셀 전체 대신 증분 발행. RViz 표시는 동일
       plugins: ["static_map_layer", "front_3d_lidar_layer", "inflation_layer"]   # StaticLayer 가 뒤에 오면 updateWithTrueOverwrite 로 팽창을 통째로 덮어씀 (실측: 팽창 cost 0개)
       static_map_layer:
         plugin: "nav2_costmap_2d::StaticLayer"
@@ -280,7 +280,7 @@ local_costmap:
         origin_z: 0.0
         z_resolution: 0.2            # 이전 voxel_size 는 오인식 이름이었음 (기본 0.2 가 적용 중이었다)
         z_voxels: 10
-        publish_voxel_map: true
+        publish_voxel_map: false   # 복셀 그리드 디버그 발행 제거
         observation_sources: hesai_mark
         hesai_mark:
           data_type: PointCloud2
@@ -335,7 +335,7 @@ global_costmap:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 3.0   # 0.15 는 감쇠가 거의 없어 맵 전체가 고비용이었다
         inflation_radius: 0.6
-      always_send_full_costmap: True
+      always_send_full_costmap: False   # 1001x1001=100만 셀을 매초 직렬화하던 것을 증분으로. RViz 표시는 동일
   global_costmap_client:
     ros__parameters:
       use_sim_time: True
