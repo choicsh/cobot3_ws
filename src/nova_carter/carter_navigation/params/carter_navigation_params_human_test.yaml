@@ -1,3 +1,16 @@
+# 사람 회피 실험 전용. carter_navigation_params.yaml 의 복사본이며 아래 두 곳만 다르다.
+#
+#   bt_navigator.default_nav_through_poses_bt_xml   추가 (경유지 되돌아가기 수정)
+#   FollowPath.forward_prune_distance               3.0 (기본 2.0). sim_time 과 함께 순항 속도를 정한다
+#   global_costmap.inflation_layer                  radius 0.6->1.2, scaling 3.0->1.5
+#   FollowPath.ObstacleFootprint.scale              0.2 -> 0.05 (좁은 곳 회전 허용)
+#   LaserScan 소스 3곳 inf_is_valid                  true (지나간 사람 마킹이 지워지도록)
+#   local_costmap VoxelLayer -> STVL + ObstacleLayer  시간 감쇠 voxel_decay 5.0
+#   global obstacle_max_range                        20 -> 5 (잔상 누적 차단)
+#
+# 원본이 갱신되면 이 파일도 다시 복사해서 두 곳을 재적용할 것.
+# nav2_human_test.launch.py 의 params_file 기본값이 이 파일이다.
+
 amcl:
   ros__parameters:
     use_sim_time: True
@@ -71,10 +84,13 @@ bt_navigator:
       plugin: "nav2_bt_navigator::NavigateToPoseNavigator"
     navigate_through_poses:
       plugin: "nav2_bt_navigator::NavigateThroughPosesNavigator"
-    # 'default_nav_through_poses_bt_xml' and 'default_nav_to_pose_bt_xml' are use defaults:
-    # nav2_bt_navigator/navigate_to_pose_w_replanning_and_recovery.xml
-    # nav2_bt_navigator/navigate_through_poses_w_replanning_and_recovery.xml
-    # They can be set here or via a RewrittenYaml remap from a parent launch file to Nav2.
+    # navigate_to_pose 는 기본 BT 를 그대로 쓴다.
+    # navigate_through_poses 만 교체한다. RemovePassedGoals 가 경유지를 못 지워
+    # 로봇이 되돌아가는 현상 때문이다. 바뀐 값과 근거는 XML 머리 주석 참고.
+    #
+    # install 이 아니라 src 경로를 가리킨다. BT 를 고칠 때마다 colcon build 를 다시
+    # 하지 않아도 되고, 지금 단계에서는 radius 를 여러 번 만질 가능성이 높다.
+    default_nav_through_poses_bt_xml: "/home/rokey/cobot3_ws/src/nova_carter/carter_navigation/behavior_trees/nav_through_poses_human_test.xml"
 
     # plugin_lib_names is used to add custom BT plugins to the executor (vector of strings).
     # Built-in plugins are added automatically
@@ -144,12 +160,17 @@ velocity_smoother:
     smoothing_frequency: 20.0 
     scale_velocities: false 
     feedback: "OPEN_LOOP"   # CLOSED_LOOP 는 램프가 이론값(0.60s)의 3.3배(2.00s) 로 늘어져 최종 회전이 좌우로 헌팅함 (실측)
-    max_velocity: [0.5, 0.0, 0.5] 
-    min_velocity: [-0.3, 0.0, -0.5] 
-    # deadband_velocity: [0.0, 0.0, 0.0] 
-    velocity_timeout: 1.0 
-    max_accel: [0.5, 0.0, 1.0]     # 기본값(2.5/3.2)은 390kg 로봇에 공격적
-    max_decel: [-0.5, 0.0, -1.0] 
+    max_velocity: [1.5, 0.0, 0.5]   # x 이력: 0.5 -> 0.7 -> 1.5. FollowPath max_vel_x 와 같아야 한다 (낮으면 여기서 잘린다)
+    min_velocity: [-0.3, 0.0, -0.5]
+    # deadband_velocity: [0.0, 0.0, 0.0]
+    velocity_timeout: 1.0
+    # x 이력: 0.5 -> 2.0. 속도와 같이 올려 정지거리를 유지한다 (정지거리 = v^2/2a).
+    # 단계적으로 낮출 때 쓸 조합 — 속도/가감속/정지거리 순:
+    #   1.5 / 2.0 / 0.56m   <- 현재    1.2 / 1.5 / 0.48m    1.0 / 1.0 / 0.50m    0.7 / 0.5 / 0.49m
+    # **FollowPath 의 acc_lim_x / decel_lim_x 와 반드시 같이 바꿀 것** (어긋나면 도킹 오버슈트)
+    # 회전축(1.0/-1.0)은 안 건드린다 — sim_time 과 곱해지는 궤적 스윕이 커져 좁은 통로에서 걸러진다
+    max_accel: [2.0, 0.0, 1.0]     # Nav2 기본값 2.5/3.2 는 390kg 로봇에 공격적 — 2.0 은 그 바로 아래
+    max_decel: [-2.0, 0.0, -1.0]
     odom_topic: "chassis/odom" 
     odom_duration: 0.1
 
@@ -194,36 +215,67 @@ controller_server:
       debug_trajectory_details: True
       min_vel_x: 0.0   # NavFn 은 후진 경로를 만들지 않음
       min_vel_y: 0.0
-      max_vel_x: 0.5   # 사람이 있는 공간 주행 속도
+      # 이력: 0.5 -> 0.7 -> 1.5. 감속도를 0.5 -> 2.0 으로 같이 올려 정지거리는 0.49m -> 0.56m 로
+      # 거의 유지된다. 원래 0.5 는 "사람이 있는 공간 주행 속도"로 고른 값이니, 사람과 마주치는
+      # 구간이나 WP5 부근 좁은 통로(통과폭 0.90m)에서 문제가 나면 여기부터 낮출 것
+      max_vel_x: 1.5
       max_vel_y: 0.0
-      max_vel_theta: 0.5
+      max_vel_theta: 0.5   # 회전은 안 올린다 (sim_time 1.7 과 곱해지는 궤적 스윕 문제)
       min_speed_xy: 0.0
-      max_speed_xy: 0.5   # max_vel_x 와 정합
+      max_speed_xy: 1.5   # max_vel_x 와 정합
       min_speed_theta: 0.0
       # 아래 4개는 velocity_smoother 의 max_accel/max_decel 과 반드시 같아야 한다.
       # 달랐을 때: DWB 는 0.5m/s 를 8cm 만에 세울 수 있다고 계산하지만 smoother 가 0.5m/s^2 로 묶어
       # 실제로는 25cm 를 더 밀려간다 (min_vel_x=0.0 이라 후진 복귀도 불가) -> 도킹 지점 오버슈트.
-      acc_lim_x: 0.5   # = velocity_smoother max_accel[0]
+      acc_lim_x: 2.0   # = velocity_smoother max_accel[0]. 이력: 0.5 -> 2.0
       acc_lim_y: 0.0
       acc_lim_theta: 1.0   # = velocity_smoother max_accel[2]
-      decel_lim_x: -0.5   # = velocity_smoother max_decel[0]
+      decel_lim_x: -2.0   # = velocity_smoother max_decel[0]. 이력: -0.5 -> -2.0
       decel_lim_y: 0.0
       decel_lim_theta: -1.0   # = velocity_smoother max_decel[2]
       vx_samples: 20
       vy_samples: 5
       vtheta_samples: 20
-      sim_time: 1.7
+      sim_time: 1.7   # 원본 값. 3.0 으로 올려 봤다가 되돌렸다.
+                      # 3.0 이면 제자리 회전 궤적이 max_vel_theta 0.5 x 3.0 = 86도를 쓸어가므로
+                      # 좁은 통로에서 빠른 회전 후보가 전부 풋프린트 충돌로 걸러진다.
+                      # 1.7 은 이 프로젝트가 이미 검증한 값이고, 3.0 은 미검증이었다.
+                      # 사람 회피가 약하면(0.5m/s x 1.7s = 0.85m 앞만 봄) 넓은 구간에서
+                      # 이 값만 따로 실험할 것. 좁은 통로 통과와 섞으면 판정이 안 된다.
       linear_granularity: 0.1
       angular_granularity: 0.025
       transform_tolerance: 0.2
+      # DWB 에 넘기는 전역 경로 길이. 기본값 2.0 은 90도 코너에서 정점 너머까지 보여준다.
+      # GoalDist critic 이 "경로 위에서 로봇으로부터 가장 먼 점"을 겨냥하므로, 코너 너머가 보이면
+      # 그쪽으로 질러가려는 힘이 생겨 코너를 크게 깎는다.
+      # 실측: WP2(90도 코너)를 0.76m 밖으로 지나쳐 RemovePassedGoals(radius 0.7)가 못 지웠고,
+      #       경로가 되돌아가도록 재생성돼 로봇이 정지했다.
+      #       실효 회전반경 1.83m — 운동학적 최소(v/w = 0.5/0.5 = 1.00m)의 1.8배였다.
+      # 1.0 으로 줄이면 코너 너머가 안 보여 코너를 돈 뒤에 다음 구간을 본다.
+      # params 에 없던 항목이라 기존 튜닝값은 하나도 건드리지 않는다.
+      # DWB 가 점수를 매길 때 보는 전역 경로를 로봇 앞 이만큼까지만 자른다. 이 값이 sim_time 과
+      # 묶여서 실제 순항 속도를 정한다 — v ~ forward_prune_distance / sim_time.
+      # 1.0 이면 1.0/1.7 = 0.59 m/s 가 자연 속도라, max_vel_x 를 1.5 로 올려도 0.55 밖에 안 나왔다
+      # (실측: /cmd_vel_nav 0.55). 3.0 이면 3.0/1.7 = 1.76 이라 max_vel_x 가 실제 상한이 된다.
+      # 이력: 1.0 -> 3.0. 원래 1.0 은 코너 과대 선회 억제용이었다(기본 2.0) — 코너 절삭이
+      # 심해지면 2.0 으로 내릴 것. 런타임 시험: ros2 param set /controller_server 로 바로 바뀐다
+      forward_prune_distance: 3.0
       xy_goal_tolerance: 0.1
       trans_stopped_velocity: 0.05   # 5cm/s 이하여야 최종 회전 시작 (사람 공간 주행 고려)
       short_circuit_trajectory_evaluation: True
       stateful: True
       critics: ["RotateToGoal", "Oscillation", "ObstacleFootprint", "GoalAlign", "PathAlign", "PathDist", "GoalDist"]
-      ObstacleFootprint.scale: 0.2   # 0.5 일 때 하늘색(253) 감점 6.3 이 GoalAlign(2.0) 보다 커서 회전을 체계적으로 억제했다.
+      ObstacleFootprint.scale: 0.05   # 0.5 -> 0.2 -> 0.05. 같은 이유로 한 번 더 내렸다.
+      # 0.5 일 때 하늘색(253) 감점 6.3 이 GoalAlign(2.0) 보다 커서 회전을 체계적으로 억제했다.
       # 하늘색은 내접반경 0.48m 띠일 뿐 실제 충돌이 아니다. 치명(254) 거부는 scale 과 무관하게 유지된다.
-      # (libdwb_critics.so 확인: pointCost 는 0xfe/0xff 만 비교, 0xfd(253) 비교 없음)
+      # (dwb_critics/obstacle_footprint.cpp 의 pointCost: LETHAL_OBSTACLE(254) 와
+      #  NO_INFORMATION(255) 만 throw 하고, 253 은 예외 없이 return cost 로 점수만 된다)
+      #
+      # 0.2 로도 부족했던 이유 — base_link 가 풋프린트 중심이 아니라서다.
+      #   풋프린트 x -1.38~0.48 -> 제자리 회전 스윕 반경 = base_link~(-1.38,0.5) = 1.468 m
+      #   253 띠(내접 0.48m)를 안 건드리려면 여유 반경 1.468 + 0.48 = 1.95 m 필요
+      #   undock 종료 지점 (-1.75, 3.38) 의 실제 여유 반경은 1.82 m -> 회전 중 253 진입 불가피
+      # 물리적 회전 자체는 1.468 m 면 되므로 가능하다(여유 0.35 m). 막고 있던 건 감점뿐이었다.
       Oscillation.oscillation_reset_time: 5.0   # 기본 -1.0 은 시간 해제 끔. 막혀서 못 움직이면 해제조건(5cm/11.5도)을
       # 영영 못 채워 잠금이 영구화되고 419개 전부 불법이 됐다 (실측 불법판정 89,000건)
       # 내접 반경 0.48 m (footprint 앞변 거리) 안에 들어가면 실제 충돌 여부와 무관하게 제자리 회전까지 막혔다.
@@ -256,7 +308,11 @@ local_costmap:
       footprint: "[ [0.48, 0.5], [0.48, -0.5], [-1.38, -0.5], [-1.38, 0.5] ]"
       mark_threshold: 2
       always_send_full_costmap: False   # 240x240=57,600 셀 전체 대신 증분 발행. RViz 표시는 동일
-      plugins: ["static_map_layer", "front_3d_lidar_layer", "inflation_layer"]   # StaticLayer 가 뒤에 오면 updateWithTrueOverwrite 로 팽창을 통째로 덮어씀 (실측: 팽창 cost 0개)
+      # StaticLayer 가 뒤에 오면 updateWithTrueOverwrite 로 팽창을 통째로 덮어씀 (실측: 팽창 cost 0개).
+      # static 은 맨 앞, inflation 은 맨 뒤를 반드시 유지할 것.
+      # front_3d_lidar_layer(VoxelLayer) -> stvl_layer + rear_scan_layer 로 분리했다.
+      # STVL 저자가 "평면 라이다에는 쓰지 말라"고 명시해서 2D 인 /scan_rear 는 ObstacleLayer 로 남긴다.
+      plugins: ["static_map_layer", "stvl_layer", "rear_scan_layer", "inflation_layer"]
       static_map_layer:
         plugin: "nav2_costmap_2d::StaticLayer"
         map_subscribe_transient_local: True
@@ -269,33 +325,87 @@ local_costmap:
         
       # 주의: 아래 이름들은 nav2_costmap_2d::VoxelLayer 가 선언하는 이름과 정확히 일치해야 한다.
       # ros2 param list /local_costmap/local_costmap 로 확인 가능. 이름이 틀리면 조용히 무시된다.
-      front_3d_lidar_layer:
-        plugin: "nav2_costmap_2d::VoxelLayer"
+      # 시간 감쇠 레이어. raytrace clearing 은 "지금 광선이 통과한 셀"만 지우므로,
+      # 관측이 끊긴 자리(로봇 뒤로 빠진 곳, 사람에 가렸던 그림자)는 영원히 안 지워진다.
+      # STVL 은 마킹에 수명을 줘서 광선이 안 지나가도 시간이 지나면 사라지게 한다.
+      # 파라미터 이름이 VoxelLayer 와 다르다 (obstacle_max_range -> obstacle_range 등).
+      # 값은 패키지가 제공하는 example/vlp16_config.yaml 을 기준으로 잡았다.
+      # VLP16 이 +-15도 3D 라이다라 XT-32 (elevationDeg -15~+15) 와 사양이 같다.
+      stvl_layer:
+        plugin: "spatio_temporal_voxel_layer/SpatioTemporalVoxelLayer"
         enabled: true
-        # voxel_decay / decay_model / filter / clear_after_reading / track_unknown_space 는
-        # SpatioTemporalVoxelLayer 파라미터라 이 플러그인에서는 선언되지 않는다 (무시됨). 제거함.
-        mark_threshold: 2            # 장애물로 칠 최소 복셀 수
-        footprint_clearing_enabled: true
+        voxel_decay: 5.0             # 초. 관측이 끊긴 마킹이 5초 뒤 사라진다  <- 핵심 값
+        decay_model: 0               # 0=선형, 1=지수, -1=영구
+        voxel_size: 0.05
+        track_unknown_space: true
+        mark_threshold: 0
+        update_footprint_enabled: true   # VoxelLayer 의 footprint_clearing_enabled 에 해당
         combination_method: 1        # 1=max
         origin_z: 0.0
-        z_resolution: 0.2            # 이전 voxel_size 는 오인식 이름이었음 (기본 0.2 가 적용 중이었다)
-        z_voxels: 10
-        publish_voxel_map: false   # 복셀 그리드 디버그 발행 제거
-        observation_sources: hesai_mark
-        hesai_mark:
+        publish_voxel_map: false
+        transform_tolerance: 0.3
+        mapping_mode: false
+        map_save_duration: 60.0
+        # 같은 토픽을 마킹용과 클리어링용으로 두 벌 선언한다. STVL 의 구조다.
+        observation_sources: front_mark front_clear
+        front_mark:
           data_type: PointCloud2
           topic: /front_3d_lidar/lidar_points
           marking: true
-          clearing: true             # false 였음. 마킹만 하고 해제를 안 해 롤링 윈도우에 누적됐다
-          obstacle_max_range: 6.0    # 이전 obstacle_range 는 오인식 이름이었음 (기본 2.5 가 적용 중이었다)
+          clearing: false
+          obstacle_range: 6.0        # 기존 obstacle_max_range 6.0 과 같은 의도
+          # 바닥 컷. nav2 ObservationBuffer 가 클라우드를 전역 프레임으로 변환한 뒤 넘기므로
+          # 이 값은 바닥 기준 높이다.
+          # 이전 VoxelLayer 도 -0.8 이었지만 바닥이 안 찍혔던 건 다른 두 장치 덕분이었다:
+          #   (1) z_voxels 10 x z_resolution 0.2 -> 복셀 그리드가 z=0~2.0m 에만 존재
+          #   (2) mark_threshold 2 -> 기둥에 복셀 2개(0.4m) 이상 있어야 장애물. 바닥은 한 층이라 탈락
+          # STVL 은 OpenVDB 라 z 상한이 없고 mark_threshold 0 이라 둘 다 사라졌다 -> 바닥이 통째로 찍혔다.
+          min_obstacle_height: 0.1   # -0.8 에서. 바닥면 위 10cm 부터만 장애물로 친다
+          max_obstacle_height: 3.0
+          expected_update_rate: 0.0
+          observation_persistence: 0.0
+          filter: "voxel"            # vlp16 예제 기준. 3D 라이다는 점이 많아 voxel 필터 권장
+          voxel_min_points: 0
+          clear_after_reading: true
+        front_clear:
+          enabled: true
+          data_type: PointCloud2
+          topic: /front_3d_lidar/lidar_points
+          marking: false
+          clearing: true
+          min_z: 0.1                 # front_mark 의 min_obstacle_height 와 맞출 것.
+                                     # 어긋나면 바닥 근처에서 지우기/찍기가 불일치한다
+          max_z: 6.0                 # obstacle_range 와 맞춤
+          vertical_fov_angle: 0.5236 # XT-32 수직 FOV 30도 (robot_nova.usd 의 elevationDeg -15~+15 실측)
+          vertical_fov_padding: 0.05 # 3D 라이다 전용
+          horizontal_fov_angle: 6.2832  # 360도
+          decay_acceleration: 5.0
+          model_type: 1              # 1 = 3D 라이다 (모래시계형 FOV). 0 은 깊이 카메라
+
+      # 후방 2D 라이다. STVL 이 평면 라이다를 지원하지 않아 ObstacleLayer 로 따로 둔다.
+      # 설정은 기존 front_3d_lidar_layer 의 scan_rear 소스를 그대로 옮긴 것이다.
+      rear_scan_layer:
+        plugin: "nav2_costmap_2d::ObstacleLayer"
+        enabled: true
+        footprint_clearing_enabled: true
+        combination_method: 1
+        observation_sources: scan_rear
+        scan_rear:
+          data_type: LaserScan
+          topic: /scan_rear
+          marking: true
+          clearing: true
+          obstacle_max_range: 6.0    # 로컬은 12x12m 롤링 윈도우다
           obstacle_min_range: 0.0
-          raytrace_max_range: 6.0    # 해제 범위는 마킹 범위 이상이어야 마크가 지워진다
+          raytrace_max_range: 6.0
           raytrace_min_range: 0.0
           min_obstacle_height: -0.8
           max_obstacle_height: 3.0
           expected_update_rate: 0.0
           observation_persistence: 0.0
-          inf_is_valid: false
+          # pointcloud_to_laserscan 이 use_inf: True 라 미검출 광선은 inf 로 온다.
+          # false 로 두면 그 광선을 버려 아무것도 지우지 않는다.
+          inf_is_valid: true
 
 global_costmap:
   global_costmap:
@@ -317,7 +427,16 @@ global_costmap:
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
         enabled: True
-        observation_sources: scan
+        # 후방 2D 라이다가 자기 차체를 본다 (실측). 센서가 base_link 기준 x=-0.613 로 footprint
+        # (x -1.38~0.48) 한가운데 있어서, 스캔에 footprint 경계까지의 거리가 그대로 찍힌다:
+        #   뒤 모서리 0.916m / 앞 변 1.093m / 앞 모서리 1.202m  <- 실측 클러스터와 일치
+        # ObstacleLayer 의 기본값은 false 라 이 점들이 영구 장애물로 남아 로봇을 따라다닌다.
+        # local_costmap 의 VoxelLayer 는 이미 true 로 켜져 있었다.
+        footprint_clearing_enabled: true
+        # scan      = 전방. /front_3d_lidar/lidar_points 를 pointcloud_to_laserscan 이 변환
+        # scan_rear = 후방 2D RPLidar(SLAMTEC S2E). Isaac 액션그래프가 LaserScan 을 직접 발행하므로
+        #             변환 노드가 없다. 자세한 배선은 run_human_scene.py 의 ensure_rear_lidar_graph 참고.
+        observation_sources: scan scan_rear
         scan:
           topic: /scan
           max_obstacle_height: 4.0
@@ -326,15 +445,51 @@ global_costmap:
           data_type: "LaserScan"
           raytrace_max_range: 20.0
           raytrace_min_range: 0.0
-          obstacle_max_range: 20.0
+          # 찍는 건 5m 이내만, 지우는 건 20m 까지.
+          # 전역 costmap 은 시간 감쇠가 없다(소스가 LaserScan 2개뿐이라 STVL 을 못 쓴다).
+          # 그래서 한 번 찍힌 마킹은 광선이 그 셀을 다시 통과해야만 지워진다.
+          # 사거리 20m 로 멀리까지 찍으면 로봇이 다시 볼 일 없는 곳에 잔상이 영구히 쌓인다.
+          # raytrace_max_range 는 20m 로 남겨 지우는 능력은 그대로 둔다.
+          obstacle_max_range: 5.0
           obstacle_min_range: 0.0
+          # pointcloud_to_laserscan 이 use_inf: True 라 미검출 광선은 inf 로 온다.
+          # nav2 ObstacleLayer 는 이 값에 따라 콜백이 갈린다:
+          #   false -> inf 광선을 버린다. 아무것도 지우지 않는다
+          #   true  -> inf 를 range_max - epsilon 으로 바꿔 raytrace_max_range 까지 비운다
+          # "거기 아무것도 없다"는 가장 강한 정보를 false 로 두면 통째로 버리게 된다.
+          # 사람이 지나간 자리가 안 지워지고 영구 장애물로 남던 원인.
+          inf_is_valid: true
+        scan_rear:
+          topic: /scan_rear
+          max_obstacle_height: 4.0
+          clearing: True
+          marking: True
+          data_type: "LaserScan"
+          # RPLidar S2E 실측 사거리는 30m 지만, 전방 scan 과 같은 20m 로 맞춘다.
+          # 마킹 범위보다 해제 범위가 작으면 마크가 안 지워진다.
+          raytrace_max_range: 20.0
+          raytrace_min_range: 0.0
+          obstacle_max_range: 5.0   # 위 scan 과 같은 이유
+          obstacle_min_range: 0.0
+          inf_is_valid: true        # 위 scan 과 같은 이유
       static_layer:
         plugin: "nav2_costmap_2d::StaticLayer"
         map_subscribe_transient_local: True
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        cost_scaling_factor: 3.0   # 0.15 는 감쇠가 거의 없어 맵 전체가 고비용이었다
-        inflation_radius: 0.6
+        # 전역만 키운다. local 의 0.6 은 DWB ObstacleFootprint 판정과 엮여 있고
+        # "내접 반경 0.48m 안에 들면 제자리 회전까지 막혔다"는 실측 이력이 있어 건드리지 않는다.
+        #
+        # NavFn 은 비용 가중치 파라미터가 없다 (tolerance/use_astar/allow_unknown/
+        # use_final_approach_orientation 뿐. COST_NEUTRAL 50, COST_FACTOR 0.8 은 컴파일 상수).
+        # 따라서 경로를 장애물에서 밀어내는 수단은 costmap 비용 자체를 키우는 것뿐이다.
+        #
+        # 0.6 은 내접 반경 0.48 + 0.12 로 "겨우 안 닿는" 값이라, 사람에게서 0.6m 만 떨어져도
+        # 비용이 0 이 되어 NavFn 이 그 경계에 딱 붙는다. 그런데 차체는 base_link 기준
+        # 뒤로 1.38m / 앞으로 0.48m 라, 중심이 0.6m 떨어져도 차체는 사람 코앞이다.
+        # 팽창 비용은 치명(254)이 아니라 선호도이므로 키워도 통행 불가가 되지는 않는다.
+        cost_scaling_factor: 1.5   # 3.0 은 감쇠가 빨라 비용 띠가 좁았다. 낮추면 먼 거리까지 비용 유지
+        inflation_radius: 1.2      # 0.6 -> 1.2. radius 와 scaling 은 같이 조절해야 의미가 있다
       always_send_full_costmap: False   # 1001x1001=100만 셀을 매초 직렬화하던 것을 증분으로. RViz 표시는 동일
   global_costmap_client:
     ros__parameters:

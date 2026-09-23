@@ -18,7 +18,6 @@ from isaacsim import SimulationApp
 simulation_app = SimulationApp({"headless": False})
 
 import sys
-import time
 from pathlib import Path
 
 import numpy as np
@@ -235,39 +234,6 @@ def build_place_sequence(base_pos, base_quat):
     return steps
 
 
-def bake_navmesh(timeout_s=30.0):
-    """NavMesh 를 베이크하고 완료를 기다린다.
-
-    베이크 결과는 USD 에 저장되지 않는다(스키마에 담을 프림 타입 자체가 없다).
-    GUI 는 autoRebakeOnChanges 로 알아서 다시 굽지만 standalone 은 직접 호출해야 한다.
-    안 구우면 캐릭터의 GoTo 가 전부 'invalid command' 로 거부된다.
-    """
-    try:
-        import omni.anim.navigation.core as nav
-    except ImportError as e:
-        print(f"   navmesh      건너뜀 (omni.anim.navigation.core 없음: {e})")
-        return False
-
-    inav = nav.acquire_interface()
-    inav.start_navmesh_baking()
-    deadline = time.time() + timeout_s
-    while time.time() < deadline:
-        simulation_app.update()
-        if not inav.is_navmesh_baking():
-            break
-    else:
-        print(f"   navmesh      베이크 시간 초과 ({timeout_s:.0f}s)")
-        return False
-
-    navmesh = inav.get_navmesh()
-    if navmesh is None:
-        print("   navmesh      실패 (get_navmesh() 가 None). NavMeshVolume 범위와 "
-              "agentMinIslandRadius 를 확인할 것")
-        return False
-    print("   navmesh      베이크 완료")
-    return True
-
-
 def main():
     if not USD_PATH.is_file():
         raise FileNotFoundError(f"USD file was not found: {USD_PATH}")
@@ -275,8 +241,6 @@ def main():
         raise RuntimeError(f"Could not open USD: {USD_PATH}")
     while is_stage_loading():
         simulation_app.update()
-
-    bake_navmesh()
 
     stage = omni.usd.get_context().get_stage()
 
