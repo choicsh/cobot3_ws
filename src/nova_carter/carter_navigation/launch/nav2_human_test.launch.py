@@ -45,11 +45,17 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument(
             "map",
-            # 이력: intergration_nova.yaml -> integration_hospital.yaml (2026-09-23).
+            # 이력: intergration_nova.yaml -> integration_hospital.yaml
+            #       -> hospital_integration_human.yaml (2026-09-23, 씬에서 새로 뽑은 맵)
             # 씬을 hospital_integration_human.usd 로 바꾸면서 같이 옮겼다.
             # ⚠ params 의 amcl initial_pose 와 through_pose_human_test.py 의 WAYPOINTS 는
             #   아직 옛 맵 좌표라 무효다. 새 맵 좌표로 다시 정해야 한다.
-            default_value=os.path.join(carter_dir, "maps", "integration_hospital.yaml"),
+            #
+            # 맵 제원 (occupancy map 추출값, 두 맵 모두 같은 월드 좌표계):
+            #   integration_hospital       1510x660, origin [-49.975,  -9.475]  -> X -49.98~25.53, Y -9.48~23.53
+            #   hospital_integration_human 1480x635, origin [-49.275,  -8.875]  -> X -49.28~24.73, Y -8.88~22.88
+            # 월드 원점이 같으므로 기존 좌표값은 새 맵 범위 안에 있으면 그대로 유효하다.
+            default_value=os.path.join(carter_dir, "maps", "hospital_integration_human.yaml"),
             description="맵 yaml. hospital_integration 씬용 기본값",
         ),
         DeclareLaunchArgument(
