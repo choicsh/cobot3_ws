@@ -1595,6 +1595,15 @@ class PickPlaceSequence:
     def current(self):
         return self.steps[self.index]
 
+    def skip(self):
+        """실패한 스텝을 버리고 다음 스텝부터 계속한다. 뒤 스텝은 절대 목표라 그대로 이어진다."""
+        self.index += 1
+        self.step_tick = 0
+        self.step_rejects = 0
+        self.start_pos = self.start_quat = self.start_joints = None
+        self.failed = None
+        self.done = self.index >= len(self.steps)   # tick() 이 실패 때 세운 done 을 되돌린다
+
     def _current_flange_pose(self):
         flange_pos, flange_rot = self._ik.compute_end_effector_pose()
         pos = flange_pos + flange_rot @ TCP_OFFSET
@@ -1746,7 +1755,7 @@ def main():
     #   observe_go/observe_tilt/observe_settle/observe_home
     #           -> 랙이 다 찬 뒤 랙을 대각선 위에서 보고 ArUco 로 칸별 긴급도를 출력한 뒤 홈으로.
     #              적재/하역 로직과는 무관하고, 못 읽어도 미검출(-1)로 찍고 그냥 진행한다
-    #   recover -> 스텝/검출 실패 복구. 들고 있으면 원래 자리에 되돌려 놓고, 아니면 홈으로 빠진다.
+    #   recover -> 검출 실패 복구 (스텝 실패는 그 스텝만 건너뛰고 이어간다).
     #              끝나면 남은 칸이 있으면 scan, 아니면 관측으로 — 어떤 경우에도 미션을 멈추지 않는다
     #   wait_unload -> 주행 프로세스의 도킹 완료(/nav_done 1)를 기다린다. UNLOAD_KEY 로 수동 진행도 된다
     #   unload  -> 랙 3번부터 꺼내 책상 위 DESK_SLOTS 에 가로로 놓는다
@@ -1927,9 +1936,9 @@ def main():
 
             if sequence.failed:
                 print(f"   [{pick_state}] {sequence.failed}")
-                held = sequence.gripper   # 복구 시퀀스로 갈아끼워도 잡은 건 계속 잡고 있어야 한다
                 if step_retries < MAX_STEP_RETRIES:
                     # 손목을 특이점에서 띄우고 실패한 스텝부터 다시 — 뒤 스텝은 절대 목표라 그대로 이어진다
+                    held = sequence.gripper   # 새 시퀀스는 reset 에서 open 으로 시작한다
                     step_retries += 1
                     print(f"   복구         손목을 풀고 실패 스텝부터 재시도 ({step_retries}/{MAX_STEP_RETRIES})")
                     sequence = PickPlaceSequence(robot, ik_solver, arm_indices,
@@ -1939,25 +1948,10 @@ def main():
                     tick_count = 0
                     continue
                 step_retries = 0
-                if pick_state == "recover":
-                    # 복구 동작까지 실패했다. 관절 보간은 IK 를 안 거치니 홈 복귀만은 된다
-                    print("   복구         복구 동작도 실패 — 홈으로만 빠지고 관측 단계로 넘어간다")
-                    stage_fails = MAX_STAGE_FAILS
-                    sequence = PickPlaceSequence(robot, ik_solver, arm_indices, [home_step()])
-                elif pick_state in ("observe_go", "observe_tilt", "observe_home", "unload"):
-                    # 상태는 그대로 두고 홈으로만 뺀다. 홈 복귀가 끝나면 아래 done 처리가
-                    # 원래 흐름(다음 관측 단계 / 다음 하역 칸)을 그대로 이어간다
-                    print(f"   복구         [{pick_state}] 건너뛰고 홈으로 — 다음 단계로 이어간다"
-                          + ("  (트레이를 든 채다 — 다음 칸 시퀀스 첫 스텝에서 랙 앞에 놓는다)"
-                             if held == "close" else ""))
-                    sequence = PickPlaceSequence(robot, ik_solver, arm_indices, [home_step()])
-                else:
-                    # 적재 계열. 그리퍼가 닫혀 있으면 트레이를 들고 있다는 뜻이다
-                    holding = grasp_log[-1] if (sequence.gripper == "close" and grasp_log) else None
-                    begin_recover("재시도해도 스텝을 못 끝냈다", holding)
-                    continue
-                sequence.reset()
-                sequence.gripper = held
+                # 홈으로 빠지지 않고 다음 스텝으로 넘어간다. 같은 시퀀스를 계속 쓰므로
+                # 그리퍼 상태가 그대로 유지된다 — 들고 있던 트레이를 놓지 않는다
+                print(f"   건너뜀       step {sequence.index} '{sequence.current['label']}' — 다음 스텝으로 넘어간다")
+                sequence.skip()
                 tick_count = 0
                 continue
 
