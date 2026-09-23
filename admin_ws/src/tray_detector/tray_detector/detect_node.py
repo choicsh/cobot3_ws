@@ -39,11 +39,20 @@ INFO_TOPIC = "/wrist_camera/color/camera_info"
 RESULT_TOPIC = "/tray_detection"
 MARKER_TOPIC = "/aruco_markers"
 
-CONF_THRESHOLD = 0.85
+CONF_THRESHOLD = 0.75    # 이력: 0.85 -> 0.75 (2026-09-23). 검출 자체가 덜 잡히는 편이라 낮춰본다
 MAX_TRAYS = 3            # 랙 자리가 3개다
 # 손목 카메라 화면 아래쪽은 늘 그리퍼가 차지한다. 거기 뜨는 오검출은 신뢰도로 못 거른다
-# (0.85 를 넘겨서 올라온다). 물리적으로 말이 안 되는 거리로 거른다.
+# (0.85 일 때도 넘겨서 올라왔다 — 문턱을 0.75 로 내렸으니 더 올라온다). 물리적으로
+# 말이 안 되는 거리로 거른다.
 MIN_DEPTH_M = 0.15       # 이보다 가까우면 그리퍼다
+# 그리퍼는 손목에 고정돼 있어 화면에서 **항상 같은 자리**다. 깊이로 거르는 건 새는 구멍이
+# 있었다 — sample_depth 가 박스의 15퍼센타일을 쓰는 탓에 그리퍼 박스에서도 먼 배경 깊이가
+# 나올 수 있다. 픽셀 위치로 직접 막는다.
+# 실측(검출 이미지 60장의 픽셀별 중앙값/잔차): 그리퍼 최상단 y = 345 (x 128~191 손가락 관절).
+#   트레이 박스 중심 v ~ 219 / 그리퍼 오검출 박스 중심 v ~ 394 로 175px 벌어져 있다.
+# 박스 '중심'으로 판정한다 — 트레이를 집으러 내려가면 박스가 그리퍼에 겹치는 게 정상이고,
+# 중심까지 내려가야 그리퍼 자체를 물체로 잡은 것이다.
+GRIPPER_TOP_Y = 330      # 실측 345 에서 15px 여유
 MAX_DEPTH_M = 1.0        # 이보다 멀면 팔이 닿지 않는다 (1.5 -> 1.0: 1.1m 대 벽/연기 오검출 차단)
 # 트레이는 손잡이+랙+시험관이 붙은 비대칭 조립체라, 박스의 '기하학적 중앙'이
 # 물체가 아니라 손잡이-랙 사이 빈틈에 떨어지기 쉽다 — 거기를 패치로 찍으면
@@ -52,6 +61,10 @@ MAX_DEPTH_M = 1.0        # 이보다 멀면 팔이 닿지 않는다 (1.5 -> 1.0:
 # 하위 퍼센타일(가까운 쪽)을 쓴다 — 배경이 박스의 대부분을 차지해도 안전하다.
 DEPTH_PERCENTILE = 15    # 유효 표본 중 이 퍼센타일(가까운 쪽)을 물체 깊이로 본다
 MIN_DEPTH_SAMPLES = 20   # 유효 표본이 이보다 적으면 신뢰하지 않는다
+# 디버그 이미지 저장 간격(프레임). 0개인 프레임은 '왜 못 찾았는지'를 볼 유일한 자료라
+# 반드시 남기되, 검출이 있는 프레임보다 드물게 남겨 디스크를 아낀다
+SAVE_EVERY_FOUND = 10
+SAVE_EVERY_EMPTY = 30
 OUT_DIR = Path.home() / "tray_detections"
 ARUCO = cv2.aruco.ArucoDetector(cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50))
 # 랙 관측 자세(Isaac OBSERVE_*)에서 랙이 화면에 잡히는 영역 (x0, y0, x1, y1). 마커가 원본에서
@@ -176,6 +189,10 @@ class TrayDetector(Node):
 
         found, rejected = [], []
         for box, conf in zip(result.boxes.xyxy.tolist(), result.boxes.conf.tolist()):
+            u, v = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
+            if v >= GRIPPER_TOP_Y:
+                rejected.append(f"v={v:.0f} (그리퍼 영역)")
+                continue
             z = sample_depth(depth, *box)
             if z is None:
                 rejected.append("깊이 없음")
@@ -183,7 +200,6 @@ class TrayDetector(Node):
             if not (MIN_DEPTH_M <= z <= MAX_DEPTH_M):
                 rejected.append(f"{z:.3f}m (범위 밖)")
                 continue
-            u, v = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
             found.append((u, *deproject(u, v, z, fx, fy, cx, cy), conf))
 
         if rejected:
@@ -204,14 +220,18 @@ class TrayDetector(Node):
             mk += [float(mid), float(slot_of(mx))]
         self.pub_markers.publish(Float32MultiArray(data=mk))
 
-        if found or markers:
-            self._log_and_save(result, found, markers)
+        self._log_and_save(result, found, markers)
 
     def _log_and_save(self, result, found, markers):
         self.saved += 1
         # 매 프레임 저장하면 디스크가 남아나지 않는다. 단 마커 프레임은 관측 자세에서 잠깐만
         # 나오는 데다 판독이 깜빡여서(0~2개) 전부 남긴다 — 어느 칸이 왜 안 읽혔는지 볼 유일한 자료다
-        if markers or self.saved % 10 == 1:
+        #
+        # 이력(2026-09-23): 예전엔 호출부가 `if found or markers:` 로 걸려 있어 **0개인 프레임이
+        # 한 장도 안 남았다.** 정렬 이동 뒤 검출이 0개가 된 실패를 분석할 자료가 통째로 비어
+        # 있었다 — 정작 봐야 할 순간이 그때다. 이제 0개도 남기되 빈도만 낮춘다.
+        every = SAVE_EVERY_FOUND if found else SAVE_EVERY_EMPTY
+        if markers or self.saved % every == 1:
             path = OUT_DIR / f"{datetime.now():%H%M%S}_{self.saved:04d}.png"
             img = result.plot()
             cv2.rectangle(img, RACK_ROI[:2], RACK_ROI[2:], (0, 255, 255), 1)   # 랙 ROI — 랙이 이 안에 있어야 한다

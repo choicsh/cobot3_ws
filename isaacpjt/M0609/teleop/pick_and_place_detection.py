@@ -169,8 +169,8 @@ READY_JOINTS_RAD = [1.57, 0.0, 2.157, 0.0, -0.6, 1.57]
 IK_POSITION_TOLERANCE    = 0.003    # m
 # Lula 는 축별 구속을 못 한다 — 이 값은 x/y/z 축에 똑같이 걸린다. 키우면 손목 특이점 근처에서
 # 해를 찾을 여지가 생기는 대신 트레이가 그만큼 기운 채로도 성공 판정이 난다.
-# 이력: 0.02 -> 0.1 -> 0.1745 (10도). STEP_ROT_TOL_DEG 를 이보다 높게 유지할 것
-IK_ORIENTATION_TOLERANCE = 0.1745   # rad = 10도
+# 이력: 0.02 -> 0.1 -> 0.1745 (10도) -> 0.1222 (7도). STEP_ROT_TOL_DEG 를 이보다 높게 유지할 것
+IK_ORIENTATION_TOLERANCE = 0.1222   # rad = 7도
 
 
 # ══════════════════════════════════════════════════════════════
@@ -254,15 +254,34 @@ OBSERVE_JOINTS_DEG = [+87.895, -4.758, +64.720, +4.469, +80.661, +85.544]
 # 이만큼(시뮬 프레임, 60Hz 가정 ≈1.5초) 누적해서 칸별로 가장 많이 나온 id 를 쓴다
 OBSERVE_COLLECT_FRAMES = 90
 
-# 보간 속도 — 스텝당 이동량을 고정하고 구간 길이로 스텝 수를 정한다
-TCP_SPEED_M        = 0.004   # m / step
-JOINT_SPEED_DEG     = 0.5    # deg / step
-MIN_STEPS           = 60
+# 보간 속도 — 스텝당 이동량을 고정하고 구간 길이로 스텝 수를 정한다.
+# 이력: 2026-09-23 전 구간 2.5배 (0.004/0.5/60 -> 0.010/1.25/24).
+# **MIN_STEPS 를 같이 내리는 게 핵심이다** — 이동 0.24m 미만 / 회전 30도 미만 구간은
+# 전부 이 바닥에 걸려 있어서, 속도만 올리면 짧은 구간은 하나도 안 빨라진다.
+TCP_SPEED_M        = 0.010   # m / step
+JOINT_SPEED_DEG     = 1.25   # deg / step
+MIN_STEPS           = 24
 MAX_STEPS           = 600
+
+# 스텝 dict 의 "speed" 키로 등급을 고른다. 키가 없으면 기본(빈손).
+# 이력: 예전엔 "slow": True 불리언 하나였는데, 트레이를 들고 있는 구간이 따로 필요해져
+# 이름 있는 3단으로 바꿨다 (불리언을 하나 더 붙이면 조합이 금방 엉킨다).
+#   None    빈손. 2.5배. 흔들릴 게 없으니 가장 빠르게
+#   carry   트레이를 들고 있는 구간. 1.5배 + "ease": 2 로 감가속을 부드럽게.
+#           2.5배로 joint_1 을 최대 86도 돌리면 들고 있는 트레이가 흔들린다 (실측 증상)
+#   slow    그리퍼 여닫기 직전/직후. 원래 속도. 접촉 순간은 빠르면 트레이를 치거나 놓친다
+SPEEDS = {
+    None:    (TCP_SPEED_M, JOINT_SPEED_DEG, MIN_STEPS),   # 2.5배
+    "carry": (0.006, 0.75, 40),                           # 1.5배
+    "slow":  (0.004, 0.50, 60),                           # 1.0배
+}
 GRIPPER_WAIT_STEPS  = 120    # 그리퍼가 실제로 여닫힐 때까지 제자리에서 기다리는 스텝 수
 # 60Hz 가정(GRIPPER_WAIT_STEPS=120 이 약 2초인 것과 같은 기준) — 랙에 내려놓기
 # 전 흔들림이 가라앉을 시간을 준다. 1초 = 60 스텝
-RACK_PLACE_WAIT_STEPS = 60
+# 이력: 60(1초) -> 120(2초). 보간 속도를 2.5배로 올린 뒤 아직 흔들리는 중에 하강했다.
+# 이름 이력: RACK_PLACE_WAIT_STEPS -> PLACE_WAIT_STEPS. 적재(랙)와 하역(책상) 양쪽의
+# 수직 하강 직전에 같이 쓴다 — 두 자리 모두 같은 원인(도착 감속 충격)으로 흔들린다.
+PLACE_WAIT_STEPS = 120
 # 놓는 위치 바로 위 안전 지점의 높이(= 수직으로 내려가는 거리). 대각선으로 진입하면
 # 트레이가 랙 테두리에 걸려서, 슬롯 위로 먼저 간 뒤 수직으로만 내려가게 한다.
 # 이력: 0.10 -> 0.11 (안전 위치가 너무 낮아서, POINT4 z +1cm 와 합쳐 총 +2cm)
@@ -305,6 +324,11 @@ MAX_DETECT_RETRIES = 3
 
 # 관제 PC 도 같은 게이트를 두지만, 팔이 실제로 움직이는 건 이쪽이라 한 번 더 본다
 DETECT_DEPTH_MIN_M = 0.15
+# 정렬 직후 파지 단계에서, 고른 후보가 화면 중앙에서 이만큼 넘게 벗어나 있으면 집지 않는다.
+# 근거: 트레이는 가로 한 줄로 ±TRAY_SPREAD_R_M(0.25m), 서로 최소 TRAY_MIN_GAP_M(0.15m)
+# 떨어져 있다. 그 절반(7.5cm)을 넘으면 '정렬한 그것'이 아니라 이웃 트레이일 수 있다.
+# 실측된 오선택은 23cm 였다. 단위는 픽셀이 아니라 그 깊이에서의 실제 좌우 거리(m)다.
+CENTER_TOL_M = 0.08
 DETECT_DEPTH_MAX_M = 1.0    # 1.5 -> 1.0: 1.1m 대 벽/연기 오검출 차단. 진짜 트레이가 걸리면 로그 값 보고 올릴 것
 # 파지점이 base 에서 이 범위 밖이면 벽/배경 오검출로 보고 버린다.
 # 이 값은 3D norm (z≈0.45 포함) 이다. 수평 거리 = sqrt(gate^2 - 0.45^2).
@@ -374,7 +398,7 @@ MAX_IK_JOINT_JUMP_DEG   = 20.0
 # 있는데도 다음 스텝(예: joint_1 회전)이 시작된다 — "올린 뒤 후퇴 없이 회전" 증상. 오차가 크면
 # 목표를 계속 주며 STEP_EXTRA_TICKS 더 기다리고, 그래도 못 가면 시퀀스를 중단한다(계속 가면 충돌).
 STEP_POS_TOL_M          = 0.01
-# IK_ORIENTATION_TOLERANCE(0.1745rad = 10도) 보다 높아야 한다. 낮으면 IK 는 풀렸는데
+# IK_ORIENTATION_TOLERANCE(0.1222rad = 7도) 보다 높아야 한다. 낮으면 IK 는 풀렸는데
 # 도달 검사에서만 걸리는 실패가 생긴다. 이력: 5.0 -> 7.0 -> 12.0
 STEP_ROT_TOL_DEG        = 12.0
 STEP_EXTRA_TICKS        = 120
@@ -1216,8 +1240,8 @@ def grasp_point_base(tray_world, base_pos, base_quat):
     return surface + direction * TRAY_HALF_DEPTH_M + np.array([0.0, 0.0, GRASP_ABOVE_CENTER_M])
 
 
-def find_first_tray_optical(verbose=False):
-    """가장 가까운 트레이의 원본 검출점(카메라 광학 프레임)과 conf. 없으면 None.
+def iter_tray_optical(verbose=False):
+    """깊이 게이트를 통과한 검출을 **가까운 순으로 하나씩** 내준다.
 
     관제 PC 가 카메라에서 가까운 순으로 보내주므로 앞에서부터 쓰면 된다. 앞엣것을 먼저
     집어야 뒤/옆 트레이를 건드리지 않는다.
@@ -1231,30 +1255,51 @@ def find_first_tray_optical(verbose=False):
             print(f"   트레이{i + 1} 무시 — 깊이 {depth:.3f}m 가 "
                   f"{DETECT_DEPTH_MIN_M}~{DETECT_DEPTH_MAX_M}m 범위 밖이다")
             continue
-        return point_optical, conf
-    return None
+        yield point_optical, conf
 
 
-def first_tray_grasp(color_camera_path, base_pos, base_quat, verbose=False):
-    """가장 가까운 트레이의 파지점(base)과 월드 좌표를 구한다. 없으면 None.
+def find_first_tray_optical(verbose=False):
+    """가장 가까운 트레이의 원본 검출점(카메라 광학 프레임)과 conf. 없으면 None."""
+    return next(iter_tray_optical(verbose=verbose), None)
+
+
+def first_tray_grasp(color_camera_path, base_pos, base_quat, verbose=False,
+                     centered_first=False):
+    """집을 트레이의 파지점(base)과 월드 좌표를 구한다. 없으면 None.
 
     base 에서의 도달 거리를 여기서 본다 — 팔이 실제로 움직이는 건 이쪽이라
-    받은 값을 그대로 믿으면 안 된다 (벽 오검출을 여기서 거른다)."""
-    found = find_first_tray_optical(verbose=verbose)
-    if found is None:
-        return None
-    point_optical, conf = found
-    tray_world = optical_to_world(point_optical, color_camera_path)
-    grasp = grasp_point_base(tray_world, base_pos, base_quat)
-    reach = float(np.linalg.norm(grasp))
-    if not (GRASP_REACH_MIN_M <= reach <= GRASP_REACH_MAX_M):
-        print(f"   트레이 무시 — 파지점이 base 에서 {reach:.3f}m "
-              f"({GRASP_REACH_MIN_M}~{GRASP_REACH_MAX_M}m 밖). 벽/배경 오검출로 본다")
-        return None
-    print(f"   트레이 conf {conf:.2f}  cam {vec(point_optical, 3)}  "
-          f"world {vec(tray_world)}  파지(base) {vec(grasp, 4)}  "
-          f"reach {reach:.3f}m  yaw {approach_direction(grasp)[1]:+.1f}deg")
-    return grasp, tray_world
+    받은 값을 그대로 믿으면 안 된다 (벽 오검출을 여기서 거른다).
+
+    centered_first=True 면 **화면 중앙에 가장 가까운 것**(|x_optical| 최소)부터 본다.
+    정렬 단계(find_first_tray_optical)가 3D 최근접 트레이를 화면 중앙에 맞춰 놓은 뒤라,
+    여기서 3D 최근접을 다시 고르면 **정렬한 그 트레이가 아닌 다른 트레이**를 집으러 간다 —
+    카메라가 옆으로 옮겨져 화면 구성이 바뀌었고, 트레이가 가로 한 줄로 3개 놓여 있어
+    순위가 쉽게 뒤집히기 때문이다 (실측 증상). 정렬 결과를 이어받으려면 중앙 기준이어야 한다.
+
+    이력(2026-09-23): 예전엔 가장 가까운 후보 **하나만** 보고 그게 도달거리에서 걸리면
+    바로 None 을 냈다. 그러면 뒤에 있던 진짜 트레이를 한 번도 안 보고 '못 찾음'이 된다.
+    이제 걸린 후보는 건너뛰고 다음 후보로 넘어간다."""
+    cands = list(iter_tray_optical(verbose=verbose))
+    if centered_first:
+        cands.sort(key=lambda c: abs(float(c[0][0])))
+    for i, (point_optical, conf) in enumerate(cands):
+        off = abs(float(point_optical[0]))
+        if centered_first and off > CENTER_TOL_M:
+            print(f"   후보{i + 1} 무시 — 화면 중앙에서 {off * 100:.0f}cm 벗어났다 "
+                  f"(허용 {CENTER_TOL_M * 100:.0f}cm). 정렬한 그 트레이가 아니다")
+            continue
+        tray_world = optical_to_world(point_optical, color_camera_path)
+        grasp = grasp_point_base(tray_world, base_pos, base_quat)
+        reach = float(np.linalg.norm(grasp))
+        if not (GRASP_REACH_MIN_M <= reach <= GRASP_REACH_MAX_M):
+            print(f"   후보{i + 1} 무시 — 파지점이 base 에서 {reach:.3f}m "
+                  f"({GRASP_REACH_MIN_M}~{GRASP_REACH_MAX_M}m 밖). 다음 후보로 넘어간다")
+            continue
+        print(f"   트레이 conf {conf:.2f}  cam {vec(point_optical, 3)}  "
+              f"world {vec(tray_world)}  파지(base) {vec(grasp, 4)}  "
+              f"reach {reach:.3f}m  yaw {approach_direction(grasp)[1]:+.1f}deg")
+        return grasp, tray_world
+    return None
 
 
 # ══════════════════════════════════════════════════════════════
@@ -1310,19 +1355,37 @@ class SingularityGuardedIK:
 # ══════════════════════════════════════════════════════════════
 #  Pick & Place 시퀀스
 # ══════════════════════════════════════════════════════════════
-def steps_for_pose(start_pos, target_pos, start_quat, target_quat):
-    """구간 길이(위치/자세)를 속도로 나눠 스텝 수를 정한다"""
+def ease_alpha(u, times=1):
+    """코사인 S-커브를 times 번 겹친다. u in [0,1] -> [0,1].
+
+    1번(기본): f(u) = 0.5 - 0.5cos(pi u). 양끝 **속도**는 0 이지만 **가속도**는 양끝에서
+      최대(|f''(0)| = |f''(1)| = pi^2/2)다. 즉 도착하는 순간이 감속 충격의 정점이라,
+      들고 있는 트레이가 그때 흔들린다.
+    2번: g = f(f(u)). g'(1) = f'(f(1)) * f'(1) = 0 이고 g''(1) = f'(1) * f''(1) = 0 이라
+      **도착 가속도까지 0** 이 된다. 점차 느려지며 멈춘다.
+      대신 중간 최고 속도가 선형의 pi/2 -> pi^2/4 배로 1.57배 올라간다
+      (같은 거리를 같은 스텝 수에 가므로). 중간이 너무 빠르면 그 스텝만 "speed": "slow" 를 줄 것.
+    """
+    for _ in range(times):
+        u = 0.5 - 0.5 * np.cos(np.pi * u)
+    return u
+
+
+def steps_for_pose(start_pos, target_pos, start_quat, target_quat, speed=None):
+    """구간 길이(위치/자세)를 속도로 나눠 스텝 수를 정한다. speed 는 SPEEDS 의 등급"""
+    tcp_v, joint_v, lo = SPEEDS[speed]
     dist = float(np.linalg.norm(target_pos - start_pos))
     dot = float(np.clip(abs(np.dot(start_quat, target_quat)), -1.0, 1.0))
     angle_deg = np.degrees(2.0 * np.arccos(dot))
-    n = max(dist / TCP_SPEED_M, angle_deg / JOINT_SPEED_DEG)
-    return int(np.clip(n, MIN_STEPS, MAX_STEPS))
+    n = max(dist / tcp_v, angle_deg / joint_v)
+    return int(np.clip(n, lo, MAX_STEPS))
 
 
-def steps_for_joint(start_joints, target_joints):
+def steps_for_joint(start_joints, target_joints, speed=None):
+    _, joint_v, lo = SPEEDS[speed]
     delta_deg = np.degrees(np.abs(np.array(target_joints) - np.array(start_joints)))
-    n = float(np.max(delta_deg)) / JOINT_SPEED_DEG
-    return int(np.clip(n, MIN_STEPS, MAX_STEPS))
+    n = float(np.max(delta_deg)) / joint_v
+    return int(np.clip(n, lo, MAX_STEPS))
 
 
 def build_scan_steps():
@@ -1436,11 +1499,15 @@ def build_center_step(ik_solver, color_camera_path, point_optical):
     x_offset = float(point_optical[0])
     pos_world, quat = current_tcp_pose(ik_solver)
     target_world = pos_world + cam_right * x_offset
+    # slow — 보간 속도를 2.5배로 올린 뒤 이 스텝이 60 -> 24 스텝이 됐다. 23cm 를 0.4초
+    # (약 0.6 m/s)에 옆으로 빼면, 이미 도달거리 가장자리인 자세에서 IK 가 따라오지 못한다.
+    # 특이점 가드가 지금 거부를 안 하고 경고만 찍으므로 엉뚱한 해가 그대로 팔에 나간다.
     return [{
         "type": "pose",
         "label": f"ROI 중앙 정렬(수평 {x_offset * 100:+.1f}cm)",
         "target": (target_world, quat),
         "gripper": "open",
+        "speed": "slow",
     }]
 
 
@@ -1552,19 +1619,24 @@ def build_pick_steps(lula, grasp_base, base_pos, base_quat, slot):
 
     return [
         {"type": "pose",  "label": "안전 위치(파지 전)", "target": to_world_q(approach), "gripper": "open"},
-        {"type": "pose",  "label": "파지 위치",          "target": to_world_q(grasp_base), "gripper": None},
+        {"type": "pose",  "label": "파지 위치",          "target": to_world_q(grasp_base), "gripper": None, "speed": "slow"},
         {"type": "hold",  "label": "그리퍼 닫기",        "gripper": "close"},
-        {"type": "pose",  "label": "들어올리기",         "target": to_world_q(lift), "gripper": None},
+        {"type": "pose",  "label": "들어올리기",         "target": to_world_q(lift), "gripper": None, "speed": "slow"},
+        # carry — 여기서부터 랙에 놓을 때까지는 트레이를 들고 있다. 최대 86도 회전을
+        # 2.5배로 돌리면 트레이가 흔들린다. 1.5배 + ease 2 로 감가속을 부드럽게 한다
         {"type": "joint", "label": f"joint_1 {np.degrees(joint1_delta[0]):+.1f}deg",
-         "target": lambda start: start + joint1_delta, "gripper": None},
+         "target": lambda start: start + joint1_delta, "gripper": None,
+         "speed": "carry", "ease": 2},
         # 놓는 위치로 대각선으로 내려가면 트레이가 랙 테두리에 걸린다.
         # 슬롯 바로 위로 먼저 가서, 거기서 수직으로만 내려간다.
+        # ease 2 — 여기 도착할 때의 감속 충격이 트레이를 흔들어, 바로 다음 하강이
+        # 흔들리는 중에 시작됐다. 도착 가속도를 0 으로 만들어 점차 느려지며 멈추게 한다.
         {"type": "pose",  "label": f"놓기 위 안전 위치(+{RACK_ABOVE_Z_M * 100:.0f}cm)",
-         "target": p4_above, "gripper": None},
-        {"type": "hold",  "label": "하강 전 대기(1s)",   "gripper": None, "steps": RACK_PLACE_WAIT_STEPS},
-        {"type": "pose",  "label": f"랙 {slot + 1}번 놓기(수직 하강)", "target": p4, "gripper": None, "tol": STEP_CONTACT_TOL_M},
+         "target": p4_above, "gripper": None, "speed": "carry", "ease": 2},
+        {"type": "hold",  "label": f"하강 전 대기({PLACE_WAIT_STEPS / 60:.0f}s)", "gripper": None, "steps": PLACE_WAIT_STEPS},
+        {"type": "pose",  "label": f"랙 {slot + 1}번 놓기(수직 하강)", "target": p4, "gripper": None, "tol": STEP_CONTACT_TOL_M, "speed": "slow"},
         {"type": "hold",  "label": "그리퍼 열기",        "gripper": "open"},
-        {"type": "pose",  "label": "후퇴 안전 위치",     "target": p5, "gripper": None},
+        {"type": "pose",  "label": "후퇴 안전 위치",     "target": p5, "gripper": None, "speed": "slow"},
         {"type": "joint", "label": "홈 복귀",            "target": np.array(READY_JOINTS_RAD, dtype=float), "gripper": None},
     ]
 
@@ -1597,15 +1669,20 @@ def build_unload_steps(lula, slot, desk_z, base_pos, base_quat):
 
     return [
         {"type": "pose",  "label": f"랙 {slot + 1}번 앞(후퇴점)", "target": to_world(place + RACK_RETREAT, POINT5_RPY), "gripper": "open"},
-        {"type": "pose",  "label": f"랙 {slot + 1}번 진입",      "target": to_world(place, POINT4_RPY), "gripper": None},
+        {"type": "pose",  "label": f"랙 {slot + 1}번 진입",      "target": to_world(place, POINT4_RPY), "gripper": None, "speed": "slow"},
         {"type": "hold",  "label": "그리퍼 닫기",              "gripper": "close"},
-        {"type": "pose",  "label": f"수직 들어올리기(+{UNLOAD_ABOVE_Z_M * 100:.0f}cm)", "target": to_world(p_above, POINT4_RPY), "gripper": None},
+        {"type": "pose",  "label": f"수직 들어올리기(+{UNLOAD_ABOVE_Z_M * 100:.0f}cm)", "target": to_world(p_above, POINT4_RPY), "gripper": None, "speed": "slow"},
+        # carry — 트레이를 들고 도는 구간. 적재 쪽과 같은 이유로 1.5배 + ease 2
         {"type": "joint", "label": f"joint_1 {np.degrees(joint1_delta[0]):+.1f}deg",
-         "target": lambda start: start + joint1_delta, "gripper": None},
-        {"type": "pose",  "label": "책상 위",                  "target": to_world_q(lift), "gripper": None},
-        {"type": "pose",  "label": f"책상 {slot + 1}자리 내려놓기(수직 하강)", "target": to_world_q(desk), "gripper": None, "tol": STEP_CONTACT_TOL_M},
+         "target": lambda start: start + joint1_delta, "gripper": None,
+         "speed": "carry", "ease": 2},
+        # 적재 쪽과 대칭. ease 2 로 도착 가속도를 0 으로 만들고, 그래도 남는 흔들림은
+        # 대기로 가라앉힌 뒤에 수직 하강한다 (적재의 '놓기 위 안전 위치' + '하강 전 대기' 와 같은 구성)
+        {"type": "pose",  "label": "책상 위",                  "target": to_world_q(lift), "gripper": None, "speed": "carry", "ease": 2},
+        {"type": "hold",  "label": f"하강 전 대기({PLACE_WAIT_STEPS / 60:.0f}s)", "gripper": None, "steps": PLACE_WAIT_STEPS},
+        {"type": "pose",  "label": f"책상 {slot + 1}자리 내려놓기(수직 하강)", "target": to_world_q(desk), "gripper": None, "tol": STEP_CONTACT_TOL_M, "speed": "slow"},
         {"type": "hold",  "label": "그리퍼 열기",              "gripper": "open"},
-        {"type": "pose",  "label": "후퇴",                     "target": to_world_q(approach), "gripper": None},
+        {"type": "pose",  "label": "후퇴",                     "target": to_world_q(approach), "gripper": None, "speed": "slow"},
         # 홈 복귀는 관절 보간이라 데카르트 경로를 보장하지 않는다. 트레이 높이에서 바로 돌리면
         # 그리퍼가 책상 위를 휩쓸며 방금 놓은 트레이를 친다 — 높고 뒤로 물러난 곳에서 출발한다
         {"type": "pose",  "label": "책상 위(후퇴 반경)로 올리기", "target": to_world_q(lift_back), "gripper": None},
@@ -1669,14 +1746,16 @@ class PickPlaceSequence:
             else:
                 self.target_pos, self.target_quat = step["target"]
                 self.n_steps = steps_for_pose(
-                    self.start_pos, self.target_pos, self.start_quat, self.target_quat
+                    self.start_pos, self.target_pos, self.start_quat, self.target_quat,
+                    speed=step.get("speed")
                 )
         else:  # joint
             q = self._robot.get_joint_positions()
             self.start_joints = np.array([q[i] for i in self._arm_indices])
             target = step["target"]
             self.target_joints = target(self.start_joints) if callable(target) else np.array(target)
-            self.n_steps = steps_for_joint(self.start_joints, self.target_joints)
+            self.n_steps = steps_for_joint(self.start_joints, self.target_joints,
+                                           speed=step.get("speed"))
 
         print(f"   [{self.index}] {step['label']:16s} {self.n_steps:4d} steps   gripper {self.gripper}")
 
@@ -1690,9 +1769,9 @@ class PickPlaceSequence:
 
         step = self.current
         alpha = min(1.0, self.step_tick / float(self.n_steps))
-        # 코사인 S-커브: 양끝 속도 0 으로 가감속을 준다. 선형이면 정지 순간의 충격으로
-        # 들고 있는 트레이가 틀어진다. 중간 최고 속도는 선형의 pi/2 배다
-        alpha = 0.5 - 0.5 * np.cos(np.pi * alpha)
+        # 코사인 S-커브로 가감속을 준다. 선형이면 정지 순간의 충격으로 들고 있는 트레이가
+        # 틀어진다. 스텝이 "ease" 를 주면 그만큼 겹쳐 도착 감속을 더 부드럽게 한다 — ease_alpha 참고
+        alpha = ease_alpha(alpha, step.get("ease", 1))
         solved = True
 
         if step["type"] in ("pose", "hold"):
@@ -1957,7 +2036,9 @@ def main():
 
                 # settle_next == "pick" — 중앙 정렬 후 다시 검출해서 최종 파지점을 구한다
                 try:
-                    found = first_tray_grasp(color_camera_path, base_pos, base_quat, verbose=True)
+                    # centered_first — 바로 앞 정렬 단계가 중앙에 맞춰 놓은 그 트레이를 집는다
+                    found = first_tray_grasp(color_camera_path, base_pos, base_quat,
+                                             verbose=True, centered_first=True)
                 except Exception:
                     import traceback
                     print("   pick         계획 실패 — 아래 오류를 보고할 것")
