@@ -74,10 +74,11 @@ def generate_launch_description():
             ),
             # 병원 경로는 직접 만든 Path를 FollowPath로 실행하므로 lane mask
             # server/costmap filter/lifecycle manager를 띄우지 않는다.
+            # Isaac start_pose.json seeds AMCL once; AMCL alone owns map -> odom.
             Node(
                 package="nav_to_goal",
-                executable="ground_truth_localization",
-                name="ground_truth_localization",
+                executable="hospital_amcl_initial_pose",
+                name="hospital_amcl_initial_pose",
                 output="screen",
                 parameters=[{"use_sim_time": use_sim_time}],
             ),

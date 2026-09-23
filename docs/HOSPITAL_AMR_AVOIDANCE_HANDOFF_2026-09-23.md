@@ -11,6 +11,46 @@
 - 렉, 설치 환경, 실행 기본 경로 변경은 이번 개선 대상에서 제외했다.
 - 정상 운행은 기존 고정 Path + FollowPath. 기존 로봇/Prim/센서 입력 이름 유지. 도킹/Pick & Place 통합과 관제용 완전 차단 판정은 보류.
 
+## AMCL 전환 (이번 인수인계의 최신 변경)
+
+기존 병원 launch는 `start_pose.json`을 읽는 `ground_truth_localization`이 정적인
+`map → odom` TF를 발행하고, AMCL은 실행만 하되 `tf_broadcast: false`로 결과를 사용하지
+않았다. 이 방식은 Isaac Sim의 시작 자세와 odometry가 정확할 때는 재현성이 좋지만, Nav2의
+일반적인 localization 구성과 다르고 주행 중 지도 기준 보정을 하지 않는다.
+
+현재 변경은 다음 구조다.
+
+```text
+Isaac start_pose.json ──(초기 자세 1회)──> /initialpose ──> AMCL
+Isaac /chassis/odom ──> odom → base_link
+filtered /scan ──> AMCL
+AMCL ──> map → odom (단독 발행)
+```
+
+- `ground_truth_localization` 노드는 병원 launch에서 제거했다. AMCL과 정적 `map → odom`을
+  동시에 발행하면 TF가 충돌하므로 두 경로를 함께 켜지 않는다.
+- 새 `hospital_amcl_initial_pose` 노드는 JSON의 시작 map 자세와 현재 Isaac
+  `odom → base_link`를 합성해 `/initialpose`로 보낸 뒤 `/amcl_pose`가 수신되면 종료한다.
+  JSON은 초기값이지 주행 중 ground truth를 계속 주입하는 입력이 아니다.
+- AMCL은 긴 Carter의 자기 반사 제거 스캔 `/scan_body_filtered`를 구독하도록 설정했다.
+  local/global costmap과 Collision Monitor의 기존 센서 흐름은 별도 목적이므로 임의로
+  `/scan` 전체를 바꾸지 않는다.
+- 과거 약 30cm/7° 위치 오차는 지도와 USD의 정적 구조물 비교만으로는 재현되지 않았다.
+  테이블·외벽 차이는 대체로 1.5~8.5cm(지도 5cm 픽셀화 범위)였고, 시작 JSON과 USD
+  `base_link`는 약 4mm 이하로 일치했다. 따라서 AMCL 전환을 오차 해결 완료로 보고하지
+  않는다. 실제 GPU PC에서 `/scan_body_filtered`, `/amcl_pose`, `map → base_link`,
+  Isaac 실제 자세를 같은 시각에 기록해 라이다-지도 정합과 AMCL 보정 시점을 확인해야 한다.
+- AMCL 초기 위치를 받은 뒤에도 지도와 라이다가 구조적으로 다르면 위치가 흔들릴 수 있다.
+  정지 상태 → 짧은 직선/회전 → 사람 없는 전체 경로 순서로 검증하고, 그 후 사람을 넣는다.
+
+AMCL 관련 변경 파일:
+
+- `src/nova_carter/nav_to_goal/nav_to_goal/amcl_initial_pose.py`
+- `src/nova_carter/nav_to_goal/test/test_amcl_initial_pose_cpu.py`
+- `src/nova_carter/carter_navigation/launch/hospital_navigation.launch.py`
+- `src/nova_carter/carter_navigation/params/hospital_navigation_params.yaml`
+- `src/nova_carter/nav_to_goal/setup.py`
+
 ## 실행 대상 혼동 금지
 
 현재 병원 구현 대상은 아래다. 예전 `move_test.py`나 `carter_navigation_params.yaml`은 이전 지도용 내용이 남아 있으므로 이번 변경의 실행 대상으로 혼동하지 않는다.
@@ -149,7 +189,9 @@ Collision Monitor의 입력만 새 중간 토픽으로 연결했다. 최종 `/cm
 
 ## 로컬 검증 결과
 
-**CPU-only 35개 통과**: 최초 33개에 정적 차단 및 멈춰 선 사람의 Planner 수락 사례 2개를 기존 stage 시험에 추가했다. 후속 변경 Python 6개 AST와 `git diff --check`도 통과했다. Nav2/Isaac 런타임 동작은 아직 검증하지 않았다.
+**CPU-only 37개 통과**: 최초 33개에 정적 차단 및 멈춰 선 사람의 Planner 수락 사례 2개와
+AMCL 시작 자세 합성 시험 2개를 추가했다. 후속 Python AST, YAML, `git diff --check`도
+통과했다. Nav2/Isaac 런타임 동작과 AMCL의 실제 scan-map 정합은 아직 검증하지 않았다.
 
 - 기존 Tracker 4개.
 - 신규 차체/회전 쓸림, 시간차 횡단, 유한 제동거리, 명령 판단, 양방향 전방 후보, 후진/유턴 거부, 조기/늦은 정면 접근, 회피 방향 유지/변경, 정지한 track 유지, costmap 내부 점유/unknown, YAML 계약.

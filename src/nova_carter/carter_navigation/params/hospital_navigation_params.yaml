@@ -30,11 +30,8 @@ amcl:
     robot_model_type: "nav2_amcl::DifferentialMotionModel"
     save_pose_rate: 0.5
     sigma_hit: 0.2
-    # AMCL 은 띄워두되 결과(map->odom TF)는 쓰지 않는다. 위치는 launch 의 ground_truth_localization 이
-    # Isaac 실제 자세로 잡는다 (시뮬 odom 은 drift 가 없어서 보정할 것이 없다).
-    # AMCL 로 되돌리려면: tf_broadcast: true, set_initial_pose: true + initial_pose 기입(또는 RViz 2D Pose Estimate),
-    # 그리고 launch 에서 ground_truth_localization 노드를 뺀다.
-    tf_broadcast: false
+    # Isaac start_pose.json 은 초기 위치에만 사용한다. 이후 map->odom 은 AMCL 이 단독 발행한다.
+    tf_broadcast: true
     # map->odom 을 마지막 스캔 처리 후 이 시간만큼 유효하게 유지한다. Isaac Sim 라이다가 1.2초까지 끊기는데
     # 1.0 이면 그 사이 TF 가 만료되어 controller_server 가 "Transform data too old" 로 주행을 abort 한다.
     transform_tolerance: 3.0
@@ -44,7 +41,8 @@ amcl:
     z_max: 0.05
     z_rand: 0.5
     z_short: 0.05
-    scan_topic: scan
+    # 긴 Carter 차체가 원본 /scan 에 찍히므로 위치 추정에는 차체 반사 제거 스캔을 사용한다.
+    scan_topic: /scan_body_filtered
     map_topic: map
     set_initial_pose: false
     always_reset_initial_pose: false
