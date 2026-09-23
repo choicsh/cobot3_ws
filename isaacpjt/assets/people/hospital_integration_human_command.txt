@@ -1,0 +1,18 @@
+Character Idle 4
+Character GoTo -18 -3.5 0 _
+Character Idle 4
+Character GoTo -18 3.5 0 _
+Character Idle 4
+Character GoTo -17.5039 1.1214 0 _
+Character_01 Idle 7
+Character_01 GoTo -4 -3.5 0 _
+Character_01 Idle 4
+Character_01 GoTo -4 3.5 0 _
+Character_01 Idle 4
+Character_01 GoTo -4.3641 0.9062 0 _
+Character_02 Idle 2
+Character_02 GoTo 2 14.9 0 _
+Character_02 Idle 4
+Character_02 GoTo -22 14.9 0 _
+Character_02 Idle 4
+Character_02 GoTo -10.9460 19.3928 0 _

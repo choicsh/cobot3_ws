@@ -20,7 +20,7 @@ def source_routes():
     source = ROOT/'nav_to_goal/nav_to_goal/hospital_mission.py'
     tree = ast.parse(source.read_text())
     names = {'PATH_STEP', 'LAB_STATION', 'SPECIMEN_STATION', 'ARRIVAL_YAWS',
-             'ROUTES', 'LANE_UPPER', 'LANE_LOWER', 'LANES'}
+             'ROUTES', 'LANE_UPPER', 'LANE_LOWER', 'LANES', 'INITIAL_LOWER_DEPARTURE'}
     nodes = [n for n in tree.body if
              (isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id in names for t in n.targets))
              or (isinstance(n, ast.FunctionDef) and n.name in ('sample_route', 'route_length', 'split_route'))]
@@ -31,7 +31,7 @@ def source_routes():
 
 def map_grid():
     directory = ROOT/'carter_navigation/maps'
-    config = yaml.safe_load((directory/'integration_hospital.yaml').read_text())
+    config = yaml.safe_load((directory/'hospital_integration_human.yaml').read_text())
     pixels = np.asarray(Image.open(directory/config['image']).convert('L'))
     occupancy = 1-pixels/255.
     data = np.where(occupancy > config['occupied_thresh'], 100,
@@ -74,3 +74,24 @@ def test_shared_footprint_matches_nav2_configuration():
     assert min(p[0] for p in polygon) == -settings.rear
     assert max(p[0] for p in polygon) == settings.front
     assert max(abs(p[1]) for p in polygon) == settings.half_width
+
+
+def test_fresh_usd_spawn_departure_clears_pillar_and_joins_lower():
+    scope, grid = source_routes(), map_grid()
+    initial = scope['sample_route'](scope['INITIAL_LOWER_DEPARTURE'])
+    assert all(grid.body_clear(p) for p in initial)
+    assert math.dist(initial[0][:2], (20.27, 13.74534)) < 1e-6
+    assert abs(initial[0][2]-math.pi/2) < 1e-8
+    _, transit, _ = scope['split_route']('lane_lower', scope['LANE_LOWER'])
+    assert math.dist(initial[-1][:2], scope['sample_route'](transit)[0][:2]) < 1e-8
+
+
+def test_docks_have_five_cm_side_gap_and_west_facing_approach():
+    scope = source_routes()
+    settings = SafetySettings()
+    for lane, table_south in [('lane_lower', 12.162499952316283),
+                              ('lane_upper', 12.162499952316283)]:
+        route = scope['LANES'][lane]
+        final = scope['sample_route'](route)[-1]
+        assert abs(math.atan2(math.sin(final[2]-math.pi), math.cos(final[2]-math.pi))) < 1e-8
+        assert math.isclose(table_south-(final[1]+settings.half_width), .05, abs_tol=1e-8)

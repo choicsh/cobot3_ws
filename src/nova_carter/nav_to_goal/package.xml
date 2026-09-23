@@ -20,6 +20,7 @@
   <depend>nav2_simple_commander</depend>
   <!-- 이미지 처리 코드에 필요한 추가 의존성 -->
   <depend>sensor_msgs</depend>
+  <depend>sensor_msgs_py</depend>
   <depend>std_msgs</depend>
   <exec_depend>python3-numpy</exec_depend>
   <depend>cv_bridge</depend>

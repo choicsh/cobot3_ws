@@ -164,7 +164,7 @@ controller_server:
     min_theta_velocity_threshold: 0.001
     failure_tolerance: 6.0  # 일시적인 회피 궤적 부재 시 정지하며 다시 최적화
     progress_checker_plugins: ["progress_checker"]
-    # 구간 경계는 transit, 정류장은 general. 도킹은 현재 미션에 포함하지 않는다.
+    # 경로 구간은 Nav2, 마지막 테이블 옆 직선은 hospital_docking이 제어한다.
     # 모든 턴은 DWB, 복도 중앙 직선만 MPPI. hospital_mission이 선택한다.
     goal_checker_plugins: ["general_goal_checker", "transit_goal_checker"]
     controller_plugins: ["FollowPath", "FollowPathDock", "FollowPathMPPI"]
@@ -491,7 +491,7 @@ collision_monitor:
     use_sim_time: True
     base_frame_id: "base_link"
     odom_frame_id: "odom"
-    cmd_vel_in_topic: "cmd_vel_human_checked"
+    cmd_vel_in_topic: "cmd_vel_smoothed"
     cmd_vel_out_topic: "cmd_vel"
     state_topic: "collision_monitor_state"
     transform_tolerance: 0.2

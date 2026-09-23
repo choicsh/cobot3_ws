@@ -5,8 +5,8 @@
 * specimen_to_lab: lane_upper (중앙 구조물 위쪽)
 * lab_to_specimen: lane_lower (중앙 구조물 아래쪽)
 
-양쪽 경로의 끝점은 동일한 정류장이다. 현재 단계에는 도킹 동선이나
-Pick & Place가 없으며, 선택 차선이 막혀도 다른 차선으로 전환하지 않는다.
+양쪽 방의 Desks 테이블에 5cm 옆면 간격, yaw 180도로 도킹한다.
+Pick & Place는 포함하지 않으며 선택 차선이 막혀도 다른 차선으로 전환하지 않는다.
 """
 
 from enum import Enum
@@ -45,49 +45,49 @@ LATEST_SENSOR_QOS = QoSProfile(
     depth=1, reliability=QoSReliabilityPolicy.BEST_EFFORT,
     durability=QoSDurabilityPolicy.VOLATILE)
 
-# hospital_integration.usd에 사용자가 배치한 로봇의 base_link가 lab 정류장이다.
-# specimen 정류장은 사용자가 지정한 (-36, 8)이며 순환 경로의 접선 자세를 쓴다.
-# dock/pre-dock 구분 및 테이블 접근 경로는 이 미션에서 다루지 않는다.
-LAB_STATION = (12.00, 8.00)
-SPECIMEN_STATION = (-36.00, 8.00)
-
-ARRIVAL_YAWS = {
-    "specimen_to_lab": math.radians(-90.0),
-    "lab_to_specimen": math.radians(90.0),
-}
-
-ROUTES = {
-    "specimen_to_lab": "lane_upper",
-    "lab_to_specimen": "lane_lower",
-}
-
-# line: (시작점, 끝점)
-# arc: (중심, 반지름, 시작각 deg, 끝각 deg)
-# 각도 증가가 반시계 방향이다. 두 lane은 서로를 뒤집어 만들지 않은 독립 경로다.
-LANE_UPPER = [
-    ("line", SPECIMEN_STATION, (-36.00, 10.90)),
-    ("arc", (-32.00, 10.90), 4.0, 180.0, 90.0),
-    ("line", (-32.00, 14.90), (8.00, 14.90)),
-    ("arc", (8.00, 10.90), 4.0, 90.0, 0.0),
-    ("line", (12.00, 10.90), LAB_STATION),
-]
-
-LANE_LOWER = [
-    # upper의 남향 도착 자세를 이어받아 회전 없이 아래 차선으로 출발한다.
-    ("line", LAB_STATION, (12.00, 7.00)),
-    ("arc", (11.00, 7.00), 1.0, 0.0, -90.0),
-    ("line", (11.00, 6.00), (9.00, 6.00)),
-    ("arc", (9.00, 4.00), 2.0, 90.0, 180.0),
-    ("line", (7.00, 4.00), (7.00, 1.50)),
-    ("arc", (4.00, 1.50), 3.0, 0.0, -90.0),
-    ("line", (4.00, -1.50), (-28.55, -1.50)),
-    ("arc", (-28.55, 1.50), 3.0, 270.0, 180.0),
-    ("line", (-31.55, 1.50), (-31.55, 4.00)),
-    ("arc", (-33.55, 4.00), 2.0, 0.0, 90.0),
-    ("line", (-33.55, 6.00), (-35.00, 6.00)),
-    ("arc", (-35.00, 7.00), 1.0, 270.0, 180.0),
-    ("line", (-36.00, 7.00), SPECIMEN_STATION),
-]
+# Existing NewRooms tables, unchanged. Staging points lie south of each desk.
+LAB_STATION = (18.7, 11.612499952316282)
+SPECIMEN_STATION = (-43.4, 11.612499952316282)
+ARRIVAL_YAWS = {"specimen_to_lab": math.pi, "lab_to_specimen": math.pi}
+ROUTES = {"specimen_to_lab": "lane_upper", "lab_to_specimen": "lane_lower"}
+LANE_UPPER = [('line', (-43.4, 11.612499952316282), (-43.4, 14.05)),
+ ('arc', (-41.9, 14.05), 1.5, 180, 90),
+ ('line', (-41.9, 15.55), (-39, 15.55)),
+ ('arc', (-39, 14.025), 1.525, 90, 0),
+ ('arc', (-35.95, 14.025), 1.525, 180, 270),
+ ('line', (-35.95, 12.5), (-34.5, 12.5)),
+ ('arc', (-34.5, 13.7), 1.2, 270, 360),
+ ('arc', (-32.1, 13.7), 1.2, 180, 90),
+ ('line', (-32.1, 14.9), (7.9, 14.9)),
+ ('arc', (7.9, 13.7), 1.2, 90, 0),
+ ('arc', (10.3, 13.7), 1.2, 180, 270),
+ ('line', (10.3, 12.5), (14, 12.5)),
+ ('arc', (14, 11.5), 1, 90, 0),
+ ('arc', (16, 11.5), 1, 180, 270),
+ ('line', (16, 10.5), (18.7, 10.5)),
+ ('arc', (18.7, 11.056249976158142), 0.5562499761581412, 270, 450)]
+LANE_LOWER = [('line', (18.7, 11.612499952316282), (17, 11.612499952316282)),
+ ('arc', (17, 12.812499952316282), 1.2, 270, 180),
+ ('arc', (14.6, 12.812499952316282), 1.2, 0, 90),
+ ('line', (14.6, 14.012499952316283), (10, 14.012499952316283)),
+ ('arc', (10, 11.012499952316283), 3, 90, 180),
+ ('line', (7, 11.012499952316283), (7, 1.5)),
+ ('arc', (4, 1.5), 3, 0, -90),
+ ('line', (4, -1.5), (-28.55, -1.5)),
+ ('arc', (-28.55, 1.5), 3, 270, 180),
+ ('line', (-31.55, 1.5), (-31.55, 8.612499952316282)),
+ ('arc', (-34.55, 8.612499952316282), 3, 0, 90),
+ ('line', (-34.55, 11.612499952316282), (-43.4, 11.612499952316282))]
+INITIAL_LOWER_DEPARTURE = [('line', (20.27, 13.74534), (20.27, 16.5)),
+ ('arc', (18.77, 16.5), 1.5, 0, 90),
+ ('line', (18.77, 18), (16, 18)),
+ ('arc', (16, 16.55), 1.45, 90, 180),
+ ('line', (14.55, 16.55), (14.55, 13.95)),
+ ('arc', (13.1, 13.95), 1.45, 0, -90),
+ ('line', (13.1, 12.5), (10, 12.5)),
+ ('arc', (10, 9.5), 3, 90, 180),
+ ('line', (7, 9.5), (7, 1.5)),
+ ('arc', (4, 1.5), 3, 0, -90)]
 
 LANES = {
     "lane_upper": LANE_UPPER,
@@ -462,9 +462,9 @@ def split_route(lane_id, route):
     if lane_id == "lane_lower":
         # 방/벽 사이의 작은 호는 DWB로 고정하고, 중앙 하단 열린 구간만
         # MPPI에 맡긴다.
-        return route[:6], route[6:7], route[7:]
+        return route[:7], route[7:8], route[8:]
     if lane_id == "lane_upper":
-        return route[:2], route[2:3], route[3:]
+        return route[:8], route[8:9], route[9:]
     raise ValueError(f"Unknown lane: {lane_id}")
 
 
@@ -481,6 +481,57 @@ def run_mission(navigator, route_id):
     )
 
     tf_buffer = wait_until_nav2_active(navigator)
+    from nav_to_goal.hospital_docking import TableDocking, TABLES, wrap
+    from nav_to_goal.hospital_stage_runner import drain_observations
+    import time
+
+    origin = 'lab' if route_id == 'lab_to_specimen' else 'specimen'
+    destination = 'specimen' if route_id == 'lab_to_specimen' else 'lab'
+    current_tf = tf_buffer.lookup_transform('map', 'base_link', Time()).transform
+    current = (current_tf.translation.x, current_tf.translation.y,
+               _yaw_from_quaternion(current_tf.rotation))
+    origin_table = TABLES[origin]
+    dock_pose = (origin_table['dock_x'], origin_table['south']-.55)
+    if math.dist(current[:2], dock_pose) < .35:
+        docking = TableDocking(navigator, tf_buffer)
+        try:
+            if not docking.move(origin, undock=True):
+                return MissionStatus.FAILED
+        finally:
+            docking.close()
+        current_tf = tf_buffer.lookup_transform('map', 'base_link', Time()).transform
+        current = (current_tf.translation.x, current_tf.translation.y,
+                   _yaw_from_quaternion(current_tf.rotation))
+    if (origin == 'specimen' and math.dist(current[:2], SPECIMEN_STATION) < .35 and
+            abs(wrap(current[2]-math.pi)) < .18):
+        if navigator.spin(spin_dist=-math.pi/2, time_allowance=30) is False:
+            return MissionStatus.FAILED
+        deadline = time.monotonic()+35.
+        while not navigator.isTaskComplete():
+            drain_observations(navigator)
+            if time.monotonic() > deadline:
+                navigator.cancelTask()
+                return MissionStatus.FAILED
+            time.sleep(.05)
+        if navigator.getResult() != TaskResult.SUCCEEDED:
+            return MissionStatus.FAILED
+        drain_observations(navigator)
+        current_tf = tf_buffer.lookup_transform('map', 'base_link', Time()).transform
+        current = (current_tf.translation.x, current_tf.translation.y,
+                   _yaw_from_quaternion(current_tf.rotation))
+    expected = sample_route(departure)[0]
+    initial = sample_route(INITIAL_LOWER_DEPARTURE)[0]
+    if (route_id == 'lab_to_specimen' and
+            math.dist(current[:2], initial[:2]) < .75 and
+            abs(math.atan2(math.sin(current[2]-initial[2]), math.cos(current[2]-initial[2]))) < .35):
+        departure = INITIAL_LOWER_DEPARTURE
+        print('[MISSION] using new USD spawn departure')
+    elif (math.dist(current[:2], expected[:2]) > .5 or
+          abs(math.atan2(math.sin(current[2]-expected[2]), math.cos(current[2]-expected[2]))) > .35):
+        navigator.get_logger().error(
+            f'Unexpected start pose {current}; expected dock {expected} '
+            f'or fresh lab spawn {initial}. No goal sent.')
+        return MissionStatus.FAILED
     blockage_monitor = AheadBlockageMonitor(navigator, tf_buffer)
     plan_publisher = navigator.create_publisher(
         Path,
@@ -508,10 +559,10 @@ def run_mission(navigator, route_id):
         (
             "station_arrival",
             arrival,
-            # 사용자 지정 도착 상한 0.5 m/s, 각속도 0.6. 별도 극저속 단계 없음.
             "FollowPathDock",
-            "general_goal_checker",
-            ARRIVAL_YAWS[route_id],
+            # Open staging space; the lidar docking controller performs the
+            # final alignment instead of DWB's very small yaw samples stalling.
+            "transit_goal_checker",
         ),
     ]
 
@@ -524,7 +575,14 @@ def run_mission(navigator, route_id):
             print(f"[MISSION] {status.value}: {stage[0]}")
             return status
 
-    print(f"[MISSION] {MissionStatus.SUCCEEDED.value}: station reached")
+    docking = TableDocking(navigator, tf_buffer)
+    try:
+        if not docking.move(destination):
+            print('[MISSION] FAILED: table_docking')
+            return MissionStatus.FAILED
+    finally:
+        docking.close()
+    print(f"[MISSION] {MissionStatus.SUCCEEDED.value}: table docked (target gap=0.05 m, yaw=180 deg)")
     return MissionStatus.SUCCEEDED
 
 
@@ -534,7 +592,7 @@ def main():
     navigator.set_parameters(
         [Parameter("use_sim_time", Parameter.Type.BOOL, True)]
     )
-    navigator.declare_parameter("route_id", "specimen_to_lab")
+    navigator.declare_parameter("route_id", "lab_to_specimen")
     route_id = navigator.get_parameter("route_id").value
 
     if route_id not in ROUTES:

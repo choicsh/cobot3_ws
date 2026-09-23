@@ -24,6 +24,11 @@ def stamp_seconds(header):
     return header.stamp.sec+header.stamp.nanosec/1e9
 
 
+def observation_age(now, stamp, maximum=.6):
+    """Allow one 30 Hz publication tick of cross-topic clock delivery skew."""
+    age = now-stamp
+    return max(0., age) if -.04 <= age <= maximum else None
+
 
 
 class SafetyObservations:
@@ -72,12 +77,13 @@ class SafetyObservations:
         now = self.now()
         if self.tracks is None or self.odom is None:
             return None
-        track_age, odom_age = now-stamp_seconds(self.tracks.header), now-stamp_seconds(self.odom.header)
-        if not (0 <= track_age <= .6 and 0 <= odom_age <= .6):
+        track_age = observation_age(now, stamp_seconds(self.tracks.header))
+        odom_age = observation_age(now, stamp_seconds(self.odom.header))
+        if track_age is None or odom_age is None:
             return None
         try:
             stamped = self.buffer.lookup_transform(frame, 'base_link', Time())
-            if not 0 <= now-stamp_seconds(stamped.header) <= .6:
+            if observation_age(now, stamp_seconds(stamped.header)) is None:
                 return None
             transform = stamped.transform
             pose = (transform.translation.x, transform.translation.y, yaw_of(transform.rotation))

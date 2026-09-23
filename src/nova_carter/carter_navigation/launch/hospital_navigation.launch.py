@@ -21,7 +21,7 @@ def generate_launch_description():
     map_file = LaunchConfiguration("map")
     params_file = LaunchConfiguration("params_file")
     default_map_file = os.path.join(
-        carter_share, "maps", "integration_hospital.yaml"
+        carter_share, "maps", "hospital_integration_human.yaml"
     )
     default_params_file = os.path.join(
         carter_share, "params", "hospital_navigation_params.yaml"
@@ -122,13 +122,6 @@ def generate_launch_description():
                 package="nav_to_goal",
                 executable="hospital_moving_obstacle_predictor",
                 name="hospital_moving_obstacle_predictor",
-                output="screen",
-                parameters=[{"use_sim_time": use_sim_time}],
-            ),
-            Node(
-                package="nav_to_goal",
-                executable="hospital_velocity_guard",
-                name="hospital_velocity_guard",
                 output="screen",
                 parameters=[{"use_sim_time": use_sim_time}],
             ),

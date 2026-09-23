@@ -2,12 +2,12 @@ isaacsim.replicator.agent:
   version: 0.7.0
   character:
     asset_path: https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.1/Isaac/People/Characters/
-    command_file: /home/rokey/cobot3_ws/isaacpjt/assets/people/command.txt
+    command_file: /home/rokey/cobot3_ws/isaacpjt/assets/people/hospital_integration_human_command.txt
     filters:
     - medical
     navigation_area:
     - Walkable
-    num: 6
+    num: 3
     spawn_area:
     - Walkable
   global:
@@ -50,7 +50,7 @@ isaacsim.replicator.agent:
     spawn_area: []
     write_data: false
   scene:
-    asset_path: /home/rokey/cobot3_ws/isaacpjt/assets/hospital_people.usd
+    asset_path: /home/rokey/cobot3_ws/isaacpjt/assets/hospital_integration_human.usd
   sensor:
     camera_num: 4
   event:

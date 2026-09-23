@@ -3,6 +3,7 @@ import math
 
 import rclpy
 from geometry_msgs.msg import Point32
+from nav_msgs.msg import OccupancyGrid
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, QoSDurabilityPolicy, QoSReliabilityPolicy
 from rclpy.time import Time
@@ -10,6 +11,7 @@ from sensor_msgs.msg import ChannelFloat32, LaserScan, PointCloud
 from tf2_ros import Buffer, TransformException, TransformListener
 
 from nav_to_goal.obstacle_tracking import Tracker, scan_clusters
+from nav_to_goal.static_scan_mask import StaticScanMask
 
 
 class MovingObstaclePredictor(Node):
@@ -28,6 +30,9 @@ class MovingObstaclePredictor(Node):
         self.buffer = Buffer()
         self.listener = TransformListener(self.buffer, self)
         self.tracker = Tracker()
+        self.static_mask = None
+        self.create_subscription(OccupancyGrid, '/map', self.receive_map,
+            QoSProfile(depth=1, durability=QoSDurabilityPolicy.TRANSIENT_LOCAL))
         self.last_tf_warning = -math.inf
         sensor_qos = QoSProfile(
             depth=1, reliability=QoSReliabilityPolicy.BEST_EFFORT,
@@ -38,6 +43,10 @@ class MovingObstaclePredictor(Node):
         self.track_publisher = self.create_publisher(
             PointCloud, "/hospital/tracked_obstacles", sensor_qos)
         self.create_subscription(LaserScan, "/scan_body_filtered", self.scan, sensor_qos)
+
+    def receive_map(self, msg):
+        if msg.header.frame_id == 'map':
+            self.static_mask = StaticScanMask(msg)
 
     def scan(self, msg):
         try:
@@ -51,6 +60,17 @@ class MovingObstaclePredictor(Node):
         p, q = t.transform.translation, t.transform.rotation
         r00, r01 = 1 - 2*(q.y*q.y + q.z*q.z), 2*(q.x*q.y - q.z*q.w)
         r10, r11 = 2*(q.x*q.y + q.z*q.w), 1 - 2*(q.x*q.x + q.z*q.z)
+        map_transform = None
+        if self.static_mask is not None:
+            try:
+                transform = self.buffer.lookup_transform('map', 'odom', Time()).transform
+                qmap = transform.rotation
+                yaw = math.atan2(2*(qmap.w*qmap.z+qmap.x*qmap.y),
+                                 1-2*(qmap.y*qmap.y+qmap.z*qmap.z))
+                map_transform = (transform.translation.x, transform.translation.y,
+                                 math.cos(yaw), math.sin(yaw))
+            except TransformException:
+                pass
         points = []
         for i, distance in enumerate(msg.ranges):
             if not math.isfinite(distance) or not msg.range_min <= distance <= min(self.tracking_range, msg.range_max):
@@ -58,7 +78,13 @@ class MovingObstaclePredictor(Node):
                 continue
             angle = msg.angle_min + i*msg.angle_increment
             x, y = distance*math.cos(angle), distance*math.sin(angle)
-            points.append((p.x + r00*x + r01*y, p.y + r10*x + r11*y))
+            ox, oy = p.x+r00*x+r01*y, p.y+r10*x+r11*y
+            if map_transform is not None:
+                mx, my, c, s = map_transform
+                if self.static_mask.contains(mx+c*ox-s*oy, my+s*ox+c*oy):
+                    points.append(None)
+                    continue
+            points.append((ox, oy))
         stamp = msg.header.stamp.sec + msg.header.stamp.nanosec/1e9
         self.tracker.update(scan_clusters(points), stamp)
         predictions = self.tracker.predictions(stamp, horizon=self.horizon, radius=self.radius)

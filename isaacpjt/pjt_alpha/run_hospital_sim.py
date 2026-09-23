@@ -1,4 +1,4 @@
-"""제작 로봇과 보행자 6명이 포함된 병원 씬을 실행한다.
+"""제작 로봇과 보행자 3명이 포함된 병원 씬을 실행한다.
 
     isaac_python run_hospital_sim.py
     isaac_python run_hospital_sim.py headless
@@ -43,8 +43,10 @@ simulation_app.update()
 import carb
 
 PEOPLE_COMMAND_FILE = (
-    "/home/rokey/cobot3_ws/isaacpjt/assets/people/command.txt"
+    "/home/rokey/cobot3_ws/isaacpjt/assets/people/hospital_integration_human_command.txt"
 )
+PEOPLE_NAMES = {"Character", "Character_01", "Character_02"}
+PEOPLE_ENABLED = os.environ.get("HOSPITAL_PEOPLE_ENABLED", "1") != "0"
 PEOPLE_WALK_SPEED_SCALE = float(os.environ.get("HOSPITAL_PEOPLE_WALK_BLEND", "0.75"))
 if not 0.1 <= PEOPLE_WALK_SPEED_SCALE <= 1.0:
     raise ValueError("HOSPITAL_PEOPLE_WALK_BLEND must be between 0.1 and 1.0")
@@ -63,7 +65,7 @@ settings.set(
 settings.set(
     # 자유 보행(무작위 GoTo) 모드: 가구/건물을 돌아가야 하므로 NavMesh 경로계획을 켠다.
     # (직선 왕복 시험 때는 NavMesh 투영이 y=14.9 선에서 벗어나게 해서 False 로 뒀었다.)
-    # NavMeshVolume 은 hospital_people.usd 에 x[-36,12] y[-8.45,22.65] 로 추가됨.
+    # NavMeshVolume 은 병원 USD에 포함된 설정을 사용한다.
     "/exts/omni.anim.people/navigation_settings/navmesh_enabled", True
 )
 settings.set(
@@ -97,11 +99,11 @@ from isaacsim.core.prims import XFormPrim
 from isaacsim.core.utils.stage import is_stage_loading, open_stage
 
 
-USD_PATH = "/home/rokey/cobot3_ws/isaacpjt/assets/hospital_people.usd"
+USD_PATH = "/home/rokey/cobot3_ws/isaacpjt/assets/hospital_integration_human.usd"
 BASE_LINK_PRIM = "/World/robot_nova/nova_carter/chassis_link/base_link"
 START_POSE_PATH = "/home/rokey/cobot3_ws/isaacpjt/assets/start_pose.json"
 
-# This launcher is for our six known NVIDIA character behaviors. Validate every
+# This launcher is for the new scene's three NVIDIA character behaviors. Validate every
 # attached script before allowing this stage to execute them without a GUI prompt.
 from pxr import Usd
 import omni.anim.people.scripts.character_behavior as people_behavior
@@ -118,8 +120,8 @@ for prim in preflight.Traverse():
                 or Path(script.path).resolve() != expected_script):
             raise RuntimeError(f"Unexpected USD behavior: {prim.GetPath()} {script}")
         script_count += 1
-if script_count != 6:
-    raise RuntimeError(f"Expected six pedestrian behaviors, found {script_count}")
+if script_count != len(PEOPLE_NAMES):
+    raise RuntimeError(f"Expected {len(PEOPLE_NAMES)} pedestrian behaviors, found {script_count}")
 preflight = None
 previous_script_prompt = settings.get_as_bool("/app/scripting/ignoreWarningDialog")
 settings.set_bool("/app/scripting/ignoreWarningDialog", True)
@@ -141,13 +143,15 @@ from pxr import Gf
 from hospital_people_commands import loop_origins
 
 with Usd.EditContext(world.stage, world.stage.GetSessionLayer()):
-    for name, position in loop_origins(PEOPLE_COMMAND_FILE).items():
+    for name, position in loop_origins(PEOPLE_COMMAND_FILE, PEOPLE_NAMES).items():
         prim = world.stage.GetPrimAtPath(f"/World/Characters/{name}")
         translate = prim.GetAttribute("xformOp:translate")
         if not translate:
             raise RuntimeError(f"Missing pedestrian translate op: {name}")
         translate.Set(Gf.Vec3d(*position))
         print(f"[HOSPITAL] {name} loop origin={position}", flush=True)
+    if not PEOPLE_ENABLED:
+        world.stage.GetPrimAtPath('/World/Characters').SetActive(False)
 
 
 def bake_navmesh(timeout_seconds=30.0):
@@ -175,7 +179,7 @@ bake_navmesh()
 world.reset()
 settings.set_bool("/app/scripting/ignoreWarningDialog", previous_script_prompt)
 
-# 기존 ground_truth_localization 흐름을 그대로 사용한다.
+# 실제 시작 자세를 AMCL 초기 위치 입력으로 저장한다.
 robot_base = XFormPrim(BASE_LINK_PRIM)
 positions, quaternions = robot_base.get_world_poses()
 x, y = float(positions[0][0]), float(positions[0][1])
@@ -199,7 +203,7 @@ print(
 
 omni.timeline.get_timeline_interface().play()
 print(
-    f"[HOSPITAL] {USD_PATH} 재생 시작 — 사람 6명, "
+    f"[HOSPITAL] {USD_PATH} 재생 시작 — 사람 {len(PEOPLE_NAMES) if PEOPLE_ENABLED else 0}명, "
     f"Walk blend 상한 {PEOPLE_WALK_SPEED_SCALE:.2f} "
     f"({PEOPLE_COMMAND_FILE}) (Ctrl+C로 종료)",
     flush=True,

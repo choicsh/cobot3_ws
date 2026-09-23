@@ -78,10 +78,11 @@ class AmclInitialPose(Node):
         msg.pose.pose.position.y = y
         msg.pose.pose.orientation.z = math.sin(yaw / 2.0)
         msg.pose.pose.orientation.w = math.cos(yaw / 2.0)
-        # Preserve the former initial-pose uncertainty; do not claim the map
-        # and projected lidar agree more closely before measuring them.
-        msg.pose.covariance[0] = msg.pose.covariance[7] = 0.25
-        msg.pose.covariance[35] = math.radians(10.0) ** 2
+        # Isaac supplies the actual spawn pose, not a user's coarse RViz click.
+        # A 0.5 m seed spread can put particles inside the adjacent dock desk.
+        # This describes seed uncertainty, not measured scan-map accuracy.
+        msg.pose.covariance[0] = msg.pose.covariance[7] = 0.02 ** 2
+        msg.pose.covariance[35] = math.radians(1.0) ** 2
         self.publisher.publish(msg)
         self.last_published_ns = now_ns
         self.get_logger().info(

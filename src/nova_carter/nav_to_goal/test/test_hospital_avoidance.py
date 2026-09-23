@@ -181,7 +181,7 @@ def test_rotated_grid_and_raw_unknown():
     assert grid.body_clear((-10, 0, math.pi/2))
 
 
-def test_arrival_and_guard_configuration_contract():
+def test_arrival_and_collision_monitor_configuration_contract():
     root = Path(__file__).resolve().parents[2]
     params = yaml.safe_load((root/'carter_navigation/params/hospital_navigation_params.yaml').read_text())
     server = params['controller_server']['ros__parameters']
@@ -192,4 +192,4 @@ def test_arrival_and_guard_configuration_contract():
         assert 'ObstacleFootprint' in server[name]['critics']
         assert 'BaseObstacle' not in server[name]['critics']
     assert server['FollowPathMPPI']['wz_max'] == params['velocity_smoother']['ros__parameters']['max_velocity'][2]
-    assert params['collision_monitor']['ros__parameters']['cmd_vel_in_topic'] == 'cmd_vel_human_checked'
+    assert params['collision_monitor']['ros__parameters']['cmd_vel_in_topic'] == 'cmd_vel_smoothed'

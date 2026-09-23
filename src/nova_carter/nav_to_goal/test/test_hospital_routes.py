@@ -26,14 +26,17 @@ def test_mppi_only_straight_and_all_turns_dwb():
             assert yaw_error(a[2], b[2]) < 1e-8
 
 
-def test_arrival_yaw_matches_tangent_and_next_departure():
+def test_arrival_yaw_matches_tangent_and_staging_position():
     for route_id, lane in ROUTES.items():
         final = sample_route(LANES[lane])[-1]
         other = "lane_lower" if lane == "lane_upper" else "lane_upper"
         next_start = sample_route(LANES[other])[0]
         assert math.dist(final[:2], next_start[:2]) < 1e-8
         assert yaw_error(final[2], ARRIVAL_YAWS[route_id]) < 1e-8
-        assert yaw_error(final[2], next_start[2]) < 1e-8
+        # Specimen leaves its table by backing out, then spinning north in
+        # open space. Lab staging can directly depart west after undocking.
+        expected = math.pi/2 if lane == 'lane_lower' else math.pi
+        assert yaw_error(next_start[2], expected) < 1e-8
 
 
 def test_static_blockage_scan_finds_lethal_but_ignores_unknown():

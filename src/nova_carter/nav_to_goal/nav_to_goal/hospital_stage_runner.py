@@ -1,7 +1,7 @@
 """FollowPath stage supervision: lateral path choice, yield and forward rejoin.
 
 No robot commands are sent directly here. Path selection uses a short-horizon
-kinematic approximation; actual smoothed commands are checked by the guard.
+kinematic approximation; Collision Monitor checks the smoothed commands.
 """
 import math
 import time
@@ -20,6 +20,19 @@ from nav_to_goal.hospital_safety import SafetyObservations, yaw_of
 
 def path_points(path):
     return [(p.pose.position.x, p.pose.position.y, yaw_of(p.pose.orientation)) for p in path.poses]
+
+
+def drain_observations(navigator):
+    """Service ready clock/TF/sensor callbacks before assessing freshness.
+
+    A single spin per 0.1 s cannot service several 30 Hz TF publishers plus
+    clock, odom and scan. Bound the work so path supervision still runs.
+    """
+    deadline = time.monotonic() + .01
+    for _ in range(128):
+        rclpy.spin_once(navigator, timeout_sec=0.)
+        if time.monotonic() >= deadline:
+            break
 
 
 def follow_stage(navigator, tf_buffer, plan_publisher, stage_name, route,
@@ -120,6 +133,7 @@ def follow_stage(navigator, tf_buffer, plan_publisher, stage_name, route,
             complete = navigator.isTaskComplete() if active_task else False
             if not active_task:
                 rclpy.spin_once(navigator, timeout_sec=.05)
+            drain_observations(navigator)
             now = observations.now()
             if previous_now is not None and now < previous_now:
                 event('FAILED', 'clock_reset_requires_new_mission')
@@ -161,6 +175,7 @@ def follow_stage(navigator, tf_buffer, plan_publisher, stage_name, route,
                         deadline = time.monotonic()+3.0
                         while time.monotonic() < deadline:
                             rclpy.spin_once(navigator, timeout_sec=.05)
+                            drain_observations(navigator)
                             sample = observations.snapshot()
                             if sample is None:
                                 stable_start = None
@@ -186,9 +201,13 @@ def follow_stage(navigator, tf_buffer, plan_publisher, stage_name, route,
                     return MissionStatus.FAILED
 
             # Re-evaluate actual active path, not the original line during detour.
-            gap = path_clearance(points, pose, velocity, tracks, settings,
-                                 .6 if mppi else (.5 if final_yaw is not None else .8))
-            risk = gap < (settings.minimum_gap if in_detour else settings.preferred_gap)
+            # The predictive reference selector belongs to the open MPPI
+            # corridor. In room turns DWB's full-footprint obstacle critic and
+            # Collision Monitor handle current obstacles; there is no lateral
+            # candidate mechanism here to resolve apparent moving wall corners.
+            gap = (path_clearance(points, pose, velocity, tracks, settings, .6)
+                   if mppi else math.inf)
+            risk = mppi and gap < (settings.minimum_gap if in_detour else settings.preferred_gap)
             if in_detour and lane.local(pose)[0] >= rejoin_s-4.0:
                 risk = risk or not tail_clear_for_rejoin(lane, pose, tracks, settings)
             blockage = blockage_monitor.observe(reference, reference_index) if mppi and blockage_monitor else None
