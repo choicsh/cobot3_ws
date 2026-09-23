@@ -3,8 +3,14 @@
   nav2_bt_navigator/navigate_through_poses_w_replanning_and_recovery.xml 복사본.
   두 값만 바꿨다. 나머지는 원본 그대로다.
 
-    RateController hz        0.333 -> 1.0
+    RateController hz        0.333 -> 1.0 -> 3.0
     RemovePassedGoals radius 0.7   -> 0.7 (원복. 아래 참고)
+
+  hz 이력 (2026-09-23): max_vel_x 를 0.5 -> 1.5 로 올리면서 1.0 -> 3.0.
+  tick 간 이동이 v/hz 이므로 1.5m/s + hz 1.0 은 1.5m/tick 이 되어, 아래에 적힌
+  "창(지름 1.4m)을 건너뛴다" 는 원래 실패 조건과 수학적으로 같아진다.
+  hz 3.0 이면 0.5m/tick 으로, 검증된 조합(0.5m/s + hz 1.0)과 여유가 동일하다.
+  필요 radius = sqrt(e^2 + (v/hz/2)^2), e = 경유지 최근접 거리(코너 절삭량).
 
   이유: RemovePassedGoals 는 "통과했는가"를 판정하지 않는다. tick 하는 그 순간에
   로봇이 radius 안에 있는지만 보는 스냅샷 검사이고 기억이 없다.
@@ -39,7 +45,7 @@
       <PipelineSequence name="NavigateWithReplanning">
         <ControllerSelector selected_controller="{selected_controller}" default_controller="FollowPath" topic_name="controller_selector"/>
         <PlannerSelector selected_planner="{selected_planner}" default_planner="GridBased" topic_name="planner_selector"/>
-        <RateController hz="1.0">
+        <RateController hz="3.0">
           <RecoveryNode number_of_retries="1" name="ComputePathThroughPoses">
             <ReactiveSequence>
               <RemovePassedGoals input_goals="{goals}" output_goals="{goals}" radius="0.7"/>

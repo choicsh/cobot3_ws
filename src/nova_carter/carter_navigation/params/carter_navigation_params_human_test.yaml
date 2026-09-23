@@ -1,7 +1,7 @@
 # 사람 회피 실험 전용. carter_navigation_params.yaml 의 복사본이며 아래 두 곳만 다르다.
 #
 #   bt_navigator.default_nav_through_poses_bt_xml   추가 (경유지 되돌아가기 수정)
-#   FollowPath.forward_prune_distance               추가 (코너 과대 선회 억제. 기본 2.0)
+#   FollowPath.forward_prune_distance               3.0 (기본 2.0). sim_time 과 함께 순항 속도를 정한다
 #   global_costmap.inflation_layer                  radius 0.6->1.2, scaling 3.0->1.5
 #   FollowPath.ObstacleFootprint.scale              0.2 -> 0.05 (좁은 곳 회전 허용)
 #   LaserScan 소스 3곳 inf_is_valid                  true (지나간 사람 마킹이 지워지도록)
@@ -160,12 +160,17 @@ velocity_smoother:
     smoothing_frequency: 20.0 
     scale_velocities: false 
     feedback: "OPEN_LOOP"   # CLOSED_LOOP 는 램프가 이론값(0.60s)의 3.3배(2.00s) 로 늘어져 최종 회전이 좌우로 헌팅함 (실측)
-    max_velocity: [0.5, 0.0, 0.5] 
-    min_velocity: [-0.3, 0.0, -0.5] 
-    # deadband_velocity: [0.0, 0.0, 0.0] 
-    velocity_timeout: 1.0 
-    max_accel: [0.5, 0.0, 1.0]     # 기본값(2.5/3.2)은 390kg 로봇에 공격적
-    max_decel: [-0.5, 0.0, -1.0] 
+    max_velocity: [1.5, 0.0, 0.5]   # x 이력: 0.5 -> 0.7 -> 1.5. FollowPath max_vel_x 와 같아야 한다 (낮으면 여기서 잘린다)
+    min_velocity: [-0.3, 0.0, -0.5]
+    # deadband_velocity: [0.0, 0.0, 0.0]
+    velocity_timeout: 1.0
+    # x 이력: 0.5 -> 2.0. 속도와 같이 올려 정지거리를 유지한다 (정지거리 = v^2/2a).
+    # 단계적으로 낮출 때 쓸 조합 — 속도/가감속/정지거리 순:
+    #   1.5 / 2.0 / 0.56m   <- 현재    1.2 / 1.5 / 0.48m    1.0 / 1.0 / 0.50m    0.7 / 0.5 / 0.49m
+    # **FollowPath 의 acc_lim_x / decel_lim_x 와 반드시 같이 바꿀 것** (어긋나면 도킹 오버슈트)
+    # 회전축(1.0/-1.0)은 안 건드린다 — sim_time 과 곱해지는 궤적 스윕이 커져 좁은 통로에서 걸러진다
+    max_accel: [2.0, 0.0, 1.0]     # Nav2 기본값 2.5/3.2 는 390kg 로봇에 공격적 — 2.0 은 그 바로 아래
+    max_decel: [-2.0, 0.0, -1.0]
     odom_topic: "chassis/odom" 
     odom_duration: 0.1
 
@@ -210,19 +215,22 @@ controller_server:
       debug_trajectory_details: True
       min_vel_x: 0.0   # NavFn 은 후진 경로를 만들지 않음
       min_vel_y: 0.0
-      max_vel_x: 0.5   # 사람이 있는 공간 주행 속도
+      # 이력: 0.5 -> 0.7 -> 1.5. 감속도를 0.5 -> 2.0 으로 같이 올려 정지거리는 0.49m -> 0.56m 로
+      # 거의 유지된다. 원래 0.5 는 "사람이 있는 공간 주행 속도"로 고른 값이니, 사람과 마주치는
+      # 구간이나 WP5 부근 좁은 통로(통과폭 0.90m)에서 문제가 나면 여기부터 낮출 것
+      max_vel_x: 1.5
       max_vel_y: 0.0
-      max_vel_theta: 0.5
+      max_vel_theta: 0.5   # 회전은 안 올린다 (sim_time 1.7 과 곱해지는 궤적 스윕 문제)
       min_speed_xy: 0.0
-      max_speed_xy: 0.5   # max_vel_x 와 정합
+      max_speed_xy: 1.5   # max_vel_x 와 정합
       min_speed_theta: 0.0
       # 아래 4개는 velocity_smoother 의 max_accel/max_decel 과 반드시 같아야 한다.
       # 달랐을 때: DWB 는 0.5m/s 를 8cm 만에 세울 수 있다고 계산하지만 smoother 가 0.5m/s^2 로 묶어
       # 실제로는 25cm 를 더 밀려간다 (min_vel_x=0.0 이라 후진 복귀도 불가) -> 도킹 지점 오버슈트.
-      acc_lim_x: 0.5   # = velocity_smoother max_accel[0]
+      acc_lim_x: 2.0   # = velocity_smoother max_accel[0]. 이력: 0.5 -> 2.0
       acc_lim_y: 0.0
       acc_lim_theta: 1.0   # = velocity_smoother max_accel[2]
-      decel_lim_x: -0.5   # = velocity_smoother max_decel[0]
+      decel_lim_x: -2.0   # = velocity_smoother max_decel[0]. 이력: -0.5 -> -2.0
       decel_lim_y: 0.0
       decel_lim_theta: -1.0   # = velocity_smoother max_decel[2]
       vx_samples: 20
@@ -245,7 +253,13 @@ controller_server:
       #       실효 회전반경 1.83m — 운동학적 최소(v/w = 0.5/0.5 = 1.00m)의 1.8배였다.
       # 1.0 으로 줄이면 코너 너머가 안 보여 코너를 돈 뒤에 다음 구간을 본다.
       # params 에 없던 항목이라 기존 튜닝값은 하나도 건드리지 않는다.
-      forward_prune_distance: 1.0
+      # DWB 가 점수를 매길 때 보는 전역 경로를 로봇 앞 이만큼까지만 자른다. 이 값이 sim_time 과
+      # 묶여서 실제 순항 속도를 정한다 — v ~ forward_prune_distance / sim_time.
+      # 1.0 이면 1.0/1.7 = 0.59 m/s 가 자연 속도라, max_vel_x 를 1.5 로 올려도 0.55 밖에 안 나왔다
+      # (실측: /cmd_vel_nav 0.55). 3.0 이면 3.0/1.7 = 1.76 이라 max_vel_x 가 실제 상한이 된다.
+      # 이력: 1.0 -> 3.0. 원래 1.0 은 코너 과대 선회 억제용이었다(기본 2.0) — 코너 절삭이
+      # 심해지면 2.0 으로 내릴 것. 런타임 시험: ros2 param set /controller_server 로 바로 바뀐다
+      forward_prune_distance: 3.0
       xy_goal_tolerance: 0.1
       trans_stopped_velocity: 0.05   # 5cm/s 이하여야 최종 회전 시작 (사람 공간 주행 고려)
       short_circuit_trajectory_evaluation: True

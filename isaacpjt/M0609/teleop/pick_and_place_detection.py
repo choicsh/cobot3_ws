@@ -53,6 +53,7 @@ enable_extension("isaacsim.ros2.bridge")
 
 from pathlib import Path
 import random
+import sys
 import time
 
 import carb
@@ -162,7 +163,10 @@ TCP_OFFSET = np.array([0.0, 0.0, 0.21671])
 READY_JOINTS_RAD = [1.57, 0.0, 2.157, 0.0, -0.6, 1.57]
 
 IK_POSITION_TOLERANCE    = 0.003    # m
-IK_ORIENTATION_TOLERANCE = 0.02     # rad
+# Lula 는 축별 구속을 못 한다 — 이 값은 x/y/z 축에 똑같이 걸린다. 키우면 손목 특이점 근처에서
+# 해를 찾을 여지가 생기는 대신 트레이가 그만큼 기운 채로도 성공 판정이 난다.
+# 이력: 0.02 -> 0.1 -> 0.1745 (10도). STEP_ROT_TOL_DEG 를 이보다 높게 유지할 것
+IK_ORIENTATION_TOLERANCE = 0.1745   # rad = 10도
 
 
 # ══════════════════════════════════════════════════════════════
@@ -210,11 +214,14 @@ RACK_SLOTS   = [POINT4_TCP + np.array([i * RACK_PITCH_M + t, 0.0, 0.0])
 RACK_RETREAT = POINT5_TCP - POINT4_TCP          # 놓은 뒤 수평 15cm 후퇴, 슬롯마다 같은 양
 
 # 시작 시 원본 트레이(/World/tray)를 이만큼 더 복제해 흩뿌린다. 자세는 원본 그대로,
-# 위치만 원본 월드 좌표를 중심으로 반지름 TRAY_SPREAD_R_M 의 +y 쪽 반원 안에서 뽑는다.
-# 박스로 뽑으면 모서리가 원점에서 0.3m 넘게 벗어나 팔이 못 닿았다.
+# 위치는 원본을 중심으로 **가로 방향 한 줄**(base->트레이 방향에 수직)로 ±TRAY_SPREAD_R_M.
+# 이력: +y 쪽 반원 -> 가로 한 줄. 반원은 파지점 도달거리를 0.69~1.09m 로 퍼뜨려서
+# 먼 쪽이 손목 특이점(joint_5 ~ 0)에 걸렸다. 가로로만 벌리면 0.91~0.94m 로 모인다.
 TRAY_PRIM_PATH   = "/World/tray"
 TRAY_COPIES      = 2
-TRAY_SPREAD_R_M  = 0.20
+# 이력: 0.20 -> 0.25. 한 줄 배치는 2차원보다 자리가 빠듯해서, 0.20 이면 TRAY_MIN_GAP_M
+# 을 만족하는 자리를 20회 안에 못 찾는 실행이 7% 였다 (0.25 면 1%)
+TRAY_SPREAD_R_M  = 0.25
 TRAY_MIN_GAP_M   = 0.15     # 트레이끼리 이보다 가까우면 다시 뽑는다 (겹치면 물리로 튄다)
 
 # 긴급도 ArUco 마커 — 트레이마다 id 0/1/2(하/중/상)를 무작위로 골라 손잡이 윗판에 붙인다.
@@ -227,13 +234,18 @@ ARUCO_HANDLE_REL = "tray/test_tube_rack/handle"
 ARUCO_TOP_Z_M    = 0.1474 + 0.0005   # 윗판 윗면 + z-fighting 방지 여유
 URGENCY_NAMES    = {0: "하", 1: "중", 2: "상"}
 
-# 적재 완료 후 랙 관측 자세 (base 기준, 가운데 칸 RACK_SLOTS[1] 에서 파생). 실측 안 된 계산값 —
-# 랙에 닿거나 IK 가 안 풀리면 이 세 값만 조정할 것. 카메라는 TCP 보다 0.217 뒤(툴 z)에 있어
-# TCP (0, 0.49, 0.57) + 50도 숙임이면 카메라 ≈ (0, 0.36, 0.74), 윗판(z≈0.30)까지 앙각 ≈46도,
-# 거리 ≈0.62m → 4.9cm 마커 ≈ 49x35px (5px/셀). 스캔 자세(앙각 15도, 10px)로는 못 읽는다.
-OBSERVE_BACK_M    = 0.30    # 랙 열에서 로봇 쪽으로
-OBSERVE_UP_M      = 0.30    # 놓는 높이(POINT4 z)에서 위로. 0.35 -> 0.30 (실행 보니 너무 높았다)
-OBSERVE_PITCH_DEG = -50.0   # PITCH_DOWN_DEG 와 같은 부호 규약(음수 = 아래)
+# 적재 완료 후 랙 관측 자세. **관절 공간 고정값** — 마커가 실제로 읽힌 자세에서 그대로 떠 왔다
+# (2026-09-23 실측). 예전엔 base 기준 TCP 좌표 + 50도 숙임을 IK 로 풀었는데, 그 목표에 도달을
+# 못 해 실제 자세가 계획보다 10cm 낮은 곳에서 끝났다 — IK 가 어디까지 가느냐에 따라 관측 자세가
+# 매번 달라졌다는 뜻이다. 관절값으로 박으면 IK 를 안 타니 실패할 수도, 달라질 수도 없다.
+# FK 역검산: TCP(base) = [-0.0138, +0.4991, +0.4680], 툴 하향각 50.4도.
+# **랙이나 로봇 위치가 바뀌면 이 값은 의미가 없다** (base 기준 좌표가 아니라 관절각이다).
+# 실측값은 j4=-175.5 / j5=-80.7 / j6=+265.5 였는데, 손목 플립 등가해
+# (j4+180, j5 부호 반전, j6-180) 로 바꿔 적었다 — 말단 자세가 보존되는 변환이라
+# TCP 오차 0.01cm / 자세 오차 0.03도로 사실상 같은 자세이고, 마커 판독 조건도 그대로다.
+# 홈에서 오는 최대 관절 변화가 175.6 -> 115.0도로 줄어 이동이 5.8초 -> 3.8초가 된다
+# (손목을 180도씩 두 번 돌리던 동작이 사라진다).
+OBSERVE_JOINTS_DEG = [+87.895, -4.758, +64.720, +4.469, +80.661, +85.544]
 # 마커가 5px/셀 근처라 프레임마다 0~2개로 깜빡인다. 한 장만 믿지 말고 첫 신선 프레임부터
 # 이만큼(시뮬 프레임, 60Hz 가정 ≈1.5초) 누적해서 칸별로 가장 많이 나온 id 를 쓴다
 OBSERVE_COLLECT_FRAMES = 90
@@ -251,6 +263,9 @@ RACK_PLACE_WAIT_STEPS = 60
 # 트레이가 랙 테두리에 걸려서, 슬롯 위로 먼저 간 뒤 수직으로만 내려가게 한다.
 # 이력: 0.10 -> 0.11 (안전 위치가 너무 낮아서, POINT4 z +1cm 와 합쳐 총 +2cm)
 RACK_ABOVE_Z_M = 0.11
+# 하역에서 꺼낼 때 들어올리는 높이. 적재와 따로 둔다 — 넣을 때와 뺄 때 걸리는 조건이 달라서
+# 한쪽을 맞추면 다른 쪽이 틀어진다. 이력: RACK_ABOVE_Z_M 공용 0.11 -> 전용 0.12 (+1cm)
+UNLOAD_ABOVE_Z_M = 0.12
 LOG_INTERVAL        = 60
 
 
@@ -324,6 +339,12 @@ DESK_LATERAL    = np.array([-_c[1], _c[0], 0.0])
 DESK_SLOTS      = [DESK_ROW_CENTER + DESK_LATERAL * DESK_PITCH_M * k for k in (1, 0, -1)]   # [1번=왼쪽, 2번=가운데, 3번=오른쪽]
 UNLOAD_KEY      = "U"      # 적재 완료 후 뷰포트에서 이 키를 누르면 3번부터 하역
 
+# --drive-only: 팔을 전혀 안 쓰고 주행만 시험한다. Play 를 누르면 적재/관측을 건너뛰고
+# 바로 /mission_state 1 을 발행해 주행 프로세스를 출발시키고, /nav_done 을 받으면 끝낸다.
+# 씬·사람·navmesh·후방 라이다·ROS2 그래프는 그대로 필요해서 이 파일을 그대로 쓴다.
+# 이 모드에서는 관제 노드(detect_node)를 띄울 필요가 없다.
+DRIVE_ONLY = "--drive-only" in sys.argv
+
 # 회전 전 후퇴를 직교(IK) 대신 관절로 한다. 자세를 고정한 채 TCP 를 당기면
 # joint_5 가 0 을 지나 손목 특이점을 관통한다 (실측: IK 거부 161틱, 25cm 중 7cm 만 가고 중단).
 # 어깨(joint_2)/팔꿈치(joint_3)를 접고 joint_5 로 그만큼 되돌려 트레이 기울기를 유지한다.
@@ -331,6 +352,10 @@ UNLOAD_KEY      = "U"      # 적재 완료 후 뷰포트에서 이 키를 누르
 # (부호는 코드가 FK 로 두 방향을 미리 재서 고른다. 반대로 접으면 랙 쪽으로 뻗는다)
 RETREAT_SHOULDER_DEG    = 10.0    # joint_2
 RETREAT_ELBOW_DEG       = 14.0    # joint_3
+# 접으면 TCP 가 따라 내려간다. 하역은 슬롯 위 RACK_ABOVE_Z_M(11cm) 에서 후퇴하므로 낙폭이 크면
+# 방금 들어올린 트레이가 랙으로 도로 내려간다 — 하역에서만 이 상한을 걸어 부호를 고른다.
+# 적재는 LIFT_Z_M(0.45) 에서 후퇴해 여유가 있어 안 건다(= 기존 동작 유지)
+RETREAT_MAX_DROP_M      = 0.03
 
 # 스텝 도달 실패 복구. 흐름을 끊지 않는 게 목표다 — 실패한 스텝은 손목을 풀고 한 번 더,
 # 그래도 안 되면 그 단계만 포기하고 다음으로 넘어간다 (미션은 계속된다)
@@ -345,7 +370,9 @@ MAX_IK_JOINT_JUMP_DEG   = 20.0
 # 있는데도 다음 스텝(예: joint_1 회전)이 시작된다 — "올린 뒤 후퇴 없이 회전" 증상. 오차가 크면
 # 목표를 계속 주며 STEP_EXTRA_TICKS 더 기다리고, 그래도 못 가면 시퀀스를 중단한다(계속 가면 충돌).
 STEP_POS_TOL_M          = 0.01
-STEP_ROT_TOL_DEG        = 5.0
+# IK_ORIENTATION_TOLERANCE(0.1745rad = 10도) 보다 높아야 한다. 낮으면 IK 는 풀렸는데
+# 도달 검사에서만 걸리는 실패가 생긴다. 이력: 5.0 -> 7.0 -> 12.0
+STEP_ROT_TOL_DEG        = 12.0
 STEP_EXTRA_TICKS        = 120
 # 바닥에 닿는 스텝(랙/책상 수직 하강)은 트레이가 먼저 닿아 목표보다 위에서 멈추는 게 정상이라 느슨하게
 STEP_CONTACT_TOL_M      = 0.03
@@ -727,20 +754,30 @@ def attach_aruco(tray_path, marker_id):
 
 
 def spawn_tray_copies():
-    """원본 트레이를 TRAY_COPIES 개 복제해 무작위로 흩뿌리고, 전부에 긴급도 마커를 붙인다.
+    """원본 트레이를 TRAY_COPIES 개 복제해 한 줄로 흩뿌리고, 전부에 긴급도 마커를 붙인다.
     world.reset() 전에 부른다.
+
+    벌리는 방향은 **base 에서 트레이를 향하는 방향에 수직인 수평축**이다. 반지름 방향으로
+    벌리면 파지점 도달거리가 0.69~1.09m 로 퍼지는데(파지점은 검출면보다 TRAY_HALF_DEPTH_M
+    만큼 더 깊다), 1.10m 부근은 joint_5 가 0 으로 밀려 손목 특이점이다 — IK 가 거부되며
+    들어올리기가 실패하던 원인이었다. 가로로만 벌리면 0.90~0.93m 에 모여 전부 안전하다.
 
     duplicate_prim 은 참조까지 합쳐 복사하므로 rigid body / 콜리전이 그대로 따라온다.
     마커는 복제 뒤에 붙여야 트레이마다 다른 id 를 가진다."""
     stage = omni.usd.get_context().get_stage()
     origin = np.array(stage.GetPrimAtPath(TRAY_PRIM_PATH).GetAttribute("xformOp:translate").Get(), dtype=float)
+
+    base_pos, base_quat = arm_base_pose()
+    radial = world_to_base_pos(origin, base_pos, base_quat)[:2]
+    radial = radial / np.linalg.norm(radial)
+    lateral = quat_to_matrix(base_quat) @ np.array([-radial[1], radial[0], 0.0])
+    print(f"   tray spread  가로축(월드) {vec(lateral)}  범위 +-{TRAY_SPREAD_R_M * 100:.0f}cm")
+
     placed = [origin]
     attach_aruco(TRAY_PRIM_PATH, random.choice(ARUCO_IDS))
     for i in range(1, TRAY_COPIES + 1):
         for _ in range(20):
-            # sqrt 는 면적 균일 분포 (없으면 중심에 몰린다). 각도 0~pi = +y 쪽 반원
-            r, th = TRAY_SPREAD_R_M * np.sqrt(np.random.uniform()), np.random.uniform(0.0, np.pi)
-            pos = origin + np.array([r * np.cos(th), r * np.sin(th), 0.0])
+            pos = origin + lateral * np.random.uniform(-TRAY_SPREAD_R_M, TRAY_SPREAD_R_M)
             if all(np.linalg.norm(pos[:2] - q[:2]) >= TRAY_MIN_GAP_M for q in placed):
                 break
         placed.append(pos)
@@ -1220,11 +1257,13 @@ def first_tray_grasp(color_camera_path, base_pos, base_quat, verbose=False):
 #  손목 특이점 가드
 # ══════════════════════════════════════════════════════════════
 class SingularityGuardedIK:
-    """IK 해가 한 프레임에 크게 튀면 미해결로 돌려보내는 래퍼.
+    """IK 해가 한 프레임에 크게 튀면 **경고만 찍는** 래퍼. 지금은 막지 않는다.
 
     joint 5 가 0 에 가까우면 joint 4/6 축이 일직선이 되어 자코비안이 퇴화하고,
-    현재 자세를 warm start 로 줘도 IK 가 다른 해로 넘어간다. 그 프레임은 지령이
-    나가지 않아 팔이 뒤틀리지 않는 대신, 그 스텝은 목표에 못 미친 채 끝난다."""
+    현재 자세를 warm start 로 줘도 IK 가 다른 해로 넘어간다.
+    예전엔 그런 프레임을 미해결로 돌려보냈는데, 지령이 안 나가 팔이 제자리에 서면서
+    스텝이 통째로 실패했다. 막는 대신 통과시키고 진단 로그만 남긴다 —
+    다시 막으려면 아래 `return action, solved` 를 `return action, False` 로 되돌릴 것."""
 
     def __init__(self, ik_solver, robot, arm_indices):
         self._ik = ik_solver
@@ -1257,7 +1296,7 @@ class SingularityGuardedIK:
                     f"{np.degrees(jump[worst]):.0f}도. joint_5 = {np.degrees(current[4]):+.1f}도 "
                     f"(0 도 부근이면 손목 특이점)"
                 )
-            return action, False
+            return action, solved
         if abs(current[4]) < np.radians(WRIST_NEAR_SINGULAR_DEG):
             carb.log_warn(f"손목 특이점 근처 — joint_5 = {np.degrees(current[4]):+.1f}도")
         return action, solved
@@ -1347,16 +1386,10 @@ def build_descend_step(ik_solver, base_pos, base_quat, target_z_base, color_came
     }]
 
 
-def observe_tcp_base():
-    """랙 관측 TCP 위치 (base). 가운데 칸에서 로봇 쪽으로 OBSERVE_BACK_M, 위로 OBSERVE_UP_M."""
-    return RACK_SLOTS[1] + np.array([0.0, -OBSERVE_BACK_M, OBSERVE_UP_M])
-
-
-def build_observe_go_step(base_pos, base_quat):
-    """관측점으로 이동. 자세는 놓을 때와 같은 POINT4_RPY(랙 쪽을 봄) — 숙임은 도착 후 별도 스텝."""
-    tcp = observe_tcp_base()
-    return [{"type": "pose", "label": f"랙 관측점 이동 (base {vec(tcp)})",
-             "target": base_to_world(tcp, POINT4_RPY, base_pos, base_quat), "gripper": None}]
+def build_observe_step():
+    """관측 자세로 이동. 관절 보간이라 IK 를 안 타고, 이동+숙임이 한 스텝으로 끝난다."""
+    return [{"type": "joint", "label": "랙 관측 자세(고정 관절값)",
+             "target": np.radians(OBSERVE_JOINTS_DEG), "gripper": None}]
 
 
 def assign_slots(markers):
@@ -1413,25 +1446,36 @@ def tcp_pose_base(lula, joints, base_pos, base_quat):
     return world_to_base_pos(pos + rot @ TCP_OFFSET, base_pos, base_quat)
 
 
-def joint_retreat_step(lula, base_pos, base_quat):
+def joint_retreat_step(lula, base_pos, base_quat, max_drop_m=None):
     """회전 전 후퇴를 관절 공간으로 한다. IK 를 안 거치니 손목 특이점에 안 걸린다.
 
     어깨/팔꿈치를 접고 joint_5 로 되돌려 도구 기울기(= 트레이 기울기)를 유지한다.
-    접는 부호는 FK 로 양쪽을 재서 수평 도달거리가 줄어드는 쪽을 고른다."""
+    접는 부호는 FK 로 양쪽을 재서 수평 도달거리가 줄어드는 쪽을 고른다.
+    max_drop_m 을 주면 z 가 그보다 많이 떨어지는 부호를 먼저 걸러낸다 (RETREAT_MAX_DROP_M 참고)."""
     def target(start):
         delta = np.radians([0.0, RETREAT_SHOULDER_DEG, RETREAT_ELBOW_DEG, 0.0,
                             -(RETREAT_SHOULDER_DEG + RETREAT_ELBOW_DEG), 0.0])
         here = tcp_pose_base(lula, start, base_pos, base_quat)
-        best, best_reach = None, None
+        here_reach = float(np.linalg.norm(here[:2]))
+
+        cands = []
         for sign in (1.0, -1.0):
             cand = start + sign * delta
             there = tcp_pose_base(lula, cand, base_pos, base_quat)
-            reach = float(np.linalg.norm(there[:2]))
-            print(f"   retreat      {sign:+.0f}: 수평 도달 {np.linalg.norm(here[:2]):.3f} -> {reach:.3f} m, "
-                  f"z {here[2]:.3f} -> {there[2]:.3f}")
-            if best_reach is None or reach < best_reach:
-                best, best_reach = cand, reach
-        return best
+            cands.append((sign, cand, float(np.linalg.norm(there[:2])), float(here[2] - there[2]), there))
+
+        ok = cands if max_drop_m is None else [c for c in cands if c[3] <= max_drop_m]
+        if ok:
+            best = min(ok, key=lambda c: c[2])      # 수평 도달거리가 가장 많이 줄어드는 쪽
+        else:
+            best = min(cands, key=lambda c: c[3])   # 둘 다 상한 초과 — 낙폭이라도 작은 쪽
+            print(f"   retreat      경고: 두 부호 모두 낙폭이 {max_drop_m * 100:.0f}cm 를 넘는다 "
+                  f"— 접는 각도를 줄이거나 RACK_ABOVE_Z_M 을 키울 것")
+        for sign, _cand, reach, drop, there in cands:
+            print(f"   retreat      {sign:+.0f}: 수평 도달 {here_reach:.3f} -> {reach:.3f} m, "
+                  f"z {here[2]:.3f} -> {there[2]:.3f} (낙폭 {drop:+.3f})"
+                  + ("  <- 채택" if sign == best[0] else ""))
+        return best[1]
 
     return {"type": "joint", "label": "로봇 쪽 후퇴(관절)", "target": target, "gripper": None}
 
@@ -1507,7 +1551,6 @@ def build_pick_steps(lula, grasp_base, base_pos, base_quat, slot):
         {"type": "pose",  "label": "파지 위치",          "target": to_world_q(grasp_base), "gripper": None},
         {"type": "hold",  "label": "그리퍼 닫기",        "gripper": "close"},
         {"type": "pose",  "label": "들어올리기",         "target": to_world_q(lift), "gripper": None},
-        joint_retreat_step(lula, base_pos, base_quat),
         {"type": "joint", "label": f"joint_1 {np.degrees(joint1_delta[0]):+.1f}deg",
          "target": lambda start: start + joint1_delta, "gripper": None},
         # 놓는 위치로 대각선으로 내려가면 트레이가 랙 테두리에 걸린다.
@@ -1524,11 +1567,12 @@ def build_pick_steps(lula, grasp_base, base_pos, base_quat, slot):
 
 
 def build_unload_steps(lula, slot, desk_z, base_pos, base_quat):
-    """RACK_SLOTS[slot] 의 트레이를 꺼내 DESK_SLOTS[slot] 에 놓는다. build_pick_steps 의 역순.
+    """RACK_SLOTS[slot] 의 트레이를 꺼내 DESK_SLOTS[slot] 에 놓는다.
 
+    적재의 역순이 아니라 하역 전용 시퀀스다 — 넣을 때와 뺄 때 걸리는 조건이 달라서
+    들어올리는 높이를 UNLOAD_ABOVE_Z_M 으로 따로 둔다.
     랙 쪽은 적재와 같은 고정 자세(POINT4/5_RPY), 책상 쪽은 세 자리 모두
-    DESK_ROW_CENTER 기준 자세 하나로 놓아 트레이가 서로 평행하게 정렬된다.
-    회전 전에 base 쪽으로 물러나는 건 적재의 LIFT_BACK 과 같은 이유(옆 것을 쓸지 않게)."""
+    DESK_ROW_CENTER 기준 자세 하나로 놓아 트레이가 서로 평행하게 정렬된다."""
     def to_world(tcp, rpy):
         return base_to_world(tcp, rpy, base_pos, base_quat)
 
@@ -1538,7 +1582,7 @@ def build_unload_steps(lula, slot, desk_z, base_pos, base_quat):
         return base_pose_to_world(tcp, desk_quat, base_pos, base_quat)
 
     place = RACK_SLOTS[slot]
-    p_above = place + np.array([0.0, 0.0, RACK_ABOVE_Z_M])
+    p_above = place + np.array([0.0, 0.0, UNLOAD_ABOVE_Z_M])
     desk = np.array([DESK_SLOTS[slot][0], DESK_SLOTS[slot][1], desk_z])
     lift = np.array([desk[0], desk[1], LIFT_Z_M])
     lift_back = lift - direction * LIFT_BACK_M
@@ -1551,12 +1595,9 @@ def build_unload_steps(lula, slot, desk_z, base_pos, base_quat):
         {"type": "pose",  "label": f"랙 {slot + 1}번 앞(후퇴점)", "target": to_world(place + RACK_RETREAT, POINT5_RPY), "gripper": "open"},
         {"type": "pose",  "label": f"랙 {slot + 1}번 진입",      "target": to_world(place, POINT4_RPY), "gripper": None},
         {"type": "hold",  "label": "그리퍼 닫기",              "gripper": "close"},
-        {"type": "pose",  "label": f"수직 들어올리기(+{RACK_ABOVE_Z_M * 100:.0f}cm)", "target": to_world(p_above, POINT4_RPY), "gripper": None},
-        # 회전 반경을 줄인다. RACK_RETREAT(15cm) 로는 책상 위 트레이 손잡이에 닿았다
-        joint_retreat_step(lula, base_pos, base_quat),
+        {"type": "pose",  "label": f"수직 들어올리기(+{UNLOAD_ABOVE_Z_M * 100:.0f}cm)", "target": to_world(p_above, POINT4_RPY), "gripper": None},
         {"type": "joint", "label": f"joint_1 {np.degrees(joint1_delta[0]):+.1f}deg",
          "target": lambda start: start + joint1_delta, "gripper": None},
-        {"type": "pose",  "label": "책상 위(후퇴 반경)",        "target": to_world_q(lift_back), "gripper": None},
         {"type": "pose",  "label": "책상 위",                  "target": to_world_q(lift), "gripper": None},
         {"type": "pose",  "label": f"책상 {slot + 1}자리 내려놓기(수직 하강)", "target": to_world_q(desk), "gripper": None, "tol": STEP_CONTACT_TOL_M},
         {"type": "hold",  "label": "그리퍼 열기",              "gripper": "open"},
@@ -1752,7 +1793,7 @@ def main():
     #   center  -> ROI(검출된 트레이)가 화면 중앙에 오도록 카메라 기준 수평 이동
     #   pick    -> 중앙 정렬 후 다시 검출한 좌표로 접근/파지/들어올리기/회전/
     #              놓기/후퇴/홈복귀 실행
-    #   observe_go/observe_tilt/observe_settle/observe_home
+    #   observe_go/observe_settle/observe_home
     #           -> 랙이 다 찬 뒤 랙을 대각선 위에서 보고 ArUco 로 칸별 긴급도를 출력한 뒤 홈으로.
     #              적재/하역 로직과는 무관하고, 못 읽어도 미검출(-1)로 찍고 그냥 진행한다
     #   recover -> 검출 실패 복구 (스텝 실패는 그 스텝만 건너뛰고 이어간다).
@@ -1812,15 +1853,20 @@ def main():
                 clear_nav_done()
             if is_playing and not was_playing:
                 init_robot(robot, world)
-                pick_state = "scan"
-                sequence = PickPlaceSequence(robot, ik_solver, arm_indices, build_scan_steps())
-                sequence.reset()
                 seq_mark, wait_frames, retry_count = -1, 0, 0
                 slot_index, unload_slot, grasp_log = 0, -1, []
                 step_retries, stage_fails = 0, 0
                 fail_streak = 0
                 tick_count = 0
-                publish_mission_state(0)
+                if DRIVE_ONLY:
+                    pick_state, sequence = "drive_only", None
+                    publish_mission_state(1)
+                    print(f"   drive-only   적재/관측을 건너뛰고 /{MISSION_TOPIC} 1 발행 — 주행만 시험한다")
+                else:
+                    pick_state = "scan"
+                    sequence = PickPlaceSequence(robot, ik_solver, arm_indices, build_scan_steps())
+                    sequence.reset()
+                    publish_mission_state(0)
             was_playing = is_playing
 
             if not is_playing or pick_state is None:
@@ -1828,6 +1874,14 @@ def main():
 
             # 카터가 모바일 베이스라 이론상 움직일 수 있다 — 매 프레임 동기화한다
             base_pos, base_quat = sync_base_pose(lula, robot)
+
+            if pick_state == "drive_only":
+                if nav_done():
+                    publish_mission_state(0)   # 주행 프로세스를 다시 띄워도 바로 출발하지 않게
+                    print("   drive-only   주행 완료(/nav_done 1) — 하역은 건너뛴다. "
+                          "다시 시험하려면 Stop 후 Play")
+                    pick_state = None
+                continue
 
             if pick_state == "wait_unload":
                 # 주행 프로세스가 도킹을 끝내면 자동으로, 안 되면 UNLOAD_KEY 로 수동 진행한다
@@ -1981,7 +2035,7 @@ def main():
                         print(f"   복구         적재 실패 {stage_fails}회 — 남은 칸을 포기하고 관측으로 넘어간다")
                         pick_state = "observe_go"
                         sequence = PickPlaceSequence(robot, ik_solver, arm_indices,
-                                                     build_observe_go_step(base_pos, base_quat))
+                                                     build_observe_step())
                     else:
                         print(f"   복구         복구 완료 — 다음 트레이 스캔 (랙 {slot_index + 1}번부터 다시)")
                         pick_state = "scan"
@@ -1990,14 +2044,6 @@ def main():
                     sequence.reset()
                     tick_count = 0
                 elif pick_state == "observe_go":
-                    pick_state = "observe_tilt"
-                    z_now = world_to_base_pos(current_tcp_pose(ik_solver)[0], base_pos, base_quat)[2]
-                    sequence = PickPlaceSequence(
-                        robot, ik_solver, arm_indices,
-                        build_descend_step(ik_solver, base_pos, base_quat, z_now, color_camera_path, OBSERVE_PITCH_DEG),
-                    )
-                    sequence.reset()
-                elif pick_state == "observe_tilt":
                     pick_state = "observe_settle"
                     seq_mark, wait_frames = read_markers()[0], 0
                     votes, last_marker_seq, collect_start = [], -1, -1
@@ -2025,7 +2071,7 @@ def main():
                     if slot_index >= len(RACK_SLOTS):
                         print("   pick         랙이 다 찼다 — 랙을 위에서 관측해 긴급도를 읽는다")
                         pick_state = "observe_go"
-                        sequence = PickPlaceSequence(robot, ik_solver, arm_indices, build_observe_go_step(base_pos, base_quat))
+                        sequence = PickPlaceSequence(robot, ik_solver, arm_indices, build_observe_step())
                         sequence.reset()
                         tick_count = 0
                     else:
