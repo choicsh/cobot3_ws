@@ -79,7 +79,7 @@ def create_pose(navigator, x, y, yaw_deg):
     
     pose.pose.orientation.x = q[0]
     pose.pose.orientation.y = q[1]
-    pose.pose.orientation.z = q[2]
+    pose.pose.orientation.z = q[2]  
     pose.pose.orientation.w = q[3]
     return pose
 
@@ -90,7 +90,7 @@ def main():
     # 1. 출발점 설정: intergration_nova.usd 의 /World/robot_nova 배치값 그대로.
     # Isaac 월드 좌표 == 맵 좌표 이므로 변환 없이 넣는다 (yaw -90deg).
     # 씬에서 카트를 옮기면 이 값도 같이 고쳐야 AMCL 이 처음부터 제대로 붙는다.
-    init_pose = create_pose(nav, -0.761, 0.551, -90.0)
+    init_pose = create_pose(nav, 1.2303, 3.36282, 180.0)
     nav.setInitialPose(init_pose)
     nav.waitUntilNav2Active()
 
@@ -103,11 +103,17 @@ def main():
     # 그래서 출발 직후엔 남쪽으로 빠져나오고, 도착할 때도 위(y=19.5)에서 -90deg 로
     # 방향을 맞춘 뒤 남쪽으로 진입한다. 도착 지점에서 제자리 회전을 시키면 책상에 부딪힌다.
     waypoint_specs = [
-        (-0.761, -1.9,  -90),    # 책상에서 직진으로 빠져나온다 (회전 가능 구간 y=-1.8~-2.0)
-        ( 5.859, -1.0,    0),    # 복도 (여기서부터 회전 가능)
-        ( 5.859, 19.5,   90),    # 북쪽 끝
-        (-0.761, 19.5,  180),    # 내려놓는 자세 바로 위
-        (-0.761, 15.5,  -90),    # 남쪽으로 진입 = 팔이 트레이를 내려놓는 자세
+        (-1.937, 3.416, 180.0),
+        (-1.958, -0.352, 270.0),
+        (6.641, 0.138, 90.0),
+        (7.398, 17.238, 150.0),
+        (5.826, 19.193, 180.0),
+        (1.618, 19.349, 180.0),
+        #(-2.5, 3.36282, -90.0),
+        #(-2.5, -1.0,    0),
+        #(6.0, -1.0,   90),
+        #(6.0, 18.0,  0),    # 내려놓는 자세 바로 위
+        #(1.2303, 18.0,  0)    # 남쪽으로 진입 = 팔이 트레이를 내려놓는 자세
     ]
 
     if not waypoint_specs:

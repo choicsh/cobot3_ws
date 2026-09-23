@@ -18,6 +18,7 @@ from isaacsim import SimulationApp
 simulation_app = SimulationApp({"headless": False})
 
 import sys
+import time
 from pathlib import Path
 
 import numpy as np
@@ -29,12 +30,51 @@ isaacsim.SimulationApp = lambda *args, **kwargs: simulation_app
 M0609_DIR = Path(__file__).resolve().parent.parent / "M0609"
 sys.path[:0] = [str(M0609_DIR / "move"), str(M0609_DIR / "teleop")]
 
+# standalone 은 GUI 와 달리 확장을 최소만 로드한다. 스테이지를 열기 전에 켜야 한다.
+from isaacsim.core.utils.extensions import enable_extension
+
+# omni.anim.people 의 캐릭터 behavior 스크립트가 omni.anim.graph.core 등을 import 한다.
+# 안 켜면 "ModuleNotFoundError: No module named 'omni.anim.graph.core'" 로 사람이 안 움직인다.
+# 목록은 NVIDIA 공식 예제(standalone_examples/testing/isaacsim.ros2.bridge/test_people_sim.py) 기준.
+PEOPLE_EXTENSIONS = [
+    "omni.anim.people",
+    "omni.anim.navigation.bundle",
+    "omni.anim.timeline",
+    "omni.anim.graph.bundle",
+    "omni.anim.graph.core",
+    "omni.anim.graph.ui",
+    "omni.anim.retarget.bundle",
+    "omni.anim.retarget.core",
+    "omni.anim.retarget.ui",
+    "omni.kit.scripting",
+]
+for _ext in PEOPLE_EXTENSIONS:
+    enable_extension(_ext)
+    simulation_app.update()
+
+# 씬의 ActionGraph 가 /clock, TF, /chassis/odom, 라이다를 내보내려면 브리지가 켜져 있어야 한다.
+# 켜지 않으면 Nav2 가 센서 데이터를 전혀 못 받는다.
+enable_extension("isaacsim.ros2.bridge")
+simulation_app.update()
+
+# people/config.yaml 은 Actor SDG 확장(UI)이 읽는 파일이라 standalone 에서는 아무도 안 읽는다.
+# 캐릭터 behavior 스크립트는 아래 carb 설정에서 명령 파일 경로를 가져오고(기본값 ""),
+# 초기화 시점에 한 번만 읽으므로 반드시 open_stage() 앞에서 설정해야 한다.
+import carb
+
+PEOPLE_COMMAND_FILE = "/home/rokey/cobot3_ws/isaacpjt/assets/people/command.txt"
+_settings = carb.settings.get_settings()
+_settings.set("/exts/omni.anim.people/command_settings/command_file_path", PEOPLE_COMMAND_FILE)
+_settings.set("/exts/omni.anim.people/command_settings/number_of_loop", "inf")  # 기본 "0" 은 1회 재생 후 정지
+_settings.set("/exts/omni.anim.people/navigation_settings/navmesh_enabled", True)
+_settings.set("/exts/omni.anim.people/navigation_settings/dynamic_avoidance_enabled", True)
+simulation_app.update()
+
 import omni.usd
 
 from isaacsim.core.api import World
 from isaacsim.core.prims import SingleXFormPrim
 from isaacsim.core.utils.stage import is_stage_loading, open_stage
-from isaacsim.core.utils.types import ArticulationAction
 from pick_and_place import (
     ARM_JOINTS,
     JOINT1_ROTATE_DEG,
@@ -59,7 +99,7 @@ from pick_and_place import (
 )
 
 
-USD_PATH = Path("/home/rokey/cobot3_ws/isaacpjt/assets/intergration_nova.usd")
+USD_PATH = Path("/home/rokey/cobot3_ws/isaacpjt/assets/integration_human.usd")
 MOVE_ROOT_PATH = "/World/robot_nova"
 
 # 카터와 팔이 하나의 아티큘레이션이다.
@@ -126,119 +166,23 @@ def sync_base_pose(lula, robot):
     return base_pos, base_quat
 
 
-# 맵 제작 때 씬 전체를 x축으로 -1.84091 옮겼으므로 경로 좌표도 그만큼 옮겼다.
+# ---------------------------------------------------------------- 미션 연계
+# 주행은 nav_mission.py(프로세스 B)가 담당한다.
+# Isaac Python 은 3.11 인데 Jazzy rclpy 는 3.12 전용이라 한 프로세스에 못 들어간다.
+# 그래서 이 파일은 팔(PICK/PLACE)만 맡고, 주행 구간은 파일 신호로 주고받는다.
 #
-# 책상 옆(x = -0.761)은 로봇 옆면과 책상 사이가 1cm 라 '직진만' 가능한 구간이다.
-# 그래서 경로를 이렇게 잡는다:
-#   1) 파지 자세에서 그대로 남쪽으로 직진해 책상에서 벗어난다
-#   2) 넓은 곳에서 회전해 복도를 돌아 북쪽 책상 위(y=19.5)까지 간다
-#   3) 거기서 -90deg 로 돌아 남쪽으로 직진해 내려놓는 자세로 들어간다
-#      (도착 지점에서는 제자리 회전이 안 되므로 미리 방향을 맞춰서 들어간다)
-PICK_POSE_XY = np.array([1.08010 - 1.84091, 0.55106])    # = (-0.761, 0.551)
-PLACE_POSE_XY = np.array([1.08010 - 1.84091, 15.5])      # = (-0.761, 15.5)
-WAYPOINTS = [
-    PICK_POSE_XY,                      # W0  출발 = 파지 자세
-    np.array([-0.761,  -1.9]),         # W1  책상에서 직진으로 빠져나온다.
-                                       #     회전 가능 구간은 y = -1.8 ~ -2.0 로 좁다.
-                                       #     이보다 북쪽이면 꽁무니가 책상(y>=-0.49)에,
-                                       #     남쪽이면 남쪽 벽(y=-2.85)에 닿는다
-    np.array([ 5.859,  -1.0]),         # W2  복도. 여기서 북쪽으로 돌 때 꽁무니가 남쪽 벽을
-                                       #     쓸지 않도록 벽에서 충분히 떨어뜨렸다
-    np.array([ 5.859,  19.5]),         # W3  북쪽 끝까지
-    np.array([-0.761,  19.5]),         # W4  내려놓는 자세의 바로 위
-    PLACE_POSE_XY,                     # W5  남쪽으로 직진해 진입
-]
+#   pick_done  이 파일이 생성 : 트레이를 랙에 실었다. 주행 시작해도 된다
+#   nav_done   B가 생성       : 마지막 지점 도착. 내려놓기 시작해도 된다
+HANDSHAKE_DIR = Path("/tmp/cobot3_mission")
+PICK_DONE = HANDSHAKE_DIR / "pick_done"
+NAV_DONE = HANDSHAKE_DIR / "nav_done"
 
 APPROACH_BACKOFF_M = 0.082   # P1->P2 와 같은 수평 접근 거리
-
-# 바퀴 주행 (길이 2배 스케일 실측값)
-WHEEL_JOINTS = ("joint_wheel_left", "joint_wheel_right")
-WHEEL_RADIUS_M = 0.28
-WHEEL_DISTANCE_M = 0.8264
-SPEED_MPS = 0.8          # 직진 속도
-TURN_RPS = 0.6           # 제자리 회전 속도
-ACCEL_MPS2 = 0.5         # 가감속 (급출발하면 트레이가 랙에서 미끄러진다)
-POS_TOL_M = 0.15         # waypoint 도달 판정
-YAW_TOL_RAD = np.radians(3.0)
-STRAIGHT_DEADBAND_RAD = np.radians(5.0)   # 이 안쪽이면 조향 없이 직진
-TURN_FIRST_RAD = np.radians(20.0)   # 이보다 많이 틀어져 있으면 먼저 제자리 회전
-FINAL_YAW_DEG = -90.0    # 도착 후 정렬할 방향 (파지할 때와 같은 자세)
-PICK_PAUSE_S = 1.0       # 홈 복귀 후 주행을 시작하기까지 대기 시간
+RACK_SETTLE_S = 0.5          # 랙 위(P3)에서 내려놓기(P6) 전 제자리 대기
+PICK_PAUSE_S = 1.0           # 홈 복귀 후 신호를 내보내기까지 대기 시간
 
 
-def yaw_of(quat):
-    """(w, x, y, z) 쿼터니언에서 z축 회전각"""
-    w, x, y, z = [float(v) for v in quat]
-    return np.arctan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
-
-
-def wrap_pi(angle):
-    return (angle + np.pi) % (2.0 * np.pi) - np.pi
-
-
-class WheelDriver:
-    """노바카터 바퀴로 실제 주행한다.
-
-    waypoint 마다 '많이 틀어져 있으면 제자리 회전 -> 아니면 직진' 을 반복하고,
-    마지막 waypoint 에 닿으면 FINAL_YAW 로 자세를 맞춘다.
-    트레이는 랙 위에 마찰로 실려 가므로 따로 붙잡지 않는다."""
-
-    def __init__(self, robot, waypoints, final_yaw_rad):
-        self._robot = robot
-        self._wheel_idx = np.array([robot.get_dof_index(j) for j in WHEEL_JOINTS])
-        self._targets = [np.asarray(w[:2], dtype=float) for w in waypoints[1:]]
-        self._final_yaw = final_yaw_rad
-        self._i = 0
-        self._v = 0.0
-        self.done = False
-
-    def _apply(self, v, w):
-        half = 0.5 * WHEEL_DISTANCE_M * w
-        self._robot.apply_action(ArticulationAction(
-            joint_velocities=np.array([(v - half) / WHEEL_RADIUS_M,
-                                       (v + half) / WHEEL_RADIUS_M]),
-            joint_indices=self._wheel_idx,
-        ))
-
-    def stop(self):
-        self._v = 0.0
-        self._apply(0.0, 0.0)
-
-    def step(self, dt):
-        if self.done:
-            self.stop()
-            return True
-
-        pos, quat = self._robot.get_world_pose()
-        yaw = yaw_of(quat)
-
-        if self._i >= len(self._targets):          # 마지막 자세 정렬
-            err = wrap_pi(self._final_yaw - yaw)
-            if abs(err) < YAW_TOL_RAD:
-                self.stop()
-                self.done = True
-                return True
-            self._apply(0.0, float(np.clip(2.0 * err, -TURN_RPS, TURN_RPS)))
-            return False
-
-        delta = self._targets[self._i] - np.asarray(pos[:2], dtype=float)
-        dist = float(np.linalg.norm(delta))
-        if dist < POS_TOL_M:
-            self._i += 1
-            print(f"   waypoint {self._i}/{len(self._targets)} 도착")
-            return False
-
-        err = wrap_pi(np.arctan2(delta[1], delta[0]) - yaw)
-        # 책상 옆 1cm 틈에서는 조금만 조향해도 긁혀서 갇힌다 -> 거의 정렬돼 있으면 완전 직진
-        w = 0.0 if abs(err) < STRAIGHT_DEADBAND_RAD else float(np.clip(2.0 * err, -TURN_RPS, TURN_RPS))
-        v_target = 0.0 if abs(err) > TURN_FIRST_RAD else min(SPEED_MPS, dist)
-        step_v = ACCEL_MPS2 * dt
-        self._v = float(np.clip(v_target, self._v - step_v, self._v + step_v))
-        self._apply(self._v, w)
-        return False
-
-
-def build_pick_sequence(base_pos, base_quat):
+def build_pick_sequence(base_pos, base_quat, settle_steps):
     """놓는 순서(build_sequence)의 역순. 놓고 -> 그리퍼 열고 -> 홈 복귀로 끝난다"""
     p1, p2, p3, p4, p5, p6 = (
         base_to_world(tcp, rpy, base_pos, base_quat)
@@ -266,6 +210,8 @@ def build_pick_sequence(base_pos, base_quat):
         {"type": "pose",  "label": "들어올리기",     "target": lift, "gripper": None},
         {"type": "joint", "label": "joint_1 역회전", "target": lambda start: start - joint1_delta, "gripper": None},
         {"type": "pose",  "label": "P3 정렬",        "target": p3, "gripper": None},
+        # 랙 위에 도착한 자세가 흔들린 채로 곧장 내려가면 트레이가 랙 턱에 걸린다
+        {"type": "hold",  "label": f"대기 {RACK_SETTLE_S}s", "gripper": None, "steps": settle_steps},
         {"type": "pose",  "label": "놓는 위치",      "target": p6, "gripper": None},
         {"type": "hold",  "label": "그리퍼 열기",    "gripper": "open"},
         {"type": "pose",  "label": "후퇴 안전 위치", "target": p1, "gripper": None},
@@ -289,6 +235,39 @@ def build_place_sequence(base_pos, base_quat):
     return steps
 
 
+def bake_navmesh(timeout_s=30.0):
+    """NavMesh 를 베이크하고 완료를 기다린다.
+
+    베이크 결과는 USD 에 저장되지 않는다(스키마에 담을 프림 타입 자체가 없다).
+    GUI 는 autoRebakeOnChanges 로 알아서 다시 굽지만 standalone 은 직접 호출해야 한다.
+    안 구우면 캐릭터의 GoTo 가 전부 'invalid command' 로 거부된다.
+    """
+    try:
+        import omni.anim.navigation.core as nav
+    except ImportError as e:
+        print(f"   navmesh      건너뜀 (omni.anim.navigation.core 없음: {e})")
+        return False
+
+    inav = nav.acquire_interface()
+    inav.start_navmesh_baking()
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        simulation_app.update()
+        if not inav.is_navmesh_baking():
+            break
+    else:
+        print(f"   navmesh      베이크 시간 초과 ({timeout_s:.0f}s)")
+        return False
+
+    navmesh = inav.get_navmesh()
+    if navmesh is None:
+        print("   navmesh      실패 (get_navmesh() 가 None). NavMeshVolume 범위와 "
+              "agentMinIslandRadius 를 확인할 것")
+        return False
+    print("   navmesh      베이크 완료")
+    return True
+
+
 def main():
     if not USD_PATH.is_file():
         raise FileNotFoundError(f"USD file was not found: {USD_PATH}")
@@ -296,6 +275,8 @@ def main():
         raise RuntimeError(f"Could not open USD: {USD_PATH}")
     while is_stage_loading():
         simulation_app.update()
+
+    bake_navmesh()
 
     stage = omni.usd.get_context().get_stage()
 
@@ -322,7 +303,6 @@ def main():
 
     phase = None
     seq = None
-    driver = None
     wait_ticks = 0
     was_playing = False
 
@@ -332,12 +312,15 @@ def main():
         is_playing = world.is_playing()
         if is_playing and not was_playing:
             init_robot(robot, world)
-            driver = WheelDriver(robot, WAYPOINTS, np.radians(FINAL_YAW_DEG))
-            driver.stop()
+            HANDSHAKE_DIR.mkdir(parents=True, exist_ok=True)
+            for f in (PICK_DONE, NAV_DONE):
+                if f.exists():
+                    f.unlink()
             base_pos, base_quat = sync_base_pose(lula, robot)
             print(f"   base pos     {vec(base_pos)}")
+            settle_steps = max(1, int(RACK_SETTLE_S / world.get_physics_dt()))
             seq = PickPlaceSequence(robot, ik_solver, arm_indices,
-                                    build_pick_sequence(base_pos, base_quat))
+                                    build_pick_sequence(base_pos, base_quat, settle_steps))
             phase = "PICK"
             print("[PHASE] PICK")
         was_playing = is_playing
@@ -355,12 +338,14 @@ def main():
         elif phase == "WAIT":
             wait_ticks -= 1
             if wait_ticks <= 0:
+                PICK_DONE.write_text("ok\n")
                 phase = "MOVE"
-                print("[PHASE] MOVE")
+                print(f"[PHASE] MOVE  (신호 {PICK_DONE} 생성, nav_mission.py 대기)")
 
         elif phase == "MOVE":
-            # 팔은 홈 자세 그대로 두고 바퀴로 주행한다. 트레이는 랙 위에 마찰로 실려 간다
-            if driver.step(world.get_physics_dt()):
+            # 주행은 nav_mission.py 가 한다. 팔은 홈 자세 그대로 두고
+            # 트레이는 랙 위에 마찰로 실려 간다. 여기서는 도착 신호만 기다린다
+            if NAV_DONE.exists():
                 base_pos, base_quat = sync_base_pose(lula, robot)
                 print(f"   base pos     {vec(base_pos)}")
                 seq = PickPlaceSequence(robot, ik_solver, arm_indices,

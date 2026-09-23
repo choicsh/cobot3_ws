@@ -1,0 +1,18 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>tray_detector</name>
+  <version>0.1.0</version>
+  <description>Isaac Sim 손목 D455 스트림에서 트레이를 검출해 3D 좌표를 돌려주는 관제 PC 노드</description>
+  <maintainer email="csh980625@gmail.com">choicsh</maintainer>
+  <license>MIT</license>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <!-- ultralytics / numpy 는 rosdep 이 아니라 pip 로 넣는다 (README 참고) -->
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
