@@ -402,6 +402,9 @@ def request_detour(navigator, tf_buffer, goal_pose):
     except Exception:
         return None
     try:
+        if not navigator.compute_path_to_pose_client.wait_for_server(timeout_sec=0.0):
+            print("  [DETOUR] planner server not ready")
+            return None
         rotation = tf_buffer.lookup_transform(
             "map", "base_link", Time()
         ).transform.rotation
@@ -419,7 +422,7 @@ def request_detour(navigator, tf_buffer, goal_pose):
     if detour is None or len(detour.poses) < 2:
         return None
     # NavFn's grid path can contain sharp corners. The configured smoother
-    # gets one bounded attempt; geometry and costmap validation still decide
+    # gets one attempt; geometry and costmap validation still decide
     # whether the resulting path is safe to follow.
     try:
         if navigator.smoother_client.wait_for_server(timeout_sec=0.0):
