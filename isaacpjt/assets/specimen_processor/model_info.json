@@ -1,0 +1,24 @@
+{
+  "usd_default_prim": "/LabEquipment",
+  "up_axis": "Z",
+  "meters_per_unit": 1.0,
+  "mesh_count": 149,
+  "material_count": 14,
+  "vertices": 44242,
+  "triangles_equivalent": 82702,
+  "bounds_min": [
+    -0.3199999984353781,
+    -0.2875000005005859,
+    0.0
+  ],
+  "bounds_max": [
+    0.323499996913597,
+    0.3423241986568858,
+    0.7028348791859349
+  ],
+  "size_m": [
+    0.6434999953489751,
+    0.6298241991574717,
+    0.7028348791859349
+  ]
+}

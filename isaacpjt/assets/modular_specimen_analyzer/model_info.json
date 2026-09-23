@@ -1,0 +1,27 @@
+{
+  "default_prim": "/LabAnalyzer",
+  "units": "metres",
+  "up_axis": "Z",
+  "front": "-Y",
+  "modules": 10,
+  "bounds_min": [
+    -3.276000095414929,
+    -0.4594999849796295,
+    0.0
+  ],
+  "bounds_max": [
+    3.276000095414929,
+    0.41450000926852226,
+    1.8054999988526106
+  ],
+  "size_m": [
+    6.552000190829858,
+    0.8739999942481518,
+    1.8054999988526106
+  ],
+  "mesh_count": 753,
+  "triangles_equivalent": 123958,
+  "material_count": 19,
+  "external_assets": [],
+  "unresolved_assets": []
+}
