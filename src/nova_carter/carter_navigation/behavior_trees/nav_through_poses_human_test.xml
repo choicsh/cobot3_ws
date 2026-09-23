@@ -3,7 +3,7 @@
   nav2_bt_navigator/navigate_through_poses_w_replanning_and_recovery.xml 복사본.
   두 값만 바꿨다. 나머지는 원본 그대로다.
 
-    RateController hz        0.333 -> 1.0 -> 3.0
+    RateController hz        0.333 -> 1.0 -> 3.0 -> 2.0
     RemovePassedGoals radius 0.7   -> 0.7 (원복. 아래 참고)
 
   hz 이력 (2026-09-23): max_vel_x 를 0.5 -> 1.5 로 올리면서 1.0 -> 3.0.
@@ -28,6 +28,24 @@
   hz 1.0 이면 tick 사이 이동이 0.5m 라 창(지름 1.4m)을 건너뛸 수 없다. 즉 hz 하나로 해결된다.
   hz 를 올린 덕에 동적 장애물 전역 재계획 지연도 3초 -> 1초로 같이 줄어든다.
 
+  hz 3.0 -> 2.0 (2026-09-23). **검증 완료 — 좌우 반전이 완전히 사라지고 바로 정렬된다 (실측).**
+  최종 정렬의 좌우 반전 진동을 Oscillation critic 으로 잡은 변경이다.
+  DWBLocalPlanner::setPlan 은 새 경로를 받을 때마다 전 critic 을 무조건 reset() 한다:
+
+      for (TrajectoryCritic::Ptr & critic : critics_) { critic->reset(); }
+
+  그리고 FollowPath BT 노드는 경로 메시지가 헤더 stamp 만 달라도 "다르다"로 보고 액션 goal 을
+  다시 보내므로, 이 RateController 가 tick 할 때마다 reset 이 걸린다. 즉 critic 상태의 수명이
+  1/hz 를 못 넘는다. hz 3.0 에서는 0.33초였고, 그 안에 반전을 누적하지 못해
+  params 의 oscillation_reset_time 5.0 이 사실상 무의미했다.
+
+  2.0 이면 0.5초치가 남아 20Hz 제어 기준 10 사이클 안의 반전을 잡을 수 있다.
+  경유지 통과 여유는 유지된다 — 순항 1.18 m/s (forward_prune_distance 2.0 / sim_time 1.7)
+  기준 tick 당 이동이 0.59m 라 창(지름 1.4m) 안이다. 1.0 까지 내리면 1.18m 라 여유가 없다.
+
+  같이 시도했던 params 쪽 GoalAlign 제거는 원복했다. 그쪽은 단독으로도 로봇이 첫 주행부터
+  못 움직였다 (실측 2회, 원인 미규명). 이 hz 변경은 그것과 독립이다.
+
   radius 는 1.2 로 올려 봤다가 되돌렸다. 올리면 경유지를 일찍 버려 코너를 미리 깎는데,
   좁은 곳에서 그러면 회전이 불가능한 자리에서 돌기 시작한다. 실측:
 
@@ -45,7 +63,7 @@
       <PipelineSequence name="NavigateWithReplanning">
         <ControllerSelector selected_controller="{selected_controller}" default_controller="FollowPath" topic_name="controller_selector"/>
         <PlannerSelector selected_planner="{selected_planner}" default_planner="GridBased" topic_name="planner_selector"/>
-        <RateController hz="3.0">
+        <RateController hz="2.0">
           <RecoveryNode number_of_retries="1" name="ComputePathThroughPoses">
             <ReactiveSequence>
               <RemovePassedGoals input_goals="{goals}" output_goals="{goals}" radius="0.7"/>

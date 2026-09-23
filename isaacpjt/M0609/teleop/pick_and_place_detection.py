@@ -405,6 +405,15 @@ STEP_EXTRA_TICKS        = 120
 # 바닥에 닿는 스텝(랙/책상 수직 하강)은 트레이가 먼저 닿아 목표보다 위에서 멈추는 게 정상이라 느슨하게
 STEP_CONTACT_TOL_M      = 0.03
 WRIST_NEAR_SINGULAR_DEG = 8.0
+# 파지 yaw 를 정면(0.0)에서 검출 방위각(1.0) 쪽으로 양보해 가는 순서.
+# 앞쪽부터 IK 를 물어보고 처음 풀리는 값을 쓴다 (pick_grasp_yaw_weight).
+#
+# 되돌림(2026-09-23): (0.0, 0.3, 0.6, 1.0) 으로 넣었다가 (1.0,) 으로 복구했다.
+# 트레이는 팔 기준 방위각이 90도 가까운 자리에 있어서(스캔이 joint_1 을 -90도 돌려야 보인다)
+# w=0.0 이 채택되면 파지 위치는 트레이 위인데 자세만 로봇 정면이 된다 — 그리퍼가 트레이를
+# 90도 옆에서 가로질러 들어간다. 실측: 스캔 자세에서 '안전 위치(파지 전)' 로 넘어가며 손목이 뒤틀렸다.
+# 다시 쓰려면 (1-w)*|방위각| 상한을 먼저 넣을 것. 상한 없이는 방위각이 큰 자리에서 항상 이 꼴이 된다.
+GRASP_YAW_WEIGHTS = (1.0,)
 
 
 # ══════════════════════════════════════════════════════════════
@@ -495,9 +504,18 @@ def check_math():
     # 임의의 방향에서 보정 후 툴 +Z(손가락 방향)가 그 방향을 향해야 한다
     for target in ([-0.15, 0.80, 0.28], [0.80, 0.03, 0.11], [0.10, -0.75, 0.20]):
         target = np.array(target)
-        d, q = grasp_frame(target)
-        tool_z = quat_to_matrix(q)[:, 2]
-        assert np.dot(tool_z[:2], d[:2]) > 0.99, f"파지 yaw 보정이 틀렸다: {target}"
+        # weight 가 몇이든 툴 +Z 는 자기가 돌려준 direction 을 향해야 한다
+        for w in GRASP_YAW_WEIGHTS:
+            d, q = grasp_frame(target, w)
+            tool_z = quat_to_matrix(q)[:, 2]
+            assert np.dot(tool_z[:2], d[:2]) > 0.99, f"파지 yaw 보정이 틀렸다: {target} w={w}"
+        # weight 1.0 은 기존 동작 — direction 이 base 에서 파지점을 향하는 방위각과 같아야 한다
+        d1, _ = grasp_frame(target, 1.0)
+        assert np.allclose(d1, approach_direction(target)[0], atol=1e-9), f"w=1.0 이 기존과 다르다: {target}"
+        # weight 0.0 은 로봇 정면 — POINT2_RPY 그대로이므로 direction 은 base +Y
+        d0, q0_ = grasp_frame(target, 0.0)
+        assert np.allclose(d0, [0.0, 1.0, 0.0], atol=1e-9), f"w=0.0 이 정면이 아니다: {target} -> {d0}"
+        assert np.allclose(q0_, make_target_quat(*POINT2_RPY), atol=1e-9), f"w=0.0 자세가 POINT2_RPY 가 아니다: {target}"
 
     # rack_yaw_delta_deg 구조 검증 — 씬 좌표와 무관하게 항상 성립해야 하는 성질들
     for p in ([-0.15, 0.80, 0.28], [0.80, 0.03, 0.11], [0.10, -0.75, 0.20]):
@@ -540,13 +558,49 @@ def approach_direction(grasp_base):
     return d, float(np.degrees(np.arctan2(-d[0], d[1])))
 
 
-def grasp_frame(grasp_base):
+def grasp_frame(grasp_base, weight=1.0):
     """파지 자세(쿼터니언)와 접근 방향을 함께 돌려준다.
     base z 축 회전을 POINT2_RPY 기준 자세 바깥에서 곱한다 — 오일러각에 더하면
-    툴 자기 축 회전이 되어 버리므로 이 순서가 맞다."""
-    direction, yaw_deg = approach_direction(grasp_base)
-    q = quat_mul(quat_from_axis([0, 0, 1], yaw_deg), make_target_quat(*POINT2_RPY))
+    툴 자기 축 회전이 되어 버리므로 이 순서가 맞다.
+
+    weight 는 방위각을 얼마나 따를지다. 1.0 = 검출 방위각 그대로(기존 동작,
+    Rz(yaw)*[0,1,0] 이 곧 방위각 방향이라 direction 도 예전 값과 같다),
+    0.0 = 로봇 정면(POINT2_RPY) 자세. 중간값은 그 사이를 선형으로 간다.
+    direction 도 같이 돌려야 한다 — 접근 후퇴(APPROACH_BACKOFF_M)가 그리퍼가
+    보는 방향과 어긋나면 옆에서 들이민다. check_math 의 tool_z 불변식이 이걸 잡는다."""
+    _, yaw_deg = approach_direction(grasp_base)
+    rz = quat_from_axis([0, 0, 1], yaw_deg * weight)
+    q = quat_mul(rz, make_target_quat(*POINT2_RPY))
+    direction = quat_to_matrix(rz) @ np.array([0.0, 1.0, 0.0])
     return direction, q / np.linalg.norm(q)
+
+
+def pick_grasp_yaw_weight(lula, grasp_base, base_pos, base_quat):
+    """정면(0.0)부터 방위각(1.0)까지 순서대로 IK 를 물어보고 처음 풀리는 각도를 쓴다.
+
+    팔은 정면에서 가장 여유가 크고, 방위각이 커질수록 손목이 특이점 쪽으로 끌려간다.
+    그래서 정면을 먼저 시도하고 안 되면 방위각 쪽으로 한 칸씩 양보한다. 전부 실패하면
+    1.0(방위각) 으로 떨어진다 — 기존 동작이라 최소한 지금보다 나빠지지 않는다.
+
+    팔을 움직이지 않고 미리 물어본다. warm_start 를 주지 않아 solver 기본 시드를 쓰므로
+    같은 입력이면 항상 같은 답이 나온다 (build_return_steps 가 따로 불러도 일치한다).
+
+    ponytail: 파지점 하나만 본다. 접근/들어올리기는 같은 yaw 에 더 쉬운 자세라 보통 같이 풀린다.
+    ponytail: (1-w)*|yaw_deg| 가 크면 접근선이 옆 트레이를 가로지를 수 있다. 실제로 부딪히면
+              그때 상한을 넣을 것 — 지금은 IK 가 풀리는지만 본다."""
+    j5 = list(lula.get_joint_names()).index("joint_5")
+    for w in GRASP_YAW_WEIGHTS:
+        _, q = grasp_frame(grasp_base, w)
+        pos, quat = base_pose_to_world(grasp_base, q, base_pos, base_quat)
+        sol, ok = lula.compute_inverse_kinematics(EE_LINK_NAME, tcp_to_flange(pos, quat), quat)
+        if ok and abs(np.degrees(sol[j5])) >= WRIST_NEAR_SINGULAR_DEG:
+            print(f"   파지 yaw weight {w:.2f} 채택 "
+                  f"(방위각 {approach_direction(grasp_base)[1]:+.1f}deg 중 "
+                  f"{approach_direction(grasp_base)[1] * w:+.1f}deg 사용, "
+                  f"joint_5 {np.degrees(sol[j5]):+.1f}deg)")
+            return w
+    print("   파지 yaw — 어느 weight 로도 IK 가 안 풀렸다. 방위각(1.0) 그대로 간다")
+    return 1.0
 
 
 def rack_yaw_delta_deg(grasp_base, place_base):
@@ -1569,11 +1623,12 @@ def wrist_unlock_step():
     return {"type": "joint", "label": "손목 풀기(재시도)", "target": target, "gripper": None}
 
 
-def build_return_steps(grasp_base, base_pos, base_quat):
+def build_return_steps(lula, grasp_base, base_pos, base_quat):
     """들고 있던 트레이를 원래 집은 자리에 되돌려 놓고 홈으로. 적재 실패 복구용.
 
     그 자리는 방금 집어 온 곳이라 비어 있다 — 아무 데나 떨어뜨리는 것보다 안전하다."""
-    direction, grasp_quat = grasp_frame(grasp_base)
+    direction, grasp_quat = grasp_frame(
+        grasp_base, pick_grasp_yaw_weight(lula, grasp_base, base_pos, base_quat))
 
     def to_world_q(tcp):
         return base_pose_to_world(tcp, grasp_quat, base_pos, base_quat)
@@ -1601,7 +1656,8 @@ def build_pick_steps(lula, grasp_base, base_pos, base_quat, slot):
     def to_world(tcp, rpy):
         return base_to_world(tcp, rpy, base_pos, base_quat)
 
-    direction, grasp_quat = grasp_frame(grasp_base)
+    direction, grasp_quat = grasp_frame(
+        grasp_base, pick_grasp_yaw_weight(lula, grasp_base, base_pos, base_quat))
 
     def to_world_q(tcp):
         return base_pose_to_world(tcp, grasp_quat, base_pos, base_quat)
@@ -1914,7 +1970,7 @@ def main():
         print(f"   복구         {reason} — {where} 계속한다 (적재 실패 {stage_fails}/{MAX_STAGE_FAILS})")
         sequence = PickPlaceSequence(
             robot, ik_solver, arm_indices,
-            build_return_steps(grasp, base_pos, base_quat) if grasp is not None else [home_step()])
+            build_return_steps(lula, grasp, base_pos, base_quat) if grasp is not None else [home_step()])
         sequence.reset()
         sequence.gripper = held
         pick_state = "recover"
