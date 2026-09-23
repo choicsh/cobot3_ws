@@ -7,7 +7,7 @@ isaacsim.replicator.agent:
     - medical
     navigation_area:
     - Walkable
-    num: 2
+    num: 3
     spawn_area:
     - Walkable
   global:
@@ -50,8 +50,8 @@ isaacsim.replicator.agent:
     spawn_area: []
     write_data: false
   scene:
-    asset_path: /home/rokey/cobot3_ws/isaacpjt/assets/integration_human.usd
+    asset_path: /home/rokey/cobot3_ws/isaacpjt/assets/hospital_integration_human.usd
   sensor:
-    camera_num: 4
+    camera_num: 0
   event:
     event_list: []

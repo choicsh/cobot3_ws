@@ -1,7 +1,7 @@
 # 사람 회피 실험 전용. carter_navigation_params.yaml 의 복사본이며 아래 두 곳만 다르다.
 #
 #   bt_navigator.default_nav_through_poses_bt_xml   추가 (경유지 되돌아가기 수정)
-#   FollowPath.forward_prune_distance               3.0 (기본 2.0). sim_time 과 함께 순항 속도를 정한다
+#   FollowPath.forward_prune_distance               2.0 (= 기본값). sim_time 과 함께 순항 속도를 정한다
 #   global_costmap.inflation_layer                  radius 0.6->1.2, scaling 3.0->1.5
 #   FollowPath.ObstacleFootprint.scale              0.2 -> 0.05 (좁은 곳 회전 허용)
 #   LaserScan 소스 3곳 inf_is_valid                  true (지나간 사람 마킹이 지워지도록)
@@ -56,10 +56,13 @@ amcl:
     always_reset_initial_pose: false
     first_map_only: false
     initial_pose:
-      x: 1.233      # 씬의 chassis_link(=base_link) 실측 위치
-      y: 3.363
+      # 씬의 /World/robot_nova 실측 위치. 이력: 1.233/3.363/180도 -> 현재
+      # (2026-09-23, 병원 맵 교체 — East_DockDesk 앞).
+      # through_pose_human_test.py 의 INIT_POSE 와 **반드시 같은 값**이어야 한다.
+      x: 20.270
+      y: 13.745
       z: 0.0
-      yaw: 3.14159  # 180도
+      yaw: 1.5708   # 90도
 
 amcl_map_client:
   ros__parameters:
@@ -257,9 +260,15 @@ controller_server:
       # 묶여서 실제 순항 속도를 정한다 — v ~ forward_prune_distance / sim_time.
       # 1.0 이면 1.0/1.7 = 0.59 m/s 가 자연 속도라, max_vel_x 를 1.5 로 올려도 0.55 밖에 안 나왔다
       # (실측: /cmd_vel_nav 0.55). 3.0 이면 3.0/1.7 = 1.76 이라 max_vel_x 가 실제 상한이 된다.
-      # 이력: 1.0 -> 3.0. 원래 1.0 은 코너 과대 선회 억제용이었다(기본 2.0) — 코너 절삭이
-      # 심해지면 2.0 으로 내릴 것. 런타임 시험: ros2 param set /controller_server 로 바로 바뀐다
-      forward_prune_distance: 3.0
+      # 이력: 1.0 -> 3.0 -> 2.0. 원래 1.0 은 코너 과대 선회 억제용이었다.
+      # 3.0 으로 되돌아온 이유(2026-09-23): GoalDist critic 이 pruned plan 의 마지막 점 하나만
+      # attractor 로 쓴다(dwb_critics/goal_dist.cpp: getLastPoseOnCostmap -> enqueueCell).
+      # 3.0 이면 그 점이 코너 너머에 찍혀 질러가고, WP2 최근접거리 e 가 0.76m 까지 벌어졌다.
+      # RemovePassedGoals(radius 0.7, hz 3.0) 의 허용 e = sqrt(0.7^2 - (v/hz/2)^2) = 0.65m 라
+      # 경유지가 안 지워지고 경로가 뒤로 재생성돼 멈췄다.
+      # 2.0 은 순항 속도를 2.0/1.7 = 1.18 m/s 로 낮춘다 (max_vel_x 1.5 가 아니라 이 값이 상한).
+      # 속도를 되찾아야 하면 sim_time 을 같이 내릴 것 — e 는 prune 만, v 는 prune/sim_time 이 정한다.
+      forward_prune_distance: 2.0
       xy_goal_tolerance: 0.1
       trans_stopped_velocity: 0.05   # 5cm/s 이하여야 최종 회전 시작 (사람 공간 주행 고려)
       short_circuit_trajectory_evaluation: True

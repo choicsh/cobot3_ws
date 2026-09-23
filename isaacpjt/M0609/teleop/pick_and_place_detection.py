@@ -83,11 +83,15 @@ from isaacsim.robot_motion.motion_generation import (
 THIS_DIR   = Path(__file__).resolve().parent
 M0609_DIR  = THIS_DIR.parent
 
-SCENE_USD        = str(M0609_DIR.parent / "assets/integration_human.usd")
+# 이력: integration_human.usd -> hospital_integration_human.usd (2026-09-23, 맵 교체).
+# hospital_integration.usd 사본에 integration_human.usd 의 액션 그래프 4개
+# (/World/ActionGraph, /World/nova_carter_ros/{differential_drive,transform_tree_odometry,ros_lidars})
+# 를 이식한 것. 트레이/책상/사람은 아직 안 옮겼으므로 --drive-only 로만 실행할 것.
+SCENE_USD        = str(M0609_DIR.parent / "assets/hospital_integration_human.usd")
 URDF_PATH        = str(M0609_DIR / "doosan-robot2/urdf/m0609_isaac_sim.urdf")
 DESCRIPTION_PATH = str(M0609_DIR / "descriptor/m0609_description.yaml")
 
-# integration_human.usd: 카터와 팔이 하나의 아티큘레이션이다.
+# 씬 USD(integration_human / hospital_integration_human 공통): 카터와 팔이 하나의 아티큘레이션이다.
 #   - 드라이브 설정 / EE / 카메라 검색은 팔이 들어 있는 nova_carter 서브트리 기준
 #   - Articulation 등록은 실제 루트인 chassis_link 기준 (바퀴로 주행 가능하려면 필요)
 #   - IK 기준 프레임은 팔의 base_link 다 (chassis_link 가 아니다)

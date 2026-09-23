@@ -45,8 +45,12 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument(
             "map",
-            default_value=os.path.join(carter_dir, "maps", "intergration_nova.yaml"),
-            description="맵 yaml. integration 씬용 기본값",
+            # 이력: intergration_nova.yaml -> integration_hospital.yaml (2026-09-23).
+            # 씬을 hospital_integration_human.usd 로 바꾸면서 같이 옮겼다.
+            # ⚠ params 의 amcl initial_pose 와 through_pose_human_test.py 의 WAYPOINTS 는
+            #   아직 옛 맵 좌표라 무효다. 새 맵 좌표로 다시 정해야 한다.
+            default_value=os.path.join(carter_dir, "maps", "integration_hospital.yaml"),
+            description="맵 yaml. hospital_integration 씬용 기본값",
         ),
         DeclareLaunchArgument(
             "params_file",
