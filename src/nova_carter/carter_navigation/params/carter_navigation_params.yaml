@@ -156,6 +156,7 @@ velocity_smoother:
 controller_server:
   ros__parameters:
     use_sim_time: True
+    odom_topic: /chassis/odom   # 기본값 /odom 은 이 씬에 없음. StoppedGoalChecker 정지 판정과 DWB 현재 속도가 이 토픽에서 온다
     controller_frequency: 20.0
     costmap_update_timeout: 0.30
     min_x_velocity_threshold: 0.001
@@ -180,9 +181,13 @@ controller_server:
     #  stateful: True
     general_goal_checker:
       stateful: True
-      plugin: "nav2_controller::SimpleGoalChecker"
+      # StoppedGoalChecker 는 SimpleGoalChecker 상속 + "정지했는가" 조건 추가.
+      # Simple 은 움직이는 중에도 SUCCEEDED 를 내서, 그 뒤 감속 구간(390kg 관성)이 제어 밖에서 밀렸다.
+      plugin: "nav2_controller::StoppedGoalChecker"
       xy_goal_tolerance: 0.1     # 차동구동 한계상 실질 하한 0.05
       yaw_goal_tolerance: 0.05   # 2.9도. AMCL 각도 추정 오차가 하한(~0.03)
+      trans_stopped_velocity: 0.03   # 3cm/s 이하여야 도착 인정 (시뮬 속도 잡음 고려해 0.02 대신)
+      rot_stopped_velocity: 0.03     # 1.7도/s 이하여야 도착 인정. 미세 떨림으로 늦어지면 0.05 로 완화
   # DWB parameters
     FollowPath:
       plugin: "dwb_core::DWBLocalPlanner"
@@ -195,12 +200,15 @@ controller_server:
       min_speed_xy: 0.0
       max_speed_xy: 0.5   # max_vel_x 와 정합
       min_speed_theta: 0.0
-      acc_lim_x: 1.0   # 급출발 억제
+      # 아래 4개는 velocity_smoother 의 max_accel/max_decel 과 반드시 같아야 한다.
+      # 달랐을 때: DWB 는 0.5m/s 를 8cm 만에 세울 수 있다고 계산하지만 smoother 가 0.5m/s^2 로 묶어
+      # 실제로는 25cm 를 더 밀려간다 (min_vel_x=0.0 이라 후진 복귀도 불가) -> 도킹 지점 오버슈트.
+      acc_lim_x: 0.5   # = velocity_smoother max_accel[0]
       acc_lim_y: 0.0
-      acc_lim_theta: 1.0
-      decel_lim_x: -1.5   # 감속은 상대적으로 강하게 (안전)
+      acc_lim_theta: 1.0   # = velocity_smoother max_accel[2]
+      decel_lim_x: -0.5   # = velocity_smoother max_decel[0]
       decel_lim_y: 0.0
-      decel_lim_theta: -3.5
+      decel_lim_theta: -1.0   # = velocity_smoother max_decel[2]
       vx_samples: 20
       vy_samples: 5
       vtheta_samples: 20
@@ -247,7 +255,7 @@ local_costmap:
       transform_tolerance: 0.3
       footprint: "[ [0.48, 0.5], [0.48, -0.5], [-1.38, -0.5], [-1.38, 0.5] ]"
       mark_threshold: 2
-      always_send_full_costmap: True
+      always_send_full_costmap: False   # 240x240=57,600 셀 전체 대신 증분 발행. RViz 표시는 동일
       plugins: ["static_map_layer", "front_3d_lidar_layer", "inflation_layer"]   # StaticLayer 가 뒤에 오면 updateWithTrueOverwrite 로 팽창을 통째로 덮어씀 (실측: 팽창 cost 0개)
       static_map_layer:
         plugin: "nav2_costmap_2d::StaticLayer"
@@ -272,7 +280,7 @@ local_costmap:
         origin_z: 0.0
         z_resolution: 0.2            # 이전 voxel_size 는 오인식 이름이었음 (기본 0.2 가 적용 중이었다)
         z_voxels: 10
-        publish_voxel_map: true
+        publish_voxel_map: false   # 복셀 그리드 디버그 발행 제거
         observation_sources: hesai_mark
         hesai_mark:
           data_type: PointCloud2
@@ -327,7 +335,7 @@ global_costmap:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 3.0   # 0.15 는 감쇠가 거의 없어 맵 전체가 고비용이었다
         inflation_radius: 0.6
-      always_send_full_costmap: True
+      always_send_full_costmap: False   # 1001x1001=100만 셀을 매초 직렬화하던 것을 증분으로. RViz 표시는 동일
   global_costmap_client:
     ros__parameters:
       use_sim_time: True

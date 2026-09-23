@@ -9,3 +9,11 @@ __pycache__/
 
 # 로컬 참고 문서
 local_guide_md/
+
+# YOLO 학습 데이터 (tray-2 best.pt만 유지)
+isaacpjt/sdg/_out_tray/
+isaacpjt/sdg/dataset_tray*/
+isaacpjt/M0609/teleop/_detections/
+runs/detect/isaacpjt/sdg/runs/tray/
+*.pt
+!runs/detect/isaacpjt/sdg/runs/tray-2/weights/best.pt
