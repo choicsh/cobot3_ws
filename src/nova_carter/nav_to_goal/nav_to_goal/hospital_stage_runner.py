@@ -1,0 +1,298 @@
+"""FollowPath stage supervision: lateral path choice, yield and forward rejoin.
+
+No robot commands are sent directly here. Path selection uses a short-horizon
+kinematic approximation; actual smoothed commands are checked by the guard.
+"""
+import math
+import time
+
+import rclpy
+from nav_msgs.msg import Path
+from rclpy.qos import QoSProfile, QoSDurabilityPolicy
+from std_msgs.msg import String
+
+from nav_to_goal.hospital_avoidance import (
+    SafetySettings, choose_candidate, forward_path_valid, lane_for_path,
+    offset_candidates, path_clearance, tail_clear_for_rejoin, wrap,
+)
+from nav_to_goal.hospital_safety import SafetyObservations, yaw_of
+
+
+def path_points(path):
+    return [(p.pose.position.x, p.pose.position.y, yaw_of(p.pose.orientation)) for p in path.poses]
+
+
+def follow_stage(navigator, tf_buffer, plan_publisher, stage_name, route,
+                 controller_id, goal_checker_id, final_yaw=None, blockage_monitor=None):
+    # Deferred import keeps geometry reusable without ROS and avoids import cycles.
+    from nav_to_goal.hospital_mission import (
+        MissionStatus, build_path, create_pose, remaining_path, request_detour,
+        task_result_to_status,
+    )
+
+    settings = SafetySettings()
+    reference = build_path(navigator, route)
+    if final_yaw is not None:
+        reference.poses[-1].pose.orientation.z = math.sin(final_yaw/2)
+        reference.poses[-1].pose.orientation.w = math.cos(final_yaw/2)
+    reference_points = path_points(reference)
+    mppi = controller_id == 'FollowPathMPPI'
+    lane = lane_for_path(reference_points) if mppi else None
+    observations = SafetyObservations(navigator, tf_buffer, with_maps=True)
+    qos = QoSProfile(depth=1, durability=QoSDurabilityPolicy.TRANSIENT_LOCAL)
+    reference_pub = navigator.create_publisher(Path, '/hospital/reference_plan', qos)
+    state_pub = navigator.create_publisher(String, '/hospital/mission_state', qos)
+    reference_pub.publish(reference)
+    active = reference
+    active_index = reference_index = 0
+    active_task = False
+    state = None
+    side = 0
+    in_detour = False
+    rejoin_s = math.inf
+    wait_since = clear_since = stale_since = None
+    last_replan = -math.inf
+    static_since = None
+    static_xy = None
+    planner_last_s = -math.inf
+    failure_count = 0
+    previous_now = None
+
+    def event(new_state, reason):
+        nonlocal state
+        if state != new_state:
+            state = new_state
+            message = f'stage={stage_name} state={state} reason={reason}'
+            navigator.get_logger().info(message)
+            state_pub.publish(String(data=message))
+
+    def as_path(points):
+        result = Path()
+        result.header = reference.header
+        result.header.stamp = navigator.get_clock().now().to_msg()
+        result.poses = [create_pose(navigator, *point) for point in points]
+        return result
+
+    def dispatch(path):
+        nonlocal active, active_index, active_task
+        # A new goal to the SAME controller updates the reference without a
+        # cancel/stop between every safe avoidance selection.
+        active = path
+        active_index = 0
+        active.header.stamp = navigator.get_clock().now().to_msg()
+        plan_publisher.publish(active)
+        accepted = navigator.followPath(active, controller_id=controller_id,
+                                        goal_checker_id=goal_checker_id)
+        active_task = accepted is not False
+        return active_task
+
+    def cancel():
+        nonlocal active_task
+        if active_task:
+            navigator.cancelTask()
+            deadline = time.monotonic()+2.0
+            while not navigator.isTaskComplete():
+                if time.monotonic() > deadline:
+                    return False
+                time.sleep(.02)
+            active_task = False
+        return True
+
+    try:
+        # Do not send a moving goal before the new guard's observations exist.
+        deadline = time.monotonic()+5.0
+        while rclpy.ok() and (observations.snapshot() is None or observations.static is None
+                              or observations.local is None):
+            rclpy.spin_once(navigator, timeout_sec=.05)
+            if time.monotonic() > deadline:
+                event('FAILED', 'initial_observations_unavailable')
+                return MissionStatus.FAILED
+        if not dispatch(reference):
+            event('FAILED', 'follow_path_rejected')
+            return MissionStatus.FAILED
+        event('TRACKING', 'reference')
+
+        while rclpy.ok():
+            # isTaskComplete spins callbacks only with an outstanding action.
+            complete = navigator.isTaskComplete() if active_task else False
+            if not active_task:
+                rclpy.spin_once(navigator, timeout_sec=.05)
+            now = observations.now()
+            if previous_now is not None and now < previous_now:
+                event('FAILED', 'clock_reset_requires_new_mission')
+                return MissionStatus.FAILED
+            previous_now = now
+            snapshot = observations.snapshot()
+            if snapshot is None:
+                if not cancel():
+                    return MissionStatus.FAILED
+                event('WAITING_DATA', 'tracks_odom_or_tf_unavailable')
+                stale_since = now if stale_since is None else stale_since
+                if now-stale_since > 2.0:
+                    event('FAILED', 'observation_timeout')
+                    return MissionStatus.FAILED
+                time.sleep(.05)
+                continue
+            stale_since = None
+            pose, velocity, tracks = snapshot
+            remaining_ref, reference_index = remaining_path(reference, tf_buffer, reference_index)
+            rest, active_index = remaining_path(active, tf_buffer, active_index)
+            if rest is None or remaining_ref is None:
+                if not cancel():
+                    return MissionStatus.FAILED
+                event('FAILED', 'reference_transform_unavailable')
+                return MissionStatus.FAILED
+            points = path_points(rest)
+
+            if complete:
+                result = task_result_to_status(navigator.getResult())
+                active_task = False
+                if result == MissionStatus.CANCELED:
+                    event('CANCELED', 'external_cancel')
+                    return result
+                if result == MissionStatus.SUCCEEDED:
+                    if final_yaw is not None:
+                        # Require several fresh measured stopped samples. Keep
+                        # 0.5m/s arrival cap; do not confuse cap with goal speed.
+                        stable_start = None
+                        deadline = time.monotonic()+3.0
+                        while time.monotonic() < deadline:
+                            rclpy.spin_once(navigator, timeout_sec=.05)
+                            sample = observations.snapshot()
+                            if sample is None:
+                                stable_start = None
+                                continue
+                            actual, speed, _ = sample
+                            good = (math.dist(actual[:2], reference_points[-1][:2]) <= .05 and
+                                    abs(wrap(actual[2]-final_yaw)) <= .10 and
+                                    abs(speed[0]) <= .03 and abs(speed[1]) <= .05)
+                            if not good:
+                                stable_start = None
+                            elif stable_start is None:
+                                stable_start = observations.now()
+                            elif observations.now()-stable_start >= .3:
+                                event('SUCCEEDED', 'station_pose_and_stop_confirmed')
+                                return result
+                        event('FAILED', 'station_pose_or_stop_not_confirmed')
+                        return MissionStatus.FAILED
+                    event('SUCCEEDED', 'stage_reached')
+                    return result
+                failure_count += 1
+                if not mppi or failure_count >= 3:
+                    event('FAILED', 'controller_failure')
+                    return MissionStatus.FAILED
+
+            # Re-evaluate actual active path, not the original line during detour.
+            gap = path_clearance(points, pose, velocity, tracks, settings,
+                                 .6 if mppi else (.5 if final_yaw is not None else .8))
+            risk = gap < (settings.minimum_gap if in_detour else settings.preferred_gap)
+            if in_detour and lane.local(pose)[0] >= rejoin_s-4.0:
+                risk = risk or not tail_clear_for_rejoin(lane, pose, tracks, settings)
+            blockage = blockage_monitor.observe(reference, reference_index) if mppi and blockage_monitor else None
+            # No prediction is not proof of a static obstacle. Require fresh
+            # tracks, costmap AND spatially persistent observed blockage.
+            static_block = blockage is not None and not blockage['dynamic']
+            if static_block:
+                # A known moving/stopped track near the blockage suppresses NavFn.
+                static_block = not any(math.dist((t.x, t.y), blockage['map_xy']) < 2.0
+                                       for t in tracks)
+            if static_block:
+                if static_xy is None or math.dist(static_xy, blockage['map_xy']) > .5:
+                    static_xy, static_since = blockage['map_xy'], now
+            else:
+                static_xy = static_since = None
+            static_ready = static_since is not None and now-static_since >= 1.5
+            need_path = risk or (static_ready and not in_detour)
+
+            if mppi and need_path and now-last_replan >= 1.0:
+                last_replan = now
+                clear_after = None
+                if static_ready:
+                    blocked_s = lane.local((*blockage['map_xy'], 0.))[0]
+                    clear_after = blocked_s+settings.rear+settings.preferred_gap+.5
+                selected = choose_candidate(offset_candidates(lane, pose, settings, side, clear_after),
+                    pose, velocity, tracks, lambda p: observations.path_clear(p, settings),
+                    settings, side)
+                if selected is not None:
+                    side, chosen, candidate_gap = selected
+                    join_s = lane.local(chosen[-1])[0]
+                    # Append forward reference only. Never return to an earlier index.
+                    tail = [p for p in reference_points[reference_index:] if lane.local(p)[0] > join_s+.01]
+                    combined = chosen+tail
+                    if forward_path_valid(combined, lane, lane.local(pose)[0], settings):
+                        if not dispatch(as_path(combined)):
+                            return MissionStatus.FAILED
+                        in_detour = True
+                        rejoin_s = join_s
+                        wait_since = clear_since = None
+                        event('AVOIDING', f'forward_offset side={side} predicted_gap={candidate_gap:.2f}')
+                        continue
+                # Bounded NavFn fallback is only for persistent static evidence.
+                # A second attempt at the same progress location is suppressed.
+                progress = lane.local(pose)[0]
+                if static_ready and progress-planner_last_s >= 2.0:
+                    planner_last_s = progress
+                    join_s = min(lane.length, progress+10.0)
+                    if join_s-progress >= 4.0:
+                        if not cancel():
+                            return MissionStatus.FAILED
+                        detour = request_detour(navigator, tf_buffer,
+                            create_pose(navigator, *lane.world(join_s, 0.)))
+                        if detour is not None:
+                            chosen = path_points(detour)
+                            fresh = observations.snapshot()
+                            if fresh is None:
+                                continue
+                            pose, velocity, tracks = fresh
+                            tail = [p for p in reference_points[reference_index:] if lane.local(p)[0] > join_s+.01]
+                            combined = chosen+tail
+                            if (math.dist(chosen[0][:2], pose[:2]) <= .3 and
+                                    forward_path_valid(combined, lane, progress, settings) and
+                                    observations.path_clear(chosen, settings) and
+                                    path_clearance(combined, pose, velocity, tracks, settings) >= settings.minimum_gap):
+                                if not dispatch(as_path(combined)):
+                                    return MissionStatus.FAILED
+                                in_detour = True
+                                rejoin_s = join_s
+                                wait_since = clear_since = None
+                                event('AVOIDING', 'validated_static_planner')
+                                continue
+
+            if risk or (static_ready and not in_detour):
+                if not cancel():
+                    return MissionStatus.FAILED
+                event('YIELDING', 'no_admissible_forward_candidate')
+                clear_since = None
+                wait_since = now if wait_since is None else wait_since
+            elif not active_task:
+                # Retain the active detour after a yield; do not jump sideways
+                # onto a geometrically nearest point on the reference.
+                clear_since = now if clear_since is None else clear_since
+                if now-clear_since >= .5:
+                    if len(rest.poses) < 2 or not dispatch(rest):
+                        event('FAILED', 'cannot_resume_forward_path')
+                        return MissionStatus.FAILED
+                    event('AVOIDING' if in_detour else 'TRACKING', 'clearance_stable_resume')
+                    wait_since = clear_since = None
+            else:
+                if in_detour and lane is not None:
+                    lateral = abs(lane.local(pose)[1])
+                    # Do not resubmit the old path or reset the progress cursor.
+                    progress = lane.local(pose)[0]
+                    if progress >= rejoin_s and lateral < .15 and not risk:
+                        in_detour, side = False, 0
+                        event('TRACKING', 'forward_rejoin_completed')
+                    elif progress >= rejoin_s-2.0:
+                        event('REJOINING', 'following_forward_detour_to_reference')
+                plan_publisher.publish(rest)
+            if wait_since is not None and now-wait_since >= 15.0:
+                event('FAILED', 'yield_budget_exceeded_not_proof_of_lane_blockage')
+                return MissionStatus.FAILED
+            time.sleep(.10)
+    finally:
+        cancel()
+        for sub in observations.subscriptions:
+            navigator.destroy_subscription(sub)
+        navigator.destroy_publisher(reference_pub)
+        navigator.destroy_publisher(state_pub)
+    return MissionStatus.CANCELED

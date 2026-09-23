@@ -1,5 +1,7 @@
 # Hospital AMR 프로젝트 — 다음 AI를 위한 인수인계
 
+> 2026-09-23 후속 구현: [회피 강화 인수인계](HOSPITAL_AMR_AVOIDANCE_HANDOFF_2026-09-23.md)를 먼저 읽는다. 아래는 이전 실주행 기록이며, 새 회피 코드의 실주행 성공을 의미하지 않는다.
+
 > 최신 사용자 정정: 상세 기록은 개발 진단용으로만 사용한다. hospital launch의 기록 옵션/노드, 시뮬레이션 루프의 사람 audit, nav_to_goal 기록기 entry point는 제거했다. 관련 도구는 저장소 밖 `/home/rokey/.local/share/hospital-amr-diagnostics/`로 이동했다. 필요한 순간에만 별도 실행하고 종료한다. 아래 과거의 “항상 자동 기록” 설명은 더 이상 적용하지 않는다. 기존 로그는 보존한다.
 
 작성: 2026-09-22, 로컬 작업 상태 기준. 작업 디렉터리: `/home/rokey/cobot3_ws`.

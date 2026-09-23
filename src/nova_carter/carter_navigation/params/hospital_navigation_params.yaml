@@ -146,10 +146,9 @@ velocity_smoother:
     smoothing_frequency: 20.0 
     scale_velocities: false 
     feedback: "OPEN_LOOP"   # CLOSED_LOOP 는 램프가 이론값(0.60s)의 3.3배(2.00s) 로 늘어져 최종 회전이 좌우로 헌팅함 (실측)
-    # DWB 자체 상한은 0.9, MPPI만 1.2를 쓸 수 있게 smoother의 공통 상한을 맞춘다.
-    # 이전 값 0.9에서는 FollowPathMPPI.wz_max=1.2가 downstream에서 잘려 효과가 없었다.
-    max_velocity: [0.8, 0.0, 1.2]
-    min_velocity: [-0.3, 0.0, -1.2]
+    # DWB/MPPI 공통 각속도 상한 0.9. 긴 후방의 쓸림을 줄이고 일찍 회피한다.
+    max_velocity: [0.8, 0.0, 0.9]
+    min_velocity: [-0.3, 0.0, -0.9]
     # deadband_velocity: [0.0, 0.0, 0.0] 
     velocity_timeout: 1.0 
     max_accel: [0.5, 0.0, 1.5]     # 기본값(2.5/3.2)은 390kg 로봇에 공격적. 직진 가속은 유지, 각가속만 상향
@@ -190,11 +189,13 @@ controller_server:
     #  stateful: True
     general_goal_checker:
       stateful: True
-      plugin: "nav2_controller::SimpleGoalChecker"
+      plugin: "nav2_controller::StoppedGoalChecker"
       # 좌표 5cm는 유지. 다음 레인의 접선 방향을 유지하되 도킹 수준의
       # 1.7도 미세 정렬 대신 5.7도 허용으로 불필요한 끝점 회전을 줄인다.
       xy_goal_tolerance: 0.05
       yaw_goal_tolerance: 0.10   # 5.7도; lab -90도 / specimen +90도
+      trans_stopped_velocity: 0.03
+      rot_stopped_velocity: 0.05
     transit_goal_checker:
       # 구간 경계용. 실제 시험에서 사람 옆에서 yaw 17도 수렴을 기다리며 18초 정체했다.
       # 최종 정류장 자세는 general에서 유지하고, 컨트롤러 전환점만 0.8rad로 완화한다.
@@ -233,8 +234,8 @@ controller_server:
       trans_stopped_velocity: 0.05   # 5cm/s 이하여야 최종 회전 시작 (사람 공간 주행 고려)
       short_circuit_trajectory_evaluation: True
       stateful: True
-      critics: ["RotateToGoal", "Oscillation", "BaseObstacle", "GoalAlign", "PathAlign", "PathDist", "GoalDist"]
-      BaseObstacle.scale: 0.5   # 사람 공간: 장애물에서 떨어지려는 성향 부여
+      critics: ["RotateToGoal", "Oscillation", "ObstacleFootprint", "GoalAlign", "PathAlign", "PathDist", "GoalDist"]
+      ObstacleFootprint.scale: 0.5  # 긴 후방을 포함한 polygon 충돌 검사
       PathAlign.scale: 8.0   # 직선 구간 미세 조향 추가 완화 (32 -> 16 -> 8)
       PathAlign.forward_point_distance: 0.8   # 로봇 길이 1.86m 기준 (기존 0.1 은 1배 카터용)
       GoalAlign.scale: 12.0   # PathAlign(8.0) 과 균형
@@ -251,12 +252,12 @@ controller_server:
       debug_trajectory_details: True
       min_vel_x: 0.0   # NavFn 은 후진 경로를 만들지 않음
       min_vel_y: 0.0
-      # 정류장 도착 구간 전용. 0.8 로 들어오면 제동 관성 때문에 마지막 회전이 과회전한다 (실측).
-      max_vel_x: 0.55
+      # 정류장 도착 구간 전용. 사용자 지정 상한 0.5; 목표 근처 감속은 제어기가 수행.
+      max_vel_x: 0.5  # 사용자 지정 도착 상한. 극저속 구간을 추가하지 않는다.
       max_vel_y: 0.0
       max_vel_theta: 0.6   # 0.9 -> 0.6: 도착 정렬에서 과회전(오버슈트) 방지. 원호는 transit 쪽 DWB 가 담당한다
       min_speed_xy: 0.0
-      max_speed_xy: 0.55
+      max_speed_xy: 0.5
       min_speed_theta: 0.0
       acc_lim_x: 1.0   # 급출발 억제
       acc_lim_y: 0.0
@@ -277,8 +278,8 @@ controller_server:
       trans_stopped_velocity: 0.05   # 5cm/s 이하여야 최종 회전 시작 (사람 공간 주행 고려)
       short_circuit_trajectory_evaluation: True
       stateful: True
-      critics: ["RotateToGoal", "Oscillation", "BaseObstacle", "GoalAlign", "PathAlign", "PathDist", "GoalDist"]
-      BaseObstacle.scale: 0.5   # 사람 공간: 장애물에서 떨어지려는 성향 부여
+      critics: ["RotateToGoal", "Oscillation", "ObstacleFootprint", "GoalAlign", "PathAlign", "PathDist", "GoalDist"]
+      ObstacleFootprint.scale: 0.5
       PathAlign.scale: 8.0   # 직선 구간 미세 조향 추가 완화 (32 -> 16 -> 8)
       PathAlign.forward_point_distance: 0.8   # 로봇 길이 1.86m 기준 (기존 0.1 은 1배 카터용)
       GoalAlign.scale: 12.0   # PathAlign(8.0) 과 균형
@@ -299,13 +300,11 @@ controller_server:
       time_steps: 90
       model_dt: 0.05          # 90 * 0.05 = 4.5 s 앞을 본다 (0.5 m/s 면 2.25 m)
       batch_size: 1000
-      # ax/az 는 "샘플의 첫 제어값을 측정 속도 ± a*dt 로 묶는" 클램프다 (실제 로봇 가감속 제한이 아니다 —
-      # 그건 velocity_smoother 의 max_accel 0.5/1.0 이 한다).
-      #  - 1.0 으로 줄이면 샘플 1000개가 로봇 주변 0.2 m 에 뭉쳐 정지 (실측)
-      #  - 기본값 3.0 이면 첫 명령이 "측정 속도 ± 0.15" 안에 묶이는데, 우리 로봇은 smoother 가 0.5 m/s² 로 느리게
-      #    가속하고 Isaac odom 이 명령 속도를 그대로 되돌려 줘서 "명령 = 측정" 고정점이 생겨 0.14~0.3 어디든 멈춰 있었다
-      #    (실측: 최적 궤적은 0.48 m/s 인데 출력은 항상 odom 과 소수 셋째 자리까지 일치, critic 을 뭘 바꿔도 불변).
-      #  - 크게 풀어서 첫 제어값이 측정 속도가 아니라 최적화된 계획값을 따르게 한다. 가속은 smoother 가 제한한다.
+      # 과거 낮은 가속도 설정에서 속도 정체가 보고되어 기존 값을 임시 유지한다.
+      # Jazzy motion model은 첫 단계뿐 아니라 예측 단계 전체에 ax/az를 적용한다.
+      # 따라서 실제 출력단과 불일치가 남는다. GPU에서 검증할 정합화 후보:
+      # ax_max=0.5, ax_min=-0.6, az_max=1.5 (일괄 적용 금지, 속도 정체 원인 확인 후).
+      # 새 외부 guard의 예측은 smoother의 0.5/-0.6/1.5를 사용한다.
       ax_max: 30.0
       ax_min: -30.0
       ay_max: 0.0
@@ -318,8 +317,7 @@ controller_server:
       vx_max: 0.6             # 보행자 시험: 제동 여유를 확보한 초기 상한
       vx_min: 0.0             # 후진 금지. 꼬리 1.38 m 가 라이다 사각에서 벽/사람에 닿는다
       vy_max: 0.0
-      wz_max: 1.2             # 0.9 -> 1.2: 직진 속도를 올리는 대신 "빨리 트는" 쪽으로 민첩성 확보.
-                              # 0.6 m/s 에서 최소 회전반경 0.5 m -> 0.6 m 옆으로 비키는 데 필요한 시간이 짧아진다.
+      wz_max: 0.9             # 꼬리 쓸림 감소. 선제 측방 경로 선택으로 대응 시간을 확보.
       iteration_count: 1
       prune_distance: 5.0     # critic 에 주는 경로 길이 (horizon 4.5 s * 0.8 = 3.6 m 보다 길게). horizon 거리보다 길어야 장애물 너머의 경로점이 보여 PathFollow 가 그쪽으로 당긴다
       transform_tolerance: 0.2
@@ -351,7 +349,7 @@ controller_server:
         critical_cost: 300.0
         consider_footprint: true
         collision_cost: 1000000.0
-        near_goal_distance: 1.0
+        near_goal_distance: 0.0  # MPPI 구간 끝에서도 사람 soft 비용 선호를 유지
         trajectory_point_step: 1
       PathAlignCritic:
         # 경로 위 점의 5% 이상이 장애물에 가려지면 자동으로 꺼져서(max_path_occupancy_ratio) 우회를 허용한다.
@@ -495,7 +493,7 @@ collision_monitor:
     use_sim_time: True
     base_frame_id: "base_link"
     odom_frame_id: "odom"
-    cmd_vel_in_topic: "cmd_vel_smoothed"
+    cmd_vel_in_topic: "cmd_vel_human_checked"
     cmd_vel_out_topic: "cmd_vel"
     state_topic: "collision_monitor_state"
     transform_tolerance: 0.2

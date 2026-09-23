@@ -33,6 +33,7 @@ setup(
             'hospital_mission = nav_to_goal.hospital_mission:main',
             'hospital_scan_self_filter = nav_to_goal.scan_self_filter:main',
             'hospital_moving_obstacle_predictor = nav_to_goal.moving_obstacle_predictor:main',
+            'hospital_velocity_guard = nav_to_goal.hospital_velocity_guard:main',
             'nav_to_multi_pose = nav_to_goal.nav_to_multi_pose:main',
         ],
     },

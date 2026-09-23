@@ -124,5 +124,12 @@ def generate_launch_description():
                 output="screen",
                 parameters=[{"use_sim_time": use_sim_time}],
             ),
+            Node(
+                package="nav_to_goal",
+                executable="hospital_velocity_guard",
+                name="hospital_velocity_guard",
+                output="screen",
+                parameters=[{"use_sim_time": use_sim_time}],
+            ),
         ]
     )

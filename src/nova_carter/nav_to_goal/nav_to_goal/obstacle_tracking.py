@@ -14,6 +14,8 @@ class Track:
     hits: int = 1
     motion_until: float = -math.inf
     history: deque = field(default_factory=lambda: deque(maxlen=8))
+    track_id: int = 0
+    was_moving: bool = False
 
 
 class Tracker:
@@ -21,6 +23,7 @@ class Tracker:
         self.timeout = timeout
         self.tracks = []
         self.last_stamp = None
+        self.next_id = 1
 
     def update(self, detections, stamp):
         if self.last_stamp is not None and stamp <= self.last_stamp:
@@ -59,13 +62,26 @@ class Tracker:
             track.x, track.y, track.stamp = x, y, stamp
             track.hits += 1
             if track.hits >= 3 and math.hypot(track.vx, track.vy) >= 0.25:
+                track.was_moving = True
+            # A previously moving object remains protected while observed, even
+            # after it stops. Expiry still handles missing observations.
+            if track.was_moving:
                 track.motion_until = stamp + 2.0
         for j, (x, y) in enumerate(detections):
             if j not in used_detections:
                 track = Track(x, y, stamp)
+                track.track_id = self.next_id
+                self.next_id += 1
                 track.history.append((stamp, x, y))
                 self.tracks.append(track)
         return self.tracks
+
+    def snapshots(self, stamp, radius=0.4):
+        """Current positions + velocity + observation age, not collapsed futures."""
+        return [(t.track_id, t.x+t.vx*(stamp-t.stamp), t.y+t.vy*(stamp-t.stamp),
+                 t.vx, t.vy, radius, stamp-t.stamp)
+                for t in self.tracks if t.was_moving and t.hits >= 3 and
+                0 <= stamp-t.stamp <= self.timeout]
 
     def predictions(self, stamp, horizon=1.8, step=0.2, radius=0.4):
         result = []

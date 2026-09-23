@@ -11,7 +11,6 @@ Pick & Place가 없으며, 선택 차선이 막혀도 다른 차선으로 전환
 
 from enum import Enum
 import math
-import time
 
 import rclpy
 from geometry_msgs.msg import PoseStamped
@@ -30,23 +29,12 @@ from sensor_msgs.msg import PointCloud
 
 
 PATH_STEP = 0.05
-MPPI_MAX_ATTEMPTS = 3
-MPPI_RETRY_WAIT_SECONDS = 2.0
-
-# 정적 장애물(콘 등) 우회: MPPI 구간에서 FollowPath 가 실패하면 planner 를 한 번만 불러
-# "현재 위치 -> 이 구간의 끝점" 우회 경로를 받아 같은 FollowPath 로 실행한다.
-# NavigateToPose 를 정상 주행 방식으로 쓰는 것이 아니라, 실패했을 때의 복구 수단이다.
-# 우회 경로 실행이 끝나면 원래 레퍼런스의 남은 구간으로 복귀한다.
-DETOUR_ENABLED = True
+# hospital_stage_runner에서 선택 lane 안의 전방 합류를 검증한 뒤만 사용.
 DETOUR_PLANNER_ID = "GridBased"
-# 정체 감지: MPPI 는 앞이 막히면 "정지" 를 유효한 제어로 계속 반환하므로 FollowPath 가 실패하지 않는다.
-# progress checker(45 s) 를 기다리지 않고, 레퍼런스 진행이 멈춘 채 STUCK_SECONDS 가 지나면 바로 우회한다.
-STUCK_SECONDS = 6.0
-STUCK_PROGRESS_M = 0.15
 
 # 정지 전에 정적 차단을 판별하는 보강. local costmap의 남은 레퍼런스를
 # 미리 검사하되 움직이는 track의 예측점과 겹치면 사람으로 보고 planner를
-# 호출하지 않는다. 6초 정체 판정은 센서/분류 실패 시의 백업으로 유지한다.
+# 호출하지 않는다. 단순 6초 정체만으로 planner를 호출하지 않는다.
 STATIC_BLOCK_LOOKAHEAD_M = 5.0
 STATIC_BLOCK_MIN_AHEAD_M = 0.8
 STATIC_BLOCK_PERSISTENCE_S = 1.5
@@ -214,6 +202,9 @@ class AheadBlockageMonitor:
     def observe(self, path, start_index):
         """차단이 없으면 None, 있으면 위치/거리/dynamic 분류를 반환한다."""
         if self.costmap is None:
+            return None
+        now = self.navigator.get_clock().now().nanoseconds / 1e9
+        if not 0 <= now-self._stamp_seconds(self.costmap.header) <= 1.0:
             return None
         costmap_frame = self.costmap.header.frame_id
         try:
@@ -434,177 +425,14 @@ def path_is_blocked(path, start_index, costmap_checker):
 
 
 def run_path_stage(
-    navigator,
-    tf_buffer,
-    plan_publisher,
-    stage_name,
-    route,
-    controller_id,
-    goal_checker_id,
-    final_yaw=None,
-    blockage_monitor=None,
+    navigator, tf_buffer, plan_publisher, stage_name, route, controller_id,
+    goal_checker_id, final_yaw=None, blockage_monitor=None,
 ):
-    path = build_path(navigator, route)
-    if final_yaw is not None:
-        path.poses[-1].pose.orientation.z = math.sin(final_yaw / 2.0)
-        path.poses[-1].pose.orientation.w = math.cos(final_yaw / 2.0)
-    max_attempts = (
-        MPPI_MAX_ATTEMPTS if controller_id == "FollowPathMPPI" else 1
+    from nav_to_goal.hospital_stage_runner import follow_stage
+    return follow_stage(
+        navigator, tf_buffer, plan_publisher, stage_name, route, controller_id,
+        goal_checker_id, final_yaw, blockage_monitor,
     )
-
-    for attempt in range(1, max_attempts + 1):
-        event = (f"[AUDIT] stage={stage_name} attempt={attempt} controller={controller_id} "
-                 f"start_sim_s={navigator.get_clock().now().nanoseconds / 1e9:.3f}")
-        print(event, flush=True)
-        navigator.get_logger().info(event)
-        destination = path.poses[-1].pose.position
-        print(
-            f"[{stage_name}] {controller_id}/{goal_checker_id}, "
-            f"{route_length(route):.1f} m -> "
-            f"({destination.x:.3f}, {destination.y:.3f}), "
-            f"시도 {attempt}/{max_attempts}"
-        )
-        plan_publisher.publish(path)
-        navigator.followPath(
-            path,
-            controller_id=controller_id,
-            goal_checker_id=goal_checker_id,
-        )
-
-        last_report = 0.0
-        passed_index = 0
-        latest_remaining = None
-        distances = [0.0] * len(path.poses)
-        for index in range(len(path.poses) - 2, -1, -1):
-            a, b = path.poses[index].pose.position, path.poses[index + 1].pose.position
-            distances[index] = distances[index + 1] + math.hypot(a.x - b.x, a.y - b.y)
-        stuck_since = time.monotonic()
-        stuck_index = 0
-        static_block_since = None
-        static_block_xy = None
-        detour_done = attempt > 1 or controller_id != "FollowPathMPPI"
-        while not navigator.isTaskComplete():
-            feedback = navigator.getFeedback()
-            latest_remaining, passed_index = remaining_path(
-                path, tf_buffer, passed_index
-            )
-            now = time.monotonic()
-
-            # 콘처럼 같은 위치에 남아 있는 차단은 로봇이 완전히 멈추기 전에
-            # planner에 넘긴다. 움직이는 사람 예측과 겹치면 MPPI에 맡긴다.
-            early_detour = False
-            blockage = None
-            if (DETOUR_ENABLED and not detour_done
-                    and blockage_monitor is not None):
-                blockage = blockage_monitor.observe(path, passed_index)
-                if blockage is None or blockage["dynamic"]:
-                    static_block_since = None
-                    static_block_xy = None
-                else:
-                    sim_now = navigator.get_clock().now().nanoseconds / 1e9
-                    if (static_block_xy is None or math.dist(
-                        static_block_xy, blockage["map_xy"]
-                    ) > STATIC_BLOCK_POSITION_TOLERANCE_M):
-                        static_block_xy = blockage["map_xy"]
-                        static_block_since = sim_now
-                    elif (static_block_since is not None and
-                          sim_now - static_block_since >= STATIC_BLOCK_PERSISTENCE_S):
-                        early_detour = True
-
-            # 레퍼런스를 따라 얼마나 진행했는지로 정체를 판정한다 (제자리 회전은 진행으로 안 친다).
-            if distances[stuck_index] - distances[passed_index] >= STUCK_PROGRESS_M:
-                stuck_index = passed_index
-                stuck_since = now
-            if early_detour or (DETOUR_ENABLED and not detour_done
-                                and now - stuck_since >= STUCK_SECONDS):
-                detour_done = True
-                if early_detour:
-                    reason = (
-                        f"전방 {blockage['distance']:.1f}m 정적 차단 "
-                        f"{STATIC_BLOCK_PERSISTENCE_S:.1f}s 지속"
-                    )
-                else:
-                    reason = f"{STUCK_SECONDS:.0f}s 동안 전진 없음"
-                print(f"  [DETOUR] {reason} -> planner 우회 요청")
-                navigator.get_logger().info(
-                    f"[AUDIT] stage={stage_name} detour_trigger={reason}"
-                )
-                navigator.cancelTask()
-                while not navigator.isTaskComplete():
-                    time.sleep(0.2)
-                detour = request_detour(navigator, tf_buffer, path.poses[-1])
-                if detour is None:
-                    print("  [DETOUR] 우회 경로 없음 -> 레퍼런스 재개")
-                    navigator.followPath(path, controller_id=controller_id,
-                                         goal_checker_id=goal_checker_id)
-                else:
-                    print(f"  [DETOUR] 우회 경로 {len(detour.poses)} 포즈로 진행")
-                    navigator.get_logger().info(
-                        f"[AUDIT] stage={stage_name} detour poses={len(detour.poses)}")
-                    plan_publisher.publish(detour)
-                    navigator.followPath(detour, controller_id=controller_id,
-                                         goal_checker_id=goal_checker_id)
-                stuck_since = now
-                continue
-            if feedback and now - last_report >= 3.0:
-                distance = distances[passed_index] if latest_remaining is not None else float("nan")
-                speed = getattr(feedback, "speed", float("nan"))
-                print(
-                    f"  레퍼런스 남은 거리={distance:.1f} m, "
-                    f"속도={speed:.2f} m/s"
-                )
-                last_report = now
-
-            if latest_remaining is not None:
-                plan_publisher.publish(latest_remaining)
-            time.sleep(0.5)
-
-        status = task_result_to_status(navigator.getResult())
-        print(f"[AUDIT] stage={stage_name} attempt={attempt} status={status.value} "
-              f"end_sim_s={navigator.get_clock().now().nanoseconds / 1e9:.3f}",
-              flush=True)
-        if status != MissionStatus.FAILED or attempt == max_attempts:
-            return status
-
-        # 같은 레퍼런스를 다시 시도하기 전에 planner 우회를 한 번 시도한다.
-        # (사람처럼 지나가는 장애물은 재시도로 풀리지만, 콘처럼 남아 있는 정적
-        #  장애물은 레퍼런스를 몇 번 재시도해도 계속 막히기 때문이다.)
-        if DETOUR_ENABLED and controller_id == "FollowPathMPPI" and attempt == 1:
-            detour = request_detour(navigator, tf_buffer, path.poses[-1])
-            if detour is not None:
-                print(f"  [DETOUR] planner 우회 경로 {len(detour.poses)} 포즈로 진행")
-                navigator.get_logger().info(
-                    f"[AUDIT] stage={stage_name} detour poses={len(detour.poses)}"
-                )
-                plan_publisher.publish(detour)
-                navigator.followPath(
-                    detour,
-                    controller_id=controller_id,
-                    goal_checker_id=goal_checker_id,
-                )
-                while not navigator.isTaskComplete():
-                    time.sleep(0.5)
-                detour_status = task_result_to_status(navigator.getResult())
-                print(f"[AUDIT] stage={stage_name} detour status={detour_status.value}")
-                if detour_status == MissionStatus.SUCCEEDED:
-                    return detour_status
-            else:
-                print("  [DETOUR] 우회 경로를 얻지 못했습니다. 레퍼런스를 재시도합니다")
-
-        if latest_remaining is not None and len(latest_remaining.poses) >= 2:
-            path = latest_remaining
-            stamp = navigator.get_clock().now().to_msg()
-            path.header.stamp = stamp
-            for pose in path.poses:
-                pose.header.stamp = stamp
-
-        print(
-            f"[{stage_name}] FollowPath 실패 원인은 아직 미확정입니다. 잠시 대기 후 "
-            f"남은 경로를 재시도합니다 ({MPPI_RETRY_WAIT_SECONDS:.0f}s)"
-        )
-        time.sleep(MPPI_RETRY_WAIT_SECONDS)
-
-    return MissionStatus.FAILED
 
 
 def split_route(lane_id, route):
@@ -662,7 +490,7 @@ def run_mission(navigator, route_id):
         (
             "station_arrival",
             arrival,
-            # 도착은 0.55 m/s / 각속도 0.6 의 전용 DWB. 0.8 로 들어오면 마지막 정렬에서 과회전한다.
+            # 사용자 지정 도착 상한 0.5 m/s, 각속도 0.6. 별도 극저속 단계 없음.
             "FollowPathDock",
             "general_goal_checker",
             ARRIVAL_YAWS[route_id],
