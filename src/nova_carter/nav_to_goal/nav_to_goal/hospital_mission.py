@@ -549,20 +549,27 @@ def run_mission(navigator, route_id):
             departure,
             "FollowPath",
             "transit_goal_checker",
+            None,
         ),
         (
             lane_id,
             transit,
             "FollowPathMPPI",
             "transit_goal_checker",
+            None,
         ),
         (
             "station_arrival",
             arrival,
             "FollowPathDock",
-            # Open staging space; the lidar docking controller performs the
-            # final alignment instead of DWB's very small yaw samples stalling.
-            "transit_goal_checker",
+            # transit(0.3 m / 0.8 rad)으로 끝내면 FollowPathDock의 RotateToGoal
+            # 창(0.05 m)에 들어가기 전에 도착으로 처리되어, 최대 45.8도 틀어진
+            # 자세가 그대로 hospital_docking의 제자리 회전에 넘어간다. general은
+            # 컨트롤러의 회전 창과 같은 0.05 m/0.10 rad이라 정류장에서 수렴한다.
+            "general_goal_checker",
+            # 책상은 정류장 북쪽이므로 yaw=pi에서 로봇 우측에 온다.
+            # TableDocking이 요구하는 허용치(|yaw-pi| <= 0.18)보다 좁게 맞춘다.
+            ARRIVAL_YAWS[route_id],
         ),
     ]
 

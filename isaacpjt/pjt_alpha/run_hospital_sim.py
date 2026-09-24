@@ -42,8 +42,11 @@ simulation_app.update()
 
 import carb
 
-PEOPLE_COMMAND_FILE = (
-    "/home/rokey/cobot3_ws/isaacpjt/assets/people/hospital_integration_human_command.txt"
+SCRIPT_DIR = Path(__file__).resolve().parent
+ASSETS_DIR = SCRIPT_DIR.parent / "assets"
+
+PEOPLE_COMMAND_FILE = str(
+    ASSETS_DIR / "people" / "hospital_integration_human_command.txt"
 )
 PEOPLE_NAMES = {"Character", "Character_01", "Character_02"}
 PEOPLE_ENABLED = os.environ.get("HOSPITAL_PEOPLE_ENABLED", "1") != "0"
@@ -99,29 +102,37 @@ from isaacsim.core.prims import XFormPrim
 from isaacsim.core.utils.stage import is_stage_loading, open_stage
 
 
-USD_PATH = "/home/rokey/cobot3_ws/isaacpjt/assets/hospital_integration_human.usd"
+USD_PATH = str(ASSETS_DIR / "hospital_integration_human.usd")
 BASE_LINK_PRIM = "/World/robot_nova/nova_carter/chassis_link/base_link"
-START_POSE_PATH = "/home/rokey/cobot3_ws/isaacpjt/assets/start_pose.json"
+START_POSE_PATH = str(ASSETS_DIR / "start_pose.json")
 
 # This launcher is for the new scene's three NVIDIA character behaviors. Validate every
 # attached script before allowing this stage to execute them without a GUI prompt.
-from pxr import Usd
+from pxr import Sdf, Usd
 import omni.anim.people.scripts.character_behavior as people_behavior
 
 preflight = Usd.Stage.Open(USD_PATH)
 expected_script = Path(people_behavior.__file__).resolve()
-script_count = 0
+# The scene stores the authoring machine's absolute path. Accept only this
+# extension's character_behavior.py wherever Isaac Sim is installed; the
+# session layer below remaps the value to the local copy.
+EXPECTED_SCRIPT_TAIL = Path(*expected_script.parts[-5:])
+behavior_prim_paths = []
 for prim in preflight.Traverse():
     scripts = prim.GetAttribute("omni:scripting:scripts")
     if not scripts or not scripts.Get():
         continue
     for script in scripts.Get():
+        candidate = Path(script.path)
         if (not str(prim.GetPath()).startswith("/World/Characters/")
-                or Path(script.path).resolve() != expected_script):
+                or len(candidate.parts) < 5
+                or Path(*candidate.parts[-5:]) != EXPECTED_SCRIPT_TAIL):
             raise RuntimeError(f"Unexpected USD behavior: {prim.GetPath()} {script}")
-        script_count += 1
-if script_count != len(PEOPLE_NAMES):
-    raise RuntimeError(f"Expected {len(PEOPLE_NAMES)} pedestrian behaviors, found {script_count}")
+    behavior_prim_paths.append(prim.GetPath())
+if len(behavior_prim_paths) != len(PEOPLE_NAMES):
+    raise RuntimeError(
+        f"Expected {len(PEOPLE_NAMES)} pedestrian behaviors, "
+        f"found {len(behavior_prim_paths)}")
 preflight = None
 previous_script_prompt = settings.get_as_bool("/app/scripting/ignoreWarningDialog")
 settings.set_bool("/app/scripting/ignoreWarningDialog", True)
@@ -143,6 +154,11 @@ from pxr import Gf
 from hospital_people_commands import loop_origins
 
 with Usd.EditContext(world.stage, world.stage.GetSessionLayer()):
+    # Point the validated behaviors at this machine's extension copy.
+    for behavior_path in behavior_prim_paths:
+        world.stage.GetPrimAtPath(behavior_path).GetAttribute(
+            "omni:scripting:scripts"
+        ).Set(Sdf.AssetPathArray([str(expected_script)]))
     for name, position in loop_origins(PEOPLE_COMMAND_FILE, PEOPLE_NAMES).items():
         prim = world.stage.GetPrimAtPath(f"/World/Characters/{name}")
         translate = prim.GetAttribute("xformOp:translate")
