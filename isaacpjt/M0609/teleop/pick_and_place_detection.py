@@ -224,15 +224,15 @@ RACK_RETREAT = POINT5_TCP - POINT4_TCP          # 놓은 뒤 수평 15cm 후퇴,
 # IK_ORIENTATION_TOLERANCE 를 7도까지 푼 뒤로 트레이가 기운 채 "성공" 판정이 나서
 # 랙에 비스듬히 올라간다. 팔로 고치려면 그 원인인 IK 를 다시 믿어야 해서 수렴하지 않는다.
 #
-# 목표 pose = "팔이 슬롯 좌표에 **정확히** 도달했다면 트레이가 있었을 자리".
-# 그리퍼를 열기 직전에 트레이가 그리퍼에 물려 있는 상대 pose 를 재고(q_rel/p_rel), 그걸
-# 슬롯의 이상적인 TCP pose 에 얹어서 구한다. 상대량이라 **파지 때의 IK 오차가 안 섞인다** —
-# 오차는 그리퍼의 월드 pose 를 틀 뿐이고, 손가락이 손잡이를 물어 만든 트레이:그리퍼 관계는
-# 그대로다. 놓을 때 생긴 오차만 정확히 지워진다.
+# 목표는 **절대 기준**이다 — 그리퍼가 트레이를 어떻게 물고 있었는지는 보지 않는다.
+#   자세  스폰 자세(씬이 만든 반듯한 자세)를 base z 로 90도의 정수배만큼 돌린 것 중
+#         지금 자세에 가장 가까운 하나. 정수배는 지금 자세에서 읽으므로 상수가 필요 없다
+#   위치  슬롯 중심(RACK_SLOTS[slot]) 의 xy. z 는 물리가 잡아 준 값을 그대로 둔다
 #
-# 스폰 자세에서 몇 도 돌리면 되는지 상수로 박는 방법도 생각했는데, 그 각도가 정적으로
-# 안 정해진다: 트레이가 방사 방향(로봇을 똑바로 봄)이면 -방위각 = +86.56도, base 축에
-# 정렬돼 있으면 0도다. 3.4도든 86도든 틀리면 그만큼 기운 채로 서므로 상수를 안 쓴다.
+# 이력(2026-09-24): 처음엔 '팔이 슬롯에 정확히 도달했다면 트레이가 있었을 자리'로 잡아서
+# 그리퍼에 물린 상대 자세를 그대로 얹었다. 놓을 때의 IK 오차는 지워졌지만 **트레이가
+# 그리퍼에 삐뚤게 물린 것이 그대로 남아** 랙에서 여전히 기울어 보였다. 물린 각도를 아예
+# 안 보는 지금 방식으로 바꿨다 — 놓은 뒤에 절대 기준으로 세우는 게 요구사항이었다.
 RACK_TRAY_ALIGN     = True
 # 그리퍼(TCP) xy 에서 이 반경 밖이면 물고 있는 게 아니라고 보고 정렬을 건너뛴다. 놓기
 # 스텝이 실패해 건너뛰어졌거나 트레이를 놓친 경우를 거른다 — 엉뚱한 트레이를 옮기지 않는다.
@@ -453,6 +453,11 @@ def quat_mul(a, b):
     ])
 
 
+def quat_conj(q):
+    """단위 쿼터니언의 역 (w, -x, -y, -z)"""
+    return np.array([q[0], -q[1], -q[2], -q[3]], dtype=float)
+
+
 def quat_from_axis(axis, deg):
     """회전축과 각도(도)로 쿼터니언을 만든다"""
     half = np.radians(deg) / 2.0
@@ -485,6 +490,17 @@ def matrix_to_rpy(m):
     roll  = np.degrees(np.arctan2(-m[1, 2], m[2, 2]))
     yaw   = np.degrees(np.arctan2(-m[0, 1], m[0, 0]))
     return roll, pitch, yaw
+
+
+def tray_yaw_deg(quat_base):
+    """트레이 자세(base 기준)의 수평 방위각. 로컬 +X 를 base 수평면에 투영해 읽는다.
+
+    오일러 분해보다 안전하다 — roll 이 -89도쯤인 자세에서 yaw/roll 이 서로 넘나든다."""
+    rot = quat_to_matrix(quat_base)
+    v = rot @ np.array([1.0, 0.0, 0.0])
+    if np.hypot(v[0], v[1]) < 1e-6:          # 로컬 +X 가 수직이면 +Y 로 읽는다
+        v = rot @ np.array([0.0, 1.0, 0.0])
+    return float(np.degrees(np.arctan2(v[1], v[0])))
 
 
 def quat_slerp(q0, q1, t):
@@ -638,13 +654,11 @@ def rack_yaw_delta_deg(grasp_base, place_base):
     return (place_yaw - grasp_yaw + 180.0) % 360.0 - 180.0
 
 
-
 def base_pose_to_world(tcp_base, quat_base, robot_pos, robot_quat):
     """base_to_world 와 같지만 RPY 대신 쿼터니언을 받는다 (grasp_frame 의 결과용)"""
     world_pos = np.array(robot_pos) + quat_to_matrix(robot_quat) @ np.array(tcp_base, dtype=float)
     world_quat = quat_mul(robot_quat, quat_base)
     return world_pos, world_quat / np.linalg.norm(world_quat)
-
 
 
 def lerp(start, goal, alpha):
@@ -857,12 +871,23 @@ def attach_aruco(tray_path, marker_id):
     print(f"   aruco        {tray_path}  id {marker_id} (긴급도 {'하중상'[marker_id]})")
 
 
-# ── 트레이 정렬용 — spawn_tray_copies 가 _tray_bodies 를 채우고, 정렬 쪽에서만 쓴다
+def prim_world_quat(path):
+    """프림의 월드 자세(쿼터니언 w,x,y,z). xformOp 구성이 무엇이든 합성 행렬에서 뽑는다"""
+    stage = omni.usd.get_context().get_stage()
+    mat = UsdGeom.XformCache().GetLocalToWorldTransform(stage.GetPrimAtPath(path))
+    q = mat.RemoveScaleShear().ExtractRotationQuat().GetNormalized()
+    return np.array([q.GetReal(), *q.GetImaginary()], dtype=float)
+
+
+# ── 트레이 정렬용 — spawn_tray_copies 가 채우고, 정렬 쪽에서만 쓴다
 TRAY_BODY_REL  = "tray"   # 실제 rigid body 는 한 단계 아래다 (/World/tray/tray, pickup_place_go.py 와 같은 구조)
 _tray_bodies   = []       # 트레이 rigid body 프림 경로
 _tray_rigid    = {}       # 경로 -> SingleRigidPrim (처음 쓸 때 만들어 재사용)
-_held_tray     = None     # 그리퍼에 물린 트레이와 그 상대 pose. capture_tray_in_gripper 가 채운다
+_held_tray     = None     # 그리퍼에 물린 트레이와 body 원점 어긋남. capture_tray_in_gripper 가 채운다
 _aligned_trays = set()    # 이미 정렬한 트레이. 트레이당 정확히 한 번만 손댄다
+# 스폰 자세(base 기준). 랙에서 '반듯한' 자세의 기준이다 — 책상 위에 반듯하게 놓여 있고
+# IK 를 안 거친 자세다. 랙 목표 자세는 이걸 base z 로 90도의 정수배만큼 돌린 것들 중 하나다
+_tray_spawn_quat_base = None
 
 
 def spawn_tray_copies():
@@ -887,6 +912,13 @@ def spawn_tray_copies():
 
     _tray_bodies.clear()
     _tray_bodies.append(f"{TRAY_PRIM_PATH}/{TRAY_BODY_REL}")
+    # 랙 정렬의 기준 자세. 복제본은 duplicate_prim 이 xform 을 통째로 복사하므로 전부 같다
+    global _tray_spawn_quat_base
+    _tray_spawn_quat_base = quat_mul(
+        quat_conj(base_quat), prim_world_quat(f"{TRAY_PRIM_PATH}/{TRAY_BODY_REL}"))
+    print(f"   tray spawn   기준 자세(base) rpy "
+          f"{vec(matrix_to_rpy(quat_to_matrix(_tray_spawn_quat_base)), 1)}  "
+          f"방위각 {tray_yaw_deg(_tray_spawn_quat_base):+.1f}deg")
 
     placed = [origin]
     attach_aruco(TRAY_PRIM_PATH, random.choice(ARUCO_IDS))
@@ -1007,7 +1039,6 @@ def init_robot(robot, world):
     for name, angle in zip(ARM_JOINTS, READY_JOINTS_RAD):
         q[robot.get_dof_index(name)] = angle
     robot.set_joint_positions(q)
-
 
 
 def create_ik_solver(robot):
@@ -1439,7 +1470,6 @@ class SingularityGuardedIK:
         return action, solved
 
 
-
 # ══════════════════════════════════════════════════════════════
 #  Pick & Place 시퀀스
 # ══════════════════════════════════════════════════════════════
@@ -1679,11 +1709,6 @@ def build_return_steps(lula, grasp_base, base_pos, base_quat):
     ]
 
 
-def quat_conj(q):
-    """단위 쿼터니언의 역 (w, -x, -y, -z)"""
-    return np.array([q[0], -q[1], -q[2], -q[3]], dtype=float)
-
-
 def reset_tray_align():
     """Play 를 다시 누를 때. 트레이가 원래 자리로 돌아가므로 정렬 기록도 지운다.
 
@@ -1720,15 +1745,37 @@ def nearest_tray_body(world_xy):
     return best, best_d
 
 
+def rack_square_quat(quat_now_world, base_quat):
+    """지금 자세를 '랙과 나란한' 가장 가까운 자세로 스냅한 월드 쿼터니언.
+
+    랙은 base 축에 정렬돼 있다 (칸이 base x 축으로 늘어선다). 그리고 스폰 자세는 씬이
+    만든 '반듯한' 기준이다 — 책상 위에 반듯하게 놓여 있고 IK 를 안 거쳤다. 그래서 랙에서
+    반듯한 자세는 **스폰 자세를 base z 축으로 90도의 정수배만큼 돌린 것들** 중 하나다.
+
+    정수배 k 는 **지금 자세에서 읽는다.** 그래서 90도인지 -90도인지 같은 사분면을 상수로
+    정할 필요가 없다 — 놓인 트레이는 정답에서 10도 안쪽이라 반올림이 항상 맞는 칸을 고른다.
+
+    roll/pitch 는 스폰 값을 그대로 쓴다 (책상에서도 랙에서도 평평하다). 그리퍼에 물린
+    각도는 **보지 않는다** — 삐뚤게 물렸으면 그게 그대로 남는다는 게 이전 판의 문제였다."""
+    spawn_base = _tray_spawn_quat_base
+    now_base = quat_mul(quat_conj(base_quat), np.asarray(quat_now_world, dtype=float))
+    k = round((tray_yaw_deg(now_base) - tray_yaw_deg(spawn_base)) / 90.0)
+    target_base = quat_mul(quat_from_axis([0, 0, 1], k * 90.0), spawn_base)
+    target = quat_mul(base_quat, target_base)
+    return target / np.linalg.norm(target)
+
+
 def capture_tray_in_gripper(seq, slot):
-    """그리퍼를 열기 **직전에** 트레이가 그리퍼에 물려 있는 상대 pose 를 잰다.
+    """그리퍼를 열기 **직전에** 트레이 원점이 TCP 기준 어디에 있는지 잰다 (p_rel).
 
-    이 스텝의 on_enter 는 손가락이 아직 닫혀 있고 팔이 슬롯에 멈춰 있는 순간에 불린다 —
-    트레이가 그리퍼 안에서 최종적으로 자리잡은 상태다.
+    이 스텝의 on_enter 는 손가락이 아직 닫혀 있고 팔이 슬롯에 멈춰 있는 순간에 불린다.
 
-    **상대량이라 파지 때의 IK 오차가 안 섞인다.** 오차는 그리퍼의 월드 pose 를 틀 뿐이고,
-    손가락이 손잡이를 물어 만든 트레이:그리퍼 관계는 그대로다. 그래서 이 관계를 슬롯의
-    이상적인 TCP pose 에 얹으면 '팔이 정확히 도달했다면 트레이가 있었을 자리'가 나온다."""
+    p_rel 이 필요한 이유: set_world_pose 는 **body 원점**을 옮기는데 그게 트레이 형상
+    중심이 아닐 수 있다. 파지점(grasp_point_base)은 검출면에서 TRAY_HALF_DEPTH_M 만큼
+    민 값이라 **TCP 가 트레이 수평 중심**에 온다. 그래서 p_rel 이 곧 '형상 중심 대비
+    body 원점의 어긋남'이고, 이걸 슬롯 좌표에 더해야 트레이가 칸 **중앙**에 선다.
+
+    자세는 여기서 안 쓴다 — 물린 각도를 물려받으면 삐뚤게 물린 게 그대로 남는다."""
     global _held_tray
     _held_tray = None
     if not RACK_TRAY_ALIGN:
@@ -1740,14 +1787,11 @@ def capture_tray_in_gripper(seq, slot):
             near = "없다" if dist is None else f"최근접 {dist * 100:.1f}cm"
             print(f"   rack align   랙 {slot + 1}번 — 그리퍼 근처에 트레이가 {near}. 정렬을 건너뛴다")
             return
-        pos, quat = tray_body(path).get_world_pose()
-        tcp_rot = quat_to_matrix(tcp_quat)
+        pos, _quat = tray_body(path).get_world_pose()
         _held_tray = {
             "path": path,
             "slot": slot,
-            # 트레이 원점이 TCP 기준 어디에 있는지 / 트레이가 그리퍼에 대해 어떻게 물려 있는지
-            "p_rel": tcp_rot.T @ (np.asarray(pos, dtype=float) - tcp_pos),
-            "q_rel": quat_mul(quat_conj(tcp_quat), np.asarray(quat, dtype=float)),
+            "p_rel": quat_to_matrix(tcp_quat).T @ (np.asarray(pos, dtype=float) - tcp_pos),
         }
     except Exception as exc:
         print(f"   rack align   랙 {slot + 1}번 파지 상태 측정 실패 (정렬 생략): {exc}")
@@ -1761,16 +1805,20 @@ def align_tray_on_rack(slot, base_pos, base_quat):
     기운 원인이 IK_ORIENTATION_TOLERANCE 를 7도까지 푼 것이라, 같은 IK 로 다시 세우려
     하면 또 7도 어긋난다 (원인을 도구로 쓰는 셈이라 수렴하지 않는다).
 
-    목표 pose = 슬롯의 **이상적인** TCP pose(RACK_SLOTS[slot] + POINT4_RPY) 에
-    capture_tray_in_gripper 가 잰 트레이:그리퍼 관계를 얹은 것. 즉 '팔이 슬롯 좌표에
-    정확히 도달했다면 트레이가 있었을 자리'다. 놓을 때 생긴 오차만 정확히 지워진다.
+    자세: rack_square_quat — 스폰 자세가 정의하는 90도 격자에 **절대 기준으로** 스냅한다.
+    위치: 슬롯 중심(RACK_SLOTS[slot]) 의 xy + p_rel 로 body 원점 어긋남 보정.
 
-    xy 와 자세만 쓰고 **z 는 현재값을 그대로 둔다** — 수직 위치는 트레이가 칸 바닥에
-    앉으면서 물리가 이미 정확히 잡아 준 값이다. 계산값을 넣으면 박히거나 떠서 튄다.
+    **z 는 현재값을 그대로 둔다** — 수직 위치는 트레이가 칸 바닥에 앉으면서 물리가 이미
+    정확히 잡아 준 값이다. 계산값을 넣으면 박히거나 떠서 튄다.
 
     rigid body 라 한 번만 맞춰 두면 다른 것이 건드리지 않는 한 그대로 실려 간다.
     단 **선/각속도를 0 으로 눌러야** 한다 — 안 그러면 남아 있던 각속도로 PhysX 가
     방금 맞춘 것을 곧바로 다시 틀어 놓는다. '1회만'이 성립하는 건 이 두 줄 덕분이다.
+
+    이력: 처음엔 '팔이 슬롯에 정확히 도달했다면 트레이가 있었을 자리'로 잡아서, 그리퍼에
+    물린 상대 자세(q_rel)를 그대로 얹었다. 놓을 때의 IK 오차는 지워졌지만 **트레이가
+    그리퍼에 삐뚤게 물린 것은 그대로 남아** 랙에서 여전히 기울어 보였다 (2026-09-24 실측).
+    물린 각도를 아예 안 보고 절대 기준으로 스냅하는 지금 방식으로 바꿨다.
 
     보정하지 못해도 미션을 멈추지 않는다. 로그만 남기고 후퇴는 그대로 진행한다."""
     global _held_tray
@@ -1780,17 +1828,20 @@ def align_tray_on_rack(slot, base_pos, base_quat):
     if held["path"] in _aligned_trays:   # 손목 풀기 재시도로 스텝이 다시 실행된 경우
         return
     try:
-        ideal_pos, ideal_quat = base_to_world(RACK_SLOTS[slot], POINT4_RPY, base_pos, base_quat)
-        target_pos = ideal_pos + quat_to_matrix(ideal_quat) @ held["p_rel"]
-        target_quat = quat_mul(ideal_quat, held["q_rel"])
-        target_quat = target_quat / np.linalg.norm(target_quat)
-
         body = tray_body(held["path"])
         pos, quat = body.get_world_pose()
         pos = np.asarray(pos, dtype=float)
+
+        target_quat = rack_square_quat(quat, base_quat)
+        # 슬롯 중심에 트레이 수평 중심이 오도록. p_rel 은 이상적인 TCP 자세로 돌려서 얹는다
+        ideal_pos, ideal_quat = base_to_world(RACK_SLOTS[slot], POINT4_RPY, base_pos, base_quat)
+        target_pos = ideal_pos + quat_to_matrix(ideal_quat) @ held["p_rel"]
+
         base_rot_t = quat_to_matrix(base_quat).T
-        before = matrix_to_rpy(base_rot_t @ quat_to_matrix(np.asarray(quat, dtype=float)))
-        after = matrix_to_rpy(base_rot_t @ quat_to_matrix(target_quat))
+        yaw_before = tray_yaw_deg(quat_mul(quat_conj(base_quat), np.asarray(quat, dtype=float)))
+        yaw_after = tray_yaw_deg(quat_mul(quat_conj(base_quat), target_quat))
+        before_rpy = matrix_to_rpy(base_rot_t @ quat_to_matrix(np.asarray(quat, dtype=float)))
+        after_rpy = matrix_to_rpy(base_rot_t @ quat_to_matrix(target_quat))
         moved = float(np.linalg.norm(target_pos[:2] - pos[:2]))
 
         body.set_world_pose(position=np.array([target_pos[0], target_pos[1], pos[2]]),
@@ -1799,8 +1850,10 @@ def align_tray_on_rack(slot, base_pos, base_quat):
         body.set_angular_velocity(np.zeros(3))
         _aligned_trays.add(held["path"])
 
-        print(f"   rack align   랙 {slot + 1}번  {held['path']}  xy {moved * 100:.1f}cm 이동")
-        print(f"                rpy(base) {vec(before, 1)} -> {vec(after, 1)}")
+        print(f"   rack align   랙 {slot + 1}번  {held['path']}")
+        print(f"                방위각(base) {yaw_before:+.1f} -> {yaw_after:+.1f}deg "
+              f"({yaw_after - yaw_before:+.1f})   xy {moved * 100:.1f}cm 이동")
+        print(f"                rpy(base) {vec(before_rpy, 1)} -> {vec(after_rpy, 1)}")
     except Exception as exc:
         print(f"   rack align   랙 {slot + 1}번 정렬 실패 (무시하고 계속): {exc}")
 
@@ -1861,7 +1914,6 @@ def build_pick_steps(lula, grasp_base, base_pos, base_quat, slot):
          "on_enter": lambda seq: align_tray_on_rack(slot, base_pos, base_quat)},
         {"type": "joint", "label": "홈 복귀",            "target": np.array(READY_JOINTS_RAD, dtype=float), "gripper": None},
     ]
-
 
 
 def build_unload_steps(lula, slot, desk_z, base_pos, base_quat):
