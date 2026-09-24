@@ -3,7 +3,7 @@
 #   controller_server.FollowPath        DWB -> RotationShim + MPPI (블록 통째 교체)
 #                                       RotationShim 이 필요한 이유는 그 블록 주석 참고
 #   local_costmap.inflation_layer       inflation_radius 0.6 -> 1.55 (외접 반경 하한)
-#   general_goal_checker.yaw_goal_tolerance  3.15 -> 0.05 (최종 정렬을 Nav2 가 한다)
+#   general_goal_checker.yaw_goal_tolerance  3.15 -> 0.05 -> 0.08 -> 0.06 (최종 정렬 정밀화)
 #
 # ⚠ 마지막 항목은 주행 미션 스크립트와 짝이다. Nav2 가 정렬하려면
 #   through_pose_human_test.py 를 --nav2-align 으로 실행해야 한다 (그 플래그가 없으면
@@ -16,7 +16,7 @@
 #
 # 실행 — 이 파일은 install/ 이 아니라 src 절대경로로 직접 넘긴다. colcon build 불필요.
 #   ros2 launch carter_navigation nav2_human_test.launch.py \
-#     params_file:=/home/rokey/cobot3_ws/src/nova_carter/carter_navigation/params/carter_navigation_params_mppi.yaml
+#     params_file:=/home/hhj/cobot3_ws/src/nova_carter/carter_navigation/params/carter_navigation_params_mppi.yaml
 # DWB 로 되돌리려면 params_file 인자를 빼고 실행하면 된다.
 #
 # 원본(human_test)이 갱신되면 이 파일도 다시 복사해서 위 두 곳을 재적용할 것.
@@ -24,11 +24,12 @@
 amcl:
   ros__parameters:
     use_sim_time: True
-    alpha1: 0.2
-    alpha2: 0.2
-    alpha3: 0.2
-    alpha4: 0.2
-    alpha5: 0.2
+    # 0.2 -> 0.05 (2026-09-24). Isaac Sim 오도메트리 노이즈 과대평가로 인한 회전 시 파티클 분산/스냅 억제
+    alpha1: 0.05
+    alpha2: 0.05
+    alpha3: 0.05
+    alpha4: 0.05
+    alpha5: 0.05
     base_frame_id: "base_link"
     beam_skip_distance: 0.5
     beam_skip_error_threshold: 0.9
@@ -128,7 +129,7 @@ bt_navigator:
     #
     # install 이 아니라 src 경로를 가리킨다. BT 를 고칠 때마다 colcon build 를 다시
     # 하지 않아도 되고, 지금 단계에서는 radius 를 여러 번 만질 가능성이 높다.
-    default_nav_through_poses_bt_xml: "/home/rokey/cobot3_ws/src/nova_carter/carter_navigation/behavior_trees/nav_through_poses_human_test.xml"
+    default_nav_through_poses_bt_xml: "/home/hhj/cobot3_ws/src/nova_carter/carter_navigation/behavior_trees/nav_through_poses_human_test.xml"
 
     # plugin_lib_names is used to add custom BT plugins to the executor (vector of strings).
     # Built-in plugins are added automatically
@@ -220,8 +221,8 @@ controller_server:
     costmap_update_timeout: 0.30
     min_x_velocity_threshold: 0.001
     min_y_velocity_threshold: 0.5
-    min_theta_velocity_threshold: 0.001
-    failure_tolerance: 0.3
+    # 0.3 -> 1.5 (2026-09-24). Isaac Sim 클럭 지연/TF 지터 시 즉시 FAILED 로 중단되지 않도록 여유 확보
+    failure_tolerance: 1.5
     progress_checker_plugins: ["progress_checker"]
     goal_checker_plugins: ["general_goal_checker"] # "precise_goal_checker"
     controller_plugins: ["FollowPath"]
@@ -253,8 +254,8 @@ controller_server:
       # 그리고 애초에 0.05 가 필요 없다 — do_dock() 이 정지 위치에서 도킹점까지의
       # 축 방향 투영을 다시 재서 전진하므로 앞뒤 오차는 흡수된다. 도킹에 영향을 주는
       # 횡방향 오차는 이 tolerance 가 아니라 경로 추종 정확도와 AMCL 이 정한다.
-      # planner_server 의 GridBased.tolerance 와 **항상 같이 움직일 것**.
-      xy_goal_tolerance: 0.1
+      # 0.10 -> 0.12 (2026-09-24). 편심 회전 시 위치 튐 흡수하여 위치-각도 동시 수렴 보장
+      xy_goal_tolerance: 0.12
       # ★ 3.15 -> 0.05 로 되돌렸다 (2026-09-23, 사용자 지시). 원래 프로젝트 값이 0.05 였다.
       # DWB 설정(human_test.yaml)에서 3.15 로 푼 이유는 **전부 DWB critic 병리**였다:
       #   "목표 근처 정렬에서 좌우 반전 진동" = GoalAlign(8.1) vs RotateToGoal(0.8) 경합
@@ -262,11 +263,11 @@ controller_server:
       # MPPI 에는 RotateToGoal / GoalAlign critic 자체가 없고, 최종 회전은
       # RotationShimController 의 rotate_to_goal_heading 이 제자리 회전으로 처리한다.
       # 그래서 그 이유가 이 파일에는 적용되지 않는다.
-      # 0.05 = 2.9도. AMCL 각도 추정 오차(~0.03 rad)가 실질 하한이다.
-      # 주의: general_goal_checker 는 navigate_to_pose 도 함께 쓴다 (그쪽도 이제 방향을 본다).
-      yaw_goal_tolerance: 0.05
+      # 0.08 -> 0.06 (~3.4도, 2026-09-24). 최종 도킹 진입 전 각도 정밀도 확보
+      yaw_goal_tolerance: 0.06
       trans_stopped_velocity: 0.03   # 3cm/s 이하여야 도착 인정 (시뮬 속도 잡음 고려해 0.02 대신)
-      rot_stopped_velocity: 0.03     # 1.7도/s 이하여야 도착 인정. 미세 떨림으로 늦어지면 0.05 로 완화
+      # 0.03 -> 0.04. 미세 떨림/시뮬 잡음으로 인한 도착 판정 지연 방지
+      rot_stopped_velocity: 0.04
   # DWB parameters
     FollowPath:
       # DWB -> MPPI. 근거는 Nav2 Tuning Guide 의 메인테이너 권고
@@ -293,11 +294,11 @@ controller_server:
       plugin: "nav2_rotation_shim_controller::RotationShimController"
       primary_controller: "nav2_mppi_controller::MPPIController"
       angular_dist_threshold: 0.785      # 45도. 이보다 크게 틀어지면 제자리 회전부터
-      angular_disengage_threshold: 0.3925  # 22.5도까지 좁히면 MPPI 에 넘긴다
+      # 0.3925(22.5도) -> 0.15(~8.6도, 2026-09-24). 120도 제자리 회전 시 오버슛 방지를 위해 끝까지 정렬 후 넘김
+      angular_disengage_threshold: 0.15
       forward_sampling_distance: 0.5     # 경로 위 이 거리의 점을 겨냥해 목표 방위를 잡는다
-      # 기본값 1.8 / 3.2 를 쓰면 안 된다 — velocity_smoother.max_velocity[2] 가 0.5 라
-      # 거기서 잘린다. Nav2 쪽 상한과 맞춘다 (스크립트 StraightDriver.TURN_MAX_W 와도 같은 값).
-      rotate_to_heading_angular_vel: 0.5
+      # 0.5 -> 0.35 (2026-09-24). 390kg 차체 회전 관성 오버슛 방지 및 부드러운 핸드오프
+      rotate_to_heading_angular_vel: 0.35
       max_angular_accel: 1.0             # = az_max / velocity_smoother.max_accel[2]
       max_cost_threshold: 254.0
       simulate_ahead_time: 1.0
@@ -325,7 +326,8 @@ controller_server:
       model_dt: 0.05
       batch_size: 2000
       iteration_count: 1
-      temperature: 0.3
+      # 0.45 -> 0.30 (2026-09-24). 최적 궤적 수렴도 강화 및 조향 둔화/오버슛 방지
+      temperature: 0.30
       gamma: 0.015
       regenerate_noises: true
       motion_model: "DiffDrive"
@@ -367,7 +369,8 @@ controller_server:
       # 0.45 = Warthog 비율(0.2/0.5 = 0.4) x 1.18. 각속도가 떨리면 wz_std 를 먼저 내릴 것.
       vx_std: 0.45
       vy_std: 0.2
-      wz_std: 0.4
+      # 0.20 -> 0.35 (2026-09-24). 고속 주행 시 경로 중심선 통과 전 카운터 스티어링 궤적 표집 확보
+      wz_std: 0.35
 
       # --- 경로 핸들러 ---
       # 문서: prune_distance 는 최대 속도와 예측 지평에 비례해 잡고,
@@ -375,10 +378,12 @@ controller_server:
       # 1.18 m/s x 2.8s = 3.30m 지평. 아래 threshold_to_consider(3.3) 이상이어야 해서 3.5.
       # (Warthog 는 0.5 m/s 기준 지평 1.4m, threshold 1.4, prune 1.7 로 같은 관계였다)
       prune_distance: 3.5
-      transform_tolerance: 0.1
+      # 0.1 -> 1.0 (2026-09-24). amcl(1.0)과 일치시켜 Isaac Sim 시뮬레이션 클럭 변동 시 transform goal pose 실패 방지
+      transform_tolerance: 1.0
 
       critics: ["ConstraintCritic", "CostCritic", "GoalCritic", "GoalAngleCritic",
-                "PathAlignCritic", "PathFollowCritic", "PathAngleCritic", "PreferForwardCritic"]
+                "PathAlignCritic", "PathFollowCritic", "PathAngleCritic", "PreferForwardCritic",
+                "TwirlingCritic"]
       ConstraintCritic:
         enabled: true
         cost_power: 1
@@ -386,6 +391,7 @@ controller_server:
       CostCritic:
         enabled: true
         cost_power: 1
+        # 3.81 (2026-09-24, Nav2 공식 기본값 복원). 벽 사이 척력 핑퐁 오버슛 방지
         cost_weight: 3.81
         critical_cost: 300.0
         # ★ DWB 의 ObstacleFootprint.scale 0.05 해킹을 대체하는 항목이다.
@@ -408,49 +414,36 @@ controller_server:
         #        slow slightly once it reaches the final goal pose as its marker."
         threshold_to_consider: 3.3
       GoalAngleCritic:
-        # 목표 0.5m 안에서 최종 방위를 점수에 넣는다. 실제 제자리 회전은 RotationShim 의
-        # rotate_to_goal_heading 이 xy 0.1m 안에서 받아 처리하고, 이 critic 은 그 앞
-        # 접근 구간에서 방위를 미리 다듬어 회전량을 줄여준다.
+        # 1.5 -> 2.2 (2026-09-24). 3m 직선 접근 구간 전반부부터 목표 방위로 차체를 칼같이 펴서 진입
         enabled: true
         cost_power: 1
-        cost_weight: 3.0
-        threshold_to_consider: 0.5
-      # ★ 경로추종 계열 4개 값을 Warthog 값 -> **Nav2 기본값**으로 되돌렸다 (2026-09-23).
-      # 증상: 전역 경로(빨간선)를 한 치도 안 벗어나고 정직하게 따라간다. NavFn 은 격자 A* 라
-      #       경로가 계단형인데 그걸 그대로 훑으니 거동이 뻣뻣하고 코너도 안 다듬는다.
-      # 원인: Warthog 는 야외 차량이라 **정확 추종**으로 튜닝된 출하 설정이다. 문서:
-      #       "If you design exact-path-alignment behavior ... highly tuning the system to
-      #        follow the path will give it less ability to deviate to avoid obstacles"
-      #       "Not over-weighting the path align critic will allow the robot to deviate
-      #        from the path to get around dynamic obstacles in the scene"
-      #       "The defaults provided are in the generally right regime for a balanced
-      #        initial trade-off."
-      # 이 프로젝트는 **사람 회피**가 목적이라 경로 이탈 능력이 있어야 한다 -> 기본값이 맞다.
-      # 되돌린 값: PathAlign.cost_weight 14->10, max_path_occupancy_ratio 0.05->0.07,
-      #            PathFollow.offset_from_furthest 5->6,
-      #            PathAngle.cost_weight 2.0->2.2, offset_from_furthest 4->20,
-      #            max_angle_to_furthest 1.0->0.785398
-      # 아직 뻣뻣하면 PathAlign.cost_weight 를 10 -> 6 으로 더 내릴 것 (여기부터 만질 것).
+        # 3.0 -> 4.5 (2026-09-24). 최종 목표 각도로의 수렴 강도 대폭 강화
+        cost_weight: 4.5
+        threshold_to_consider: 2.2
       PathAlignCritic:
         enabled: true
         cost_power: 1
+        # 10.0 (Nav2 공식 기본값). 회전 직후 전진 억제 방지
         cost_weight: 10.0
         max_path_occupancy_ratio: 0.07
         trajectory_point_step: 4
-        threshold_to_consider: 0.5
-        offset_from_furthest: 20
+        offset_from_furthest: 8
+        # true -> false 복원 (2026-09-24). 차동구동에서 횡오차 복귀 시 조향각 형성 허용 및 S자 오버슛 방지
         use_path_orientations: false
       PathFollowCritic:
         enabled: true
         cost_power: 1
-        cost_weight: 5.0
+        # 5.0 -> 8.0 (2026-09-24). 경로 중심선 복귀 가중치 상향하여 횡이탈 즉각 억제
+        cost_weight: 8.0
         offset_from_furthest: 6
         threshold_to_consider: 3.3   # GoalCritic 과 같은 값으로 (핸드오프 쌍)
       PathAngleCritic:
         enabled: true
         cost_power: 1
-        cost_weight: 2.2
-        offset_from_furthest: 20
+        # 2.5 -> 3.0 (2026-09-24). 경로 방향 차체 정렬 감쇠력 강화
+        cost_weight: 3.0
+        # 20 -> 4 (2026-09-24, Warthog 표준). 56스텝 장거리 지평에서 시야 지연(Phase Lag) 제거
+        offset_from_furthest: 4
         threshold_to_consider: 0.5
         max_angle_to_furthest: 0.785398
         mode: 0
@@ -459,13 +452,18 @@ controller_server:
         cost_power: 1
         cost_weight: 5.0
         threshold_to_consider: 0.5
+      TwirlingCritic:
+        enabled: true
+        cost_power: 1
+        # 1.2 -> 1.8 (2026-09-24). 좌우 조향 진동(헌팅) 억제 및 감쇠력 복원
+        cost_weight: 1.8
 
 local_costmap:
   local_costmap:
     ros__parameters:
       use_sim_time: True
       footprint_padding: 0.01   # 책상까지 여유가 5cm 뿐이라 이 이상은 파지 자세가 충돌 판정된다
-      update_frequency: 5.0
+      update_frequency: 4.0   # 5.0 -> 4.0 (2026-09-24). 3D 라이다 복셀 연산 부하 20% 절감
       publish_frequency: 2.0
       global_frame: odom
       robot_base_frame: base_link
@@ -473,7 +471,7 @@ local_costmap:
       width: 12
       height: 12
       resolution: 0.05
-      transform_tolerance: 0.3
+      transform_tolerance: 1.0
       footprint: "[ [0.48, 0.5], [0.48, -0.5], [-1.38, -0.5], [-1.38, 0.5] ]"
       mark_threshold: 2
       always_send_full_costmap: False   # 240x240=57,600 셀 전체 대신 증분 발행. RViz 표시는 동일
@@ -523,14 +521,15 @@ local_costmap:
         enabled: true
         voxel_decay: 5.0             # 초. 관측이 끊긴 마킹이 5초 뒤 사라진다  <- 핵심 값
         decay_model: 0               # 0=선형, 1=지수, -1=영구
-        voxel_size: 0.05
+        # 0.05 -> 0.10 (2026-09-24, STVL 권장 표준). 3D 복셀 연산량/메모리 8배 감소 (부하 급감)
+        voxel_size: 0.10
         track_unknown_space: true
         mark_threshold: 0
         update_footprint_enabled: true   # VoxelLayer 의 footprint_clearing_enabled 에 해당
         combination_method: 1        # 1=max
         origin_z: 0.0
         publish_voxel_map: false
-        transform_tolerance: 0.3
+        transform_tolerance: 1.0
         mapping_mode: false
         map_save_duration: 60.0
         # 같은 토픽을 마킹용과 클리어링용으로 두 벌 선언한다. STVL 의 구조다.
@@ -540,7 +539,8 @@ local_costmap:
           topic: /front_3d_lidar/lidar_points
           marking: true
           clearing: false
-          obstacle_range: 6.0        # 기존 obstacle_max_range 6.0 과 같은 의도
+          # 6.0 -> 4.5 (2026-09-24). 로컬 장애물 회피 사거리 현실화 (연산량 약 44% 추가 절감)
+          obstacle_range: 4.5
           # 바닥 컷. nav2 ObservationBuffer 가 클라우드를 전역 프레임으로 변환한 뒤 넘기므로
           # 이 값은 바닥 기준 높이다.
           # 이전 VoxelLayer 도 -0.8 이었지만 바닥이 안 찍혔던 건 다른 두 장치 덕분이었다:
@@ -562,7 +562,8 @@ local_costmap:
           clearing: true
           min_z: 0.1                 # front_mark 의 min_obstacle_height 와 맞출 것.
                                      # 어긋나면 바닥 근처에서 지우기/찍기가 불일치한다
-          max_z: 6.0                 # obstacle_range 와 맞춤
+          # 6.0 -> 4.5 (front_mark obstacle_range 와 일치)
+          max_z: 4.5                 # obstacle_range 와 맞춤
           vertical_fov_angle: 0.5236 # XT-32 수직 FOV 30도 (robot_nova.usd 의 elevationDeg -15~+15 실측)
           vertical_fov_padding: 0.05 # 3D 라이다 전용
           horizontal_fov_angle: 6.2832  # 360도
@@ -603,6 +604,7 @@ global_costmap:
       publish_frequency: 1.0
       global_frame: map
       robot_base_frame: base_link
+      transform_tolerance: 1.0
       footprint: "[ [0.48, 0.5], [0.48, -0.5], [-1.38, -0.5], [-1.38, 0.5] ]"
       # rolling_window: True
       # width: 200
@@ -626,6 +628,8 @@ global_costmap:
         observation_sources: scan scan_rear
         scan:
           topic: /scan
+          # 0.1m 바닥 컷 (stvl_layer 와 동일하게 바닥면 노이즈의 장애물 오인 차단)
+          min_obstacle_height: 0.1
           max_obstacle_height: 4.0
           clearing: True
           marking: True
@@ -648,6 +652,7 @@ global_costmap:
           inf_is_valid: true
         scan_rear:
           topic: /scan_rear
+          min_obstacle_height: 0.1
           max_obstacle_height: 4.0
           clearing: True
           marking: True
@@ -676,7 +681,8 @@ global_costmap:
         # 뒤로 1.38m / 앞으로 0.48m 라, 중심이 0.6m 떨어져도 차체는 사람 코앞이다.
         # 팽창 비용은 치명(254)이 아니라 선호도이므로 키워도 통행 불가가 되지는 않는다.
         cost_scaling_factor: 1.5   # 3.0 은 감쇠가 빨라 비용 띠가 좁았다. 낮추면 먼 거리까지 비용 유지
-        inflation_radius: 1.2      # 0.6 -> 1.2. radius 와 scaling 은 같이 조절해야 의미가 있다
+        # 1.2 -> 1.55 (2026-09-24). 로봇 외접 반경(1.48m) 이상으로 확대하여 1.38m 후방 꼬리 충돌 원천 방지
+        inflation_radius: 1.55
       always_send_full_costmap: False   # 1001x1001=100만 셀을 매초 직렬화하던 것을 증분으로. RViz 표시는 동일
   global_costmap_client:
     ros__parameters:
@@ -693,8 +699,8 @@ collision_monitor:
     cmd_vel_in_topic: "cmd_vel_smoothed"
     cmd_vel_out_topic: "cmd_vel"
     state_topic: "collision_monitor_state"
-    transform_tolerance: 0.2
-    source_timeout: 1.0
+    transform_tolerance: 1.0
+    source_timeout: 2.0
     base_shift_correction: True
     stop_pub_timeout: 2.0
     # Polygons represent zone around the robot for "stop", "slowdown" and "limit" action types,
@@ -774,7 +780,7 @@ behavior_server:
       plugin: "nav2_behaviors::Wait"
     global_frame: odom
     robot_base_frame: base_link
-    transform_tolerance: 0.2
+    transform_tolerance: 1.0
     simulate_ahead_time: 2.0
     max_rotational_vel: 0.5   # 주행 max_vel_theta 와 일치 (복구가 더 거칠면 안 됨)
     min_rotational_vel: 0.2

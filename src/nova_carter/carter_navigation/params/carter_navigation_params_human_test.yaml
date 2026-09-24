@@ -118,7 +118,7 @@ bt_navigator:
     #
     # install 이 아니라 src 경로를 가리킨다. BT 를 고칠 때마다 colcon build 를 다시
     # 하지 않아도 되고, 지금 단계에서는 radius 를 여러 번 만질 가능성이 높다.
-    default_nav_through_poses_bt_xml: "/home/rokey/cobot3_ws/src/nova_carter/carter_navigation/behavior_trees/nav_through_poses_human_test.xml"
+    default_nav_through_poses_bt_xml: "/home/hhj/cobot3_ws/src/nova_carter/carter_navigation/behavior_trees/nav_through_poses_human_test.xml"
 
     # plugin_lib_names is used to add custom BT plugins to the executor (vector of strings).
     # Built-in plugins are added automatically

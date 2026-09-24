@@ -403,16 +403,13 @@ def main():
 
     drv = StraightDriver()
 
-    if "--solo" not in sys.argv:
-        wait_for_mission(drv)
+    # [가드 해제] 미션 신호 대기 없이 바로 출발 허용
+    # if "--solo" not in sys.argv:
+    #     wait_for_mission(drv)
 
     print(f"\n[UNDOCK] cmd_vel 로 {UNDOCK_M:.1f} m 전진 (Nav2 미사용)")
     if not drv.run_forward(UNDOCK_M, "UNDOCK"):
-        print("  undock 실패. 중단한다.")
-        drv.destroy_node()
-        nav.destroyNode()
-        rclpy.shutdown()
-        return
+        print("  undock 경고: 미도달 (중단하지 않고 Nav2 계속 진행)")
 
     # Probe 는 undock 이 끝난 뒤에 만든다. undock 중 대기가 "정지"로 잡히면 안 되고,
     # 계측 시각 t0 도 Nav2 구간 시작에 맞춘다.
@@ -443,21 +440,21 @@ def main():
         TaskResult.FAILED: "FAILED",
     }.get(nav.getResult(), str(nav.getResult()))
 
-    # 도킹 전에 실제 위치를 확인한다. Nav2 결과만으로는 부족하다 (DOCK_GUARD_M 주석 참고).
+    # 도킹 전에 실제 위치와 Nav2 성공 여부를 확인한다 (마지막 경유지 도달 시에만 도킹 수행)
     dock_ok = None
     here = drv.wait_pose(timeout=3.0)
     d_last = math.dist(here[:2], WAYPOINTS[-1][:2]) if here else float("inf")
     if result != "SUCCEEDED":
-        print(f"\n[DOCK] 건너뜀 — Nav2 결과가 {result}")
+        print(f"\n[DOCK] 건너뜀 — Nav2 주행 미완료 (결과: {result})")
     elif d_last > DOCK_GUARD_M:
-        print(f"\n[DOCK] 건너뜀 — 마지막 경유지까지 {d_last:.2f} m "
-              f"(허용 {DOCK_GUARD_M:.1f} m). 현재 위치 "
-              f"{'(%.3f, %.3f)' % here[:2] if here else '알 수 없음'}")
-        print("        Nav2 결과만으로는 도착을 믿을 수 없다 (DOCK_GUARD_M 주석 참고).")
-    else:
+        print(f"\n[DOCK] 건너뜀 — 마지막 경유지까지 {d_last:.2f} m (허용 반경 {DOCK_GUARD_M:.1f} m 이탈). "
+              f"현재 위치: {'(%.3f, %.3f)' % here[:2] if here else '알 수 없음'}")
+    elif here:
         dock_ok = do_dock(drv, here)
         if dock_ok:
             announce_done(drv)
+    else:
+        print("\n[DOCK] 건너뜀 — 현재 위치(TF)를 읽을 수 없습니다.")
 
     probe.report(WAYPOINTS, result)
     if dock_ok is None:
