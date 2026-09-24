@@ -66,7 +66,7 @@ from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade, UsdSkel
 from isaacsim.core.utils.prims import set_targets
 
 from isaacsim.core.api import World
-from isaacsim.core.prims import SingleXFormPrim
+from isaacsim.core.prims import SingleRigidPrim, SingleXFormPrim
 from isaacsim.core.utils.stage import open_stage, is_stage_loading
 from isaacsim.core.utils.types import ArticulationAction
 from isaacsim.robot.manipulators.grippers import ParallelGripper
@@ -216,6 +216,28 @@ RACK_SLOT_X_TRIM = (0.02, 0.02, 0.02)
 RACK_SLOTS   = [POINT4_TCP + np.array([i * RACK_PITCH_M + t, 0.0, 0.0])
                 for i, t in zip((-1, 0, 1), RACK_SLOT_X_TRIM)]
 RACK_RETREAT = POINT5_TCP - POINT4_TCP          # 놓은 뒤 수평 15cm 후퇴, 슬롯마다 같은 양
+
+# ── 랙에 놓인 트레이 정렬
+# 설정: 랙 칸에 정렬 가이드(자석)가 있어, 트레이가 칸에 들어가면 칸 중앙·칸 방향으로 붙는다.
+# 그 결과를 트레이 프림 pose 에 직접 반영한다 — 팔 동작은 건드리지 않는다.
+#
+# IK_ORIENTATION_TOLERANCE 를 7도까지 푼 뒤로 트레이가 기운 채 "성공" 판정이 나서
+# 랙에 비스듬히 올라간다. 팔로 고치려면 그 원인인 IK 를 다시 믿어야 해서 수렴하지 않는다.
+#
+# 목표 pose = "팔이 슬롯 좌표에 **정확히** 도달했다면 트레이가 있었을 자리".
+# 그리퍼를 열기 직전에 트레이가 그리퍼에 물려 있는 상대 pose 를 재고(q_rel/p_rel), 그걸
+# 슬롯의 이상적인 TCP pose 에 얹어서 구한다. 상대량이라 **파지 때의 IK 오차가 안 섞인다** —
+# 오차는 그리퍼의 월드 pose 를 틀 뿐이고, 손가락이 손잡이를 물어 만든 트레이:그리퍼 관계는
+# 그대로다. 놓을 때 생긴 오차만 정확히 지워진다.
+#
+# 스폰 자세에서 몇 도 돌리면 되는지 상수로 박는 방법도 생각했는데, 그 각도가 정적으로
+# 안 정해진다: 트레이가 방사 방향(로봇을 똑바로 봄)이면 -방위각 = +86.56도, base 축에
+# 정렬돼 있으면 0도다. 3.4도든 86도든 틀리면 그만큼 기운 채로 서므로 상수를 안 쓴다.
+RACK_TRAY_ALIGN     = True
+# 그리퍼(TCP) xy 에서 이 반경 밖이면 물고 있는 게 아니라고 보고 정렬을 건너뛴다. 놓기
+# 스텝이 실패해 건너뛰어졌거나 트레이를 놓친 경우를 거른다 — 엉뚱한 트레이를 옮기지 않는다.
+# 칸 간격(0.165)의 절반보다 작게 둬서 옆 칸 트레이가 후보로 들어올 여지도 없앤다
+RACK_TRAY_MATCH_R_M = 0.08
 
 # 시작 시 원본 트레이(/World/tray)를 이만큼 더 복제해 흩뿌린다. 자세는 원본 그대로,
 # 위치는 원본을 중심으로 **가로 방향 한 줄**(base->트레이 방향에 수직)로 ±TRAY_SPREAD_R_M.
@@ -835,6 +857,14 @@ def attach_aruco(tray_path, marker_id):
     print(f"   aruco        {tray_path}  id {marker_id} (긴급도 {'하중상'[marker_id]})")
 
 
+# ── 트레이 정렬용 — spawn_tray_copies 가 _tray_bodies 를 채우고, 정렬 쪽에서만 쓴다
+TRAY_BODY_REL  = "tray"   # 실제 rigid body 는 한 단계 아래다 (/World/tray/tray, pickup_place_go.py 와 같은 구조)
+_tray_bodies   = []       # 트레이 rigid body 프림 경로
+_tray_rigid    = {}       # 경로 -> SingleRigidPrim (처음 쓸 때 만들어 재사용)
+_held_tray     = None     # 그리퍼에 물린 트레이와 그 상대 pose. capture_tray_in_gripper 가 채운다
+_aligned_trays = set()    # 이미 정렬한 트레이. 트레이당 정확히 한 번만 손댄다
+
+
 def spawn_tray_copies():
     """원본 트레이를 TRAY_COPIES 개 복제해 한 줄로 흩뿌리고, 전부에 긴급도 마커를 붙인다.
     world.reset() 전에 부른다.
@@ -855,6 +885,9 @@ def spawn_tray_copies():
     lateral = quat_to_matrix(base_quat) @ np.array([-radial[1], radial[0], 0.0])
     print(f"   tray spread  가로축(월드) {vec(lateral)}  범위 +-{TRAY_SPREAD_R_M * 100:.0f}cm")
 
+    _tray_bodies.clear()
+    _tray_bodies.append(f"{TRAY_PRIM_PATH}/{TRAY_BODY_REL}")
+
     placed = [origin]
     attach_aruco(TRAY_PRIM_PATH, random.choice(ARUCO_IDS))
     for i in range(1, TRAY_COPIES + 1):
@@ -868,6 +901,7 @@ def spawn_tray_copies():
         stage.GetPrimAtPath(path).GetAttribute("xformOp:translate").Set(Gf.Vec3d(*pos))
         print(f"   tray copy    {path}  world {vec(pos)}")
         attach_aruco(path, random.choice(ARUCO_IDS))
+        _tray_bodies.append(f"{path}/{TRAY_BODY_REL}")
     simulation_app.update()
     return origin
 
@@ -1645,6 +1679,132 @@ def build_return_steps(lula, grasp_base, base_pos, base_quat):
     ]
 
 
+def quat_conj(q):
+    """단위 쿼터니언의 역 (w, -x, -y, -z)"""
+    return np.array([q[0], -q[1], -q[2], -q[3]], dtype=float)
+
+
+def reset_tray_align():
+    """Play 를 다시 누를 때. 트레이가 원래 자리로 돌아가므로 정렬 기록도 지운다.
+
+    rigid body 핸들도 버린다 — stop/play 로 물리 뷰가 새로 만들어지면 예전 핸들은 죽는다."""
+    global _held_tray
+    _held_tray = None
+    _aligned_trays.clear()
+    _tray_rigid.clear()
+
+
+def tray_body(path):
+    """트레이 rigid body 핸들. 처음 쓸 때 만들어 두고 재사용한다"""
+    body = _tray_rigid.get(path)
+    if body is None:
+        body = SingleRigidPrim(path, name="tray_body_" + path.strip("/").replace("/", "_"))
+        body.initialize()
+        _tray_rigid[path] = body
+    return body
+
+
+def nearest_tray_body(world_xy):
+    """world_xy 에 가장 가까운, 아직 정렬하지 않은 트레이 rigid body 의 (경로, 거리).
+
+    이미 정렬한 것을 후보에서 빼는 게 핵심이다 — 2·3번 칸을 다룰 때 옆 칸에 이미 세워 둔
+    트레이가 후보로 들어오지 않는다. 트레이 하나당 정확히 한 번만 손댄다."""
+    best, best_d = None, None
+    for path in _tray_bodies:
+        if path in _aligned_trays:
+            continue
+        pos, _ = tray_body(path).get_world_pose()
+        dist = float(np.linalg.norm(np.asarray(pos, dtype=float)[:2] - np.asarray(world_xy)[:2]))
+        if best_d is None or dist < best_d:
+            best, best_d = path, dist
+    return best, best_d
+
+
+def capture_tray_in_gripper(seq, slot):
+    """그리퍼를 열기 **직전에** 트레이가 그리퍼에 물려 있는 상대 pose 를 잰다.
+
+    이 스텝의 on_enter 는 손가락이 아직 닫혀 있고 팔이 슬롯에 멈춰 있는 순간에 불린다 —
+    트레이가 그리퍼 안에서 최종적으로 자리잡은 상태다.
+
+    **상대량이라 파지 때의 IK 오차가 안 섞인다.** 오차는 그리퍼의 월드 pose 를 틀 뿐이고,
+    손가락이 손잡이를 물어 만든 트레이:그리퍼 관계는 그대로다. 그래서 이 관계를 슬롯의
+    이상적인 TCP pose 에 얹으면 '팔이 정확히 도달했다면 트레이가 있었을 자리'가 나온다."""
+    global _held_tray
+    _held_tray = None
+    if not RACK_TRAY_ALIGN:
+        return
+    try:
+        tcp_pos, tcp_quat = seq._current_flange_pose()
+        path, dist = nearest_tray_body(tcp_pos)
+        if path is None or dist > RACK_TRAY_MATCH_R_M:
+            near = "없다" if dist is None else f"최근접 {dist * 100:.1f}cm"
+            print(f"   rack align   랙 {slot + 1}번 — 그리퍼 근처에 트레이가 {near}. 정렬을 건너뛴다")
+            return
+        pos, quat = tray_body(path).get_world_pose()
+        tcp_rot = quat_to_matrix(tcp_quat)
+        _held_tray = {
+            "path": path,
+            "slot": slot,
+            # 트레이 원점이 TCP 기준 어디에 있는지 / 트레이가 그리퍼에 대해 어떻게 물려 있는지
+            "p_rel": tcp_rot.T @ (np.asarray(pos, dtype=float) - tcp_pos),
+            "q_rel": quat_mul(quat_conj(tcp_quat), np.asarray(quat, dtype=float)),
+        }
+    except Exception as exc:
+        print(f"   rack align   랙 {slot + 1}번 파지 상태 측정 실패 (정렬 생략): {exc}")
+
+
+def align_tray_on_rack(slot, base_pos, base_quat):
+    """방금 놓은 트레이를 칸 중앙·칸 방향으로 한 번 맞춰 놓는다. 후퇴 스텝 진입 때 한 번.
+
+    설정: 랙 칸에 정렬 가이드(자석)가 있어 트레이가 칸에 들어가면 칸 중앙·칸 방향으로
+    붙는다. 그 결과를 트레이 프림 pose 에 직접 반영한다 — **팔 동작은 건드리지 않는다.**
+    기운 원인이 IK_ORIENTATION_TOLERANCE 를 7도까지 푼 것이라, 같은 IK 로 다시 세우려
+    하면 또 7도 어긋난다 (원인을 도구로 쓰는 셈이라 수렴하지 않는다).
+
+    목표 pose = 슬롯의 **이상적인** TCP pose(RACK_SLOTS[slot] + POINT4_RPY) 에
+    capture_tray_in_gripper 가 잰 트레이:그리퍼 관계를 얹은 것. 즉 '팔이 슬롯 좌표에
+    정확히 도달했다면 트레이가 있었을 자리'다. 놓을 때 생긴 오차만 정확히 지워진다.
+
+    xy 와 자세만 쓰고 **z 는 현재값을 그대로 둔다** — 수직 위치는 트레이가 칸 바닥에
+    앉으면서 물리가 이미 정확히 잡아 준 값이다. 계산값을 넣으면 박히거나 떠서 튄다.
+
+    rigid body 라 한 번만 맞춰 두면 다른 것이 건드리지 않는 한 그대로 실려 간다.
+    단 **선/각속도를 0 으로 눌러야** 한다 — 안 그러면 남아 있던 각속도로 PhysX 가
+    방금 맞춘 것을 곧바로 다시 틀어 놓는다. '1회만'이 성립하는 건 이 두 줄 덕분이다.
+
+    보정하지 못해도 미션을 멈추지 않는다. 로그만 남기고 후퇴는 그대로 진행한다."""
+    global _held_tray
+    held, _held_tray = _held_tray, None
+    if not RACK_TRAY_ALIGN or held is None or held["slot"] != slot:
+        return
+    if held["path"] in _aligned_trays:   # 손목 풀기 재시도로 스텝이 다시 실행된 경우
+        return
+    try:
+        ideal_pos, ideal_quat = base_to_world(RACK_SLOTS[slot], POINT4_RPY, base_pos, base_quat)
+        target_pos = ideal_pos + quat_to_matrix(ideal_quat) @ held["p_rel"]
+        target_quat = quat_mul(ideal_quat, held["q_rel"])
+        target_quat = target_quat / np.linalg.norm(target_quat)
+
+        body = tray_body(held["path"])
+        pos, quat = body.get_world_pose()
+        pos = np.asarray(pos, dtype=float)
+        base_rot_t = quat_to_matrix(base_quat).T
+        before = matrix_to_rpy(base_rot_t @ quat_to_matrix(np.asarray(quat, dtype=float)))
+        after = matrix_to_rpy(base_rot_t @ quat_to_matrix(target_quat))
+        moved = float(np.linalg.norm(target_pos[:2] - pos[:2]))
+
+        body.set_world_pose(position=np.array([target_pos[0], target_pos[1], pos[2]]),
+                            orientation=target_quat)
+        body.set_linear_velocity(np.zeros(3))
+        body.set_angular_velocity(np.zeros(3))
+        _aligned_trays.add(held["path"])
+
+        print(f"   rack align   랙 {slot + 1}번  {held['path']}  xy {moved * 100:.1f}cm 이동")
+        print(f"                rpy(base) {vec(before, 1)} -> {vec(after, 1)}")
+    except Exception as exc:
+        print(f"   rack align   랙 {slot + 1}번 정렬 실패 (무시하고 계속): {exc}")
+
+
 def build_pick_steps(lula, grasp_base, base_pos, base_quat, slot):
     """검출로 구한 grasp_base(파지점, base 기준)로 집어서 RACK_SLOTS[slot] 에 놓는다.
 
@@ -1691,8 +1851,14 @@ def build_pick_steps(lula, grasp_base, base_pos, base_quat, slot):
          "target": p4_above, "gripper": None, "speed": "carry", "ease": 2},
         {"type": "hold",  "label": f"하강 전 대기({PLACE_WAIT_STEPS / 60:.0f}s)", "gripper": None, "steps": PLACE_WAIT_STEPS},
         {"type": "pose",  "label": f"랙 {slot + 1}번 놓기(수직 하강)", "target": p4, "gripper": None, "tol": STEP_CONTACT_TOL_M, "speed": "slow"},
-        {"type": "hold",  "label": "그리퍼 열기",        "gripper": "open"},
-        {"type": "pose",  "label": "후퇴 안전 위치",     "target": p5, "gripper": None, "speed": "slow"},
+        # 랙 정렬 2단계. 여기 진입 시점은 손가락이 **아직 닫혀 있고** 팔이 슬롯에 멈춰 있는
+        # 순간이라, 트레이가 그리퍼에 물린 상대 pose 를 재기에 맞다
+        {"type": "hold",  "label": "그리퍼 열기",        "gripper": "open",
+         "on_enter": lambda seq: capture_tray_in_gripper(seq, slot)},
+        # 앞 스텝이 GRIPPER_WAIT_STEPS(2초)를 다 쓴 뒤라 손가락은 이미 벌어져 있다 — 물린 채로
+        # 돌리는 일이 없다. 하역(책상)에는 안 건다: 랙에만 정렬 가이드가 있다는 설정이다
+        {"type": "pose",  "label": "후퇴 안전 위치",     "target": p5, "gripper": None, "speed": "slow",
+         "on_enter": lambda seq: align_tray_on_rack(slot, base_pos, base_quat)},
         {"type": "joint", "label": "홈 복귀",            "target": np.array(READY_JOINTS_RAD, dtype=float), "gripper": None},
     ]
 
@@ -1792,6 +1958,11 @@ class PickPlaceSequence:
         step = self.current
         if step["gripper"] is not None:
             self.gripper = step["gripper"]
+
+        # 스텝에 진입할 때 한 번 부르는 선택 훅. 씬 쪽 부수 효과용이고 팔은 건드리지 않는다
+        # (지금 쓰는 곳: build_pick_steps 의 그리퍼 열기 -> 파지 상태 측정, 후퇴 -> 트레이 정렬)
+        if step.get("on_enter") is not None:
+            step["on_enter"](self)
 
         if step["type"] in ("pose", "hold"):
             self.start_pos, self.start_quat = self._current_flange_pose()
@@ -1994,6 +2165,7 @@ def main():
                 init_robot(robot, world)
                 seq_mark, wait_frames, retry_count = -1, 0, 0
                 slot_index, unload_slot, grasp_log = 0, -1, []
+                reset_tray_align()
                 step_retries, stage_fails = 0, 0
                 fail_streak = 0
                 tick_count = 0
