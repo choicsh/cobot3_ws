@@ -476,3 +476,29 @@ WAITING → ASSIGNED → IN_TRANSIT → ARRIVED → COMPLETED, departed_at/arriv
 
 `carter_navigation.rviz` 에서 두 PointCloud2 와 Image 를 기본 꺼짐으로(체크박스로 다시 켤 수 있다). 지도·costmap·`/scan`·
 경로(`/plan`, `/hospital/reference_plan`)는 그대로.
+
+### P7 다중 로봇 — 진행 중 (2026-09-26)
+구성: `run_fleet_sim.py --robots 2 --pose 1:collection --pose 2:0.0,14.9,0` + 로봇마다 `hospital_navigation.launch.py namespace:=robotN`,
+`tray_detector`(/robotN), `robot_agent`(/robotN, robot2 는 `-p start:=return`) + `fleet_manager robots:=[robot1,robot2]`.
+
+- **Nav2 네임스페이스**: launch 에 `namespace` 인자 — Nav2 bringup(use_namespace), 병원 노드, RViz 를 `/robotN` 아래로, `/tf` → `robotN/tf`.
+  비우면 예전처럼 전역 이름. `nav_to_goal` 병원 노드의 토픽을 전부 상대 이름으로(전역 실행에서는 같은 이름으로 풀린다).
+  코스트맵 레이어 토픽은 파라미터 파일의 `<robot_namespace>` 를 launch 가 ""/`/robotN` 으로 바꾼다. `PredictionLayer` 토픽은 파라미터로.
+  RViz 설정의 토픽도 `/robotN` 을 붙인 사본으로 띄운다(두 RViz 를 같은 순간에 띄우면 하나가 세그폴트 — 8 s 시차).
+- `robot_agent`: 주행 하위 프로세스를 같은 네임스페이스 + tf 리매핑으로(`global_nav:=true` 면 예전 방식), TF 리스너는 별도 노드로
+  `<ns>/tf` 구독. `start:=return` — 복귀 차선 위(빈 랙)에서 시작해 이어 가기 주행으로 채취실까지. 주행은 자기 세션으로 띄워
+  에이전트가 끝나면(Ctrl-C 포함) 그룹째 멈춘다.
+- 트레이(`arm/trays.py`): 예비 트레이 `--reserve-sets`(기본 로봇 수 − 1 세트)를 바닥 아래 보관소(중력 끔)에 두고, 적재 때 채취실 책상이
+  비었으면 보관소 → 없으면 분석실 하역분 순으로 채운다. 하역 전에 분석실 책상의 지난 트레이를 보관소로 옮긴다(로봇이 여럿이면
+  재공급보다 다음 하역이 먼저 올 수 있어 자리가 겹친다).
+
+**실기 p7c (2대, 사이클 1 완료 후 사이클 2 도중 중단, 약 19분)**: 책상 대기 HOLDING(robot2 가 채취실 앞에서 robot1 적재 끝까지 약 47 s),
+서쪽 문 경합(실은 robot2 가 먼저, 빈 robot1 이 분석실 출발 직후 대기), 책상 동시 점유 0, 적재·하역 3/3 제자리, 보관소 재공급·분석실 비우기
+동작, DB 작업 11(robot1)·12(robot2) COMPLETED. 라이다 로봇별 6.0–6.8 Hz(최대 공백 ≤ 0.48 s), 실시간 비율 0.60–0.69, Isaac CPU 약 350–400 %.
+
+**실패·수정**
+- p7a: robot1 이 지도(`/robot1/map`, transient local)와 GetMap 을 늦게 붙는 구독자에게 못 받아 출발 3회 실패. 같은 때 다른 도메인(137)에
+  배선 시험용 Nav2 가 남아 있었고 정리 직후 정상화 — 원인으로 추정(미확정). 시험 스크립트는 남은 ROS 프로세스가 있으면 시작하지 않는다.
+- p7b: 도킹이 3D 라이다를 절대 이름 `/front_3d_lidar/lidar_points` 로 구독 → 네임스페이스 로봇은 정류장 정렬·AMCL 재측위 실패. 상대 이름으로.
+
+**남은 일**: 2대 2사이클 완주, 3대, Ctrl-C 로 끊긴 작업의 DB 상태(p7b 작업 10 이 IN_TRANSIT 으로 남음), 판정 기준 확인 후 완료 기록.

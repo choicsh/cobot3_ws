@@ -46,9 +46,9 @@ class AmclInitialPose(Node):
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
         self.publisher = self.create_publisher(
-            PoseWithCovarianceStamped, '/initialpose', 10)
+            PoseWithCovarianceStamped, 'initialpose', 10)
         self.create_subscription(
-            PoseWithCovarianceStamped, '/amcl_pose', self._pose_received, 10)
+            PoseWithCovarianceStamped, 'amcl_pose', self._pose_received, 10)
         self.timer = self.create_timer(1.0, self._try_initial_pose)
         self.last_published_ns = 0
         self.initialized = False

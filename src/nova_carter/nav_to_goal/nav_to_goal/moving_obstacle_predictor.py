@@ -32,18 +32,18 @@ class MovingObstaclePredictor(Node):
         self.tracker = Tracker()
         self.static_mask = None
         self.standing_mask = None
-        self.create_subscription(OccupancyGrid, '/map', self.receive_map,
+        self.create_subscription(OccupancyGrid, 'map', self.receive_map,
             QoSProfile(depth=1, durability=QoSDurabilityPolicy.TRANSIENT_LOCAL))
         self.last_tf_warning = -math.inf
         sensor_qos = QoSProfile(
             depth=1, reliability=QoSReliabilityPolicy.BEST_EFFORT,
             durability=QoSDurabilityPolicy.VOLATILE)
-        self.publisher = self.create_publisher(PointCloud, "/hospital/predicted_obstacles", sensor_qos)
+        self.publisher = self.create_publisher(PointCloud, "hospital/predicted_obstacles", sensor_qos)
         # Keep the existing radius-only cloud contract for the C++ soft layer.
         # A separate current-state stream preserves time/identity for supervision.
         self.track_publisher = self.create_publisher(
-            PointCloud, "/hospital/tracked_obstacles", sensor_qos)
-        self.create_subscription(LaserScan, "/scan_body_filtered", self.scan, sensor_qos)
+            PointCloud, "hospital/tracked_obstacles", sensor_qos)
+        self.create_subscription(LaserScan, "scan_body_filtered", self.scan, sensor_qos)
 
     def receive_map(self, msg):
         if msg.header.frame_id == 'map':

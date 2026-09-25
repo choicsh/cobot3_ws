@@ -18,13 +18,17 @@ public:
     if (!node) {throw std::runtime_error("Costmap node expired");}
     declareParameter("enabled", rclcpp::ParameterValue(true));
     declareParameter("timeout", rclcpp::ParameterValue(0.6));
+    // 코스트맵 노드는 <ns>/local_costmap 네임스페이스라 상대 이름이 거기로 풀린다 — 로봇 네임스페이스(P7)는 파라미터로 받는다
+    declareParameter("topic", rclcpp::ParameterValue(std::string("/hospital/predicted_obstacles")));
+    std::string topic;
     node->get_parameter(name_ + ".enabled", enabled_);
     node->get_parameter(name_ + ".timeout", timeout_);
+    node->get_parameter(name_ + ".topic", topic);
     current_ = false;
     rclcpp::SubscriptionOptions options;
     options.callback_group = callback_group_;
     subscription_ = node->create_subscription<sensor_msgs::msg::PointCloud>(
-      "/hospital/predicted_obstacles", rclcpp::SensorDataQoS(),
+      topic, rclcpp::SensorDataQoS(),
       [this](sensor_msgs::msg::PointCloud::SharedPtr msg) {
         if (msg->header.frame_id != layered_costmap_->getGlobalFrameID() ||
           msg->channels.size() != 1 || msg->channels[0].name != "radius" ||

@@ -151,11 +151,11 @@ class TableDocking:
         self.node, self.buffer = navigator, buffer
         self.scan = self.odom = self.cloud = None
         self.subscriptions = [
-            navigator.create_subscription(LaserScan, '/scan_body_filtered', self._scan, qos_profile_sensor_data),
-            navigator.create_subscription(PointCloud2, '/front_3d_lidar/lidar_points', self._cloud, qos_profile_sensor_data),
-            navigator.create_subscription(Odometry, '/chassis/odom', self._odom, qos_profile_sensor_data),
+            navigator.create_subscription(LaserScan, 'scan_body_filtered', self._scan, qos_profile_sensor_data),
+            navigator.create_subscription(PointCloud2, 'front_3d_lidar/lidar_points', self._cloud, qos_profile_sensor_data),
+            navigator.create_subscription(Odometry, 'chassis/odom', self._odom, qos_profile_sensor_data),
         ]
-        self.publisher = navigator.create_publisher(Twist, '/cmd_vel_nav', 10)
+        self.publisher = navigator.create_publisher(Twist, 'cmd_vel_nav', 10)
 
     def _scan(self, msg):
         self.scan = msg
@@ -330,7 +330,7 @@ class TableDocking:
         from nav_to_goal.hospital_stage_runner import drain_observations
         table = TABLES[station]
         deadline = time.monotonic()+timeout
-        publisher = self.node.create_publisher(PoseWithCovarianceStamped, '/initialpose', 10)
+        publisher = self.node.create_publisher(PoseWithCovarianceStamped, 'initialpose', 10)
         target = None
         last_publish = 0.
         try:

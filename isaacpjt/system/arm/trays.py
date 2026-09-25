@@ -11,7 +11,7 @@ import random
 import numpy as np
 import omni.usd
 from isaacsim.core.prims import SingleRigidPrim
-from pxr import Gf, Sdf, UsdGeom, UsdShade
+from pxr import Gf, PhysxSchema, Sdf, UsdGeom, UsdShade
 
 from .geometry import *  # noqa: F401,F403
 
@@ -59,6 +59,9 @@ def prim_world_quat(path):
 
 
 TRAY_BODY_REL = "tray"   # 실제 rigid body 는 한 단계 아래다 (/World/tray/tray)
+# 예비 트레이 보관소 (P7): 바닥 아래 30 m, 중력을 끈 채 0.6 m 간격으로 떠 있다. 라이다·사람·팔 어디에도 안 닿는다
+STASH_ORIGIN = np.array([0.0, 0.0, -30.0])
+STASH_STEP_M = 0.6
 
 
 class TrayRegistry:
@@ -71,7 +74,9 @@ class TrayRegistry:
         # 다음 사이클용 재공급 (P6): 채취실 책상 스폰 자리/자세, 하역이 끝난 트레이 (먼저 놓인 것부터)
         self.collection_spots = []
         self.collection_quat = None
-        self.delivered = []
+        self.delivered = []         # 분석실 책상에 하역된 트레이 (먼저 놓인 것부터)
+        self.stash = []             # 보관소 트레이 — 분석실이 가져갔거나 처음부터 예비인 것 (P7)
+        self._stash_slots = 0
 
     def spawn_copies(self, base_pos, base_quat, update):
         """원본 트레이를 TRAY_COPIES 개 복제해 한 줄로 흩뿌리고, 전부에 긴급도 마커를 붙인다.
@@ -124,8 +129,50 @@ class TrayRegistry:
             for b in self.bodies]
         return origin
 
+    def spawn_reserve(self, count, update):
+        """예비 트레이 count 개를 보관소에 둔다 (spawn_copies 뒤, world.reset 전). 로봇이 여럿이면
+        앞 로봇이 적재해 가고 하역한 트레이가 아직 돌아오기 전에 다음 로봇이 채취실에 온다 (P7)."""
+        stage = omni.usd.get_context().get_stage()
+        for i in range(count):
+            path = f"{TRAY_PRIM_PATH}_r{i + 1}"
+            omni.usd.duplicate_prim(stage, TRAY_PRIM_PATH, path)
+            stage.GetPrimAtPath(path).GetAttribute("xformOp:translate").Set(Gf.Vec3d(*self._stash_spot()))
+            attach_aruco(path, random.choice(ARUCO_IDS))
+            body = f"{path}/{TRAY_BODY_REL}"
+            PhysxSchema.PhysxRigidBodyAPI.Apply(stage.GetPrimAtPath(body)).CreateDisableGravityAttr(True)
+            self.bodies.append(body)
+            self.stash.append(body)
+        if count:
+            print(f"   tray reserve {count}개 보관소 {vec(STASH_ORIGIN)} (중력 끔)")
+        update()
+
+    def _stash_spot(self):
+        self._stash_slots += 1
+        return STASH_ORIGIN + np.array([STASH_STEP_M * self._stash_slots, 0.0, 0.0])
+
+    def _gravity(self, path, on):
+        view = self.body(path)._rigid_prim_view
+        (view.enable_gravities if on else view.disable_gravities)()
+
+    def clear_analysis(self, log=print):
+        """하역 전에 분석실 책상을 비운다 — 지난번 하역한 트레이를 분석실이 가져간 것으로 치고 보관소로 옮긴다.
+        로봇이 여럿이면 채취실 재공급(restock)보다 다음 하역이 먼저 올 수 있어 자리가 겹친다 (P7)."""
+        moved = 0
+        while self.delivered:
+            path = self.delivered.pop(0)
+            body = self.body(path)
+            self._gravity(path, False)
+            body.set_world_pose(position=self._stash_spot(), orientation=self.collection_quat)
+            body.set_linear_velocity(np.zeros(3))
+            body.set_angular_velocity(np.zeros(3))
+            self.stash.append(path)
+            moved += 1
+        if moved:
+            log(f"analysis     분석실 책상의 트레이 {moved}개를 보관소로 (분석실이 가져감)")
+        return moved
+
     def restock(self, log=print):
-        """채취실 책상이 비었으면 하역이 끝난 트레이를 스폰 자리로 옮기고 긴급도 마커를 새로 뽑는다.
+        """채취실 책상이 비었으면 보관소(없으면 하역이 끝난) 트레이를 스폰 자리로 옮기고 긴급도 마커를 새로 뽑는다.
 
         새 검체 트레이가 들어온 것으로 친다 (P6 — 한 번 스폰한 트레이로 사이클을 이어 간다).
         반환: 옮긴 개수. 책상에 트레이가 하나라도 있으면 건드리지 않는다."""
@@ -140,9 +187,14 @@ class TrayRegistry:
         moved = 0
         stage = omni.usd.get_context().get_stage()
         for spot in self.collection_spots:
-            if not self.delivered:
+            if self.stash:
+                path = self.stash.pop(0)
+                self._gravity(path, True)
+            elif self.delivered:
+                path = self.delivered.pop(0)
+            else:
+                log("restock      보관소도 분석실 책상도 비었다 — 새 트레이 없음")
                 break
-            path = self.delivered.pop(0)
             body = self.body(path)
             body.set_world_pose(position=spot + np.array([0.0, 0.0, 0.01]), orientation=self.collection_quat)
             body.set_linear_velocity(np.zeros(3))

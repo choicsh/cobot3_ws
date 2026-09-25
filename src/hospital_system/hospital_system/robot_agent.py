@@ -23,11 +23,17 @@ db_worker 가 robot_event_log 로 옮긴다. DB 없이 돌리려면 -p use_db:=f
 관제 모드(-p fleet:=true, P6): 사이클을 스스로 시작하지 않고 task 토픽({"seq": n, "cmd": "cycle"})을 기다린다.
 주행은 관제 구역 예약을 따른다 — hospital_mission 에 require_zone_hold 와 구간 키(zone_leg)를 넘기고
 zone_hold 토픽을 이 네임스페이스의 것으로 잇는다. 위치(TF map->base_link)를 fleet_pose 로 5 Hz 보낸다.
+
+다중 로봇(P7): Nav2 가 로봇 네임스페이스에 있다(hospital_navigation.launch.py namespace:=robotN). 주행 하위
+프로세스를 같은 네임스페이스로 띄우고 /tf 를 <ns>/tf 로 잇는다. 전역 이름 Nav2(로봇 1대 시험)면 -p global_nav:=true.
+시작 위치: -p start:=collection(기본, 채취실 도킹) 또는 start:=return — 복귀 차선 위(빈 랙)에서 시작해
+먼저 채취실로 간다(이어 가기 주행, 구간 키 "0:specimen_to_lab").
 """
 import json
 import math
 import os
 import shlex
+import signal
 import subprocess
 import sys
 import threading
@@ -64,7 +70,9 @@ class RobotAgent(Node):
         self.declare_parameter("test_type", "GENERAL")    # tray.test_type — 시뮬레이션에는 검사 종류가 없다
         self.declare_parameter("fleet", False)            # True: 관제 지시(task)로만 사이클, 구역 예약을 따른다
         self.declare_parameter("map_frame", "map")
-        self.declare_parameter("base_frame", "base_link")  # Nav2 네임스페이스(tf 접두)는 P7
+        self.declare_parameter("base_frame", "base_link")
+        self.declare_parameter("global_nav", False)       # True: Nav2 가 전역 이름 (/tf, /follow_path ...)
+        self.declare_parameter("start", "collection")      # collection | return (복귀 차선 위에서 시작)
 
         self.arm_status = None
         self.stage = "IDLE"
@@ -80,8 +88,12 @@ class RobotAgent(Node):
         self._task = None
         self.pose = None             # (x, y, yaw) map 기준
 
+        self.global_nav = bool(self.get_parameter("global_nav").value)
         self.tf_buffer = Buffer()
-        self.tf_listener = TransformListener(self.tf_buffer, self)
+        # 로봇마다 tf 토픽이 다르다(<ns>/tf). 리스너만 따로 노드를 둬 /tf 를 이 네임스페이스로 잇는다
+        tf_args = [] if self.global_nav else ["--ros-args", "-r", "/tf:=tf", "-r", "/tf_static:=tf_static"]
+        self._tf_node = rclpy.create_node("robot_agent_tf", namespace=self.get_namespace(), cli_args=tf_args)
+        self.tf_listener = TransformListener(self.tf_buffer, self._tf_node, spin_thread=True)
         self.pose_pub = self.create_publisher(PoseStamped, "fleet_pose", 10)
         self.create_timer(0.2, self._update_pose)
         latched = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
@@ -200,13 +212,13 @@ class RobotAgent(Node):
         self.leg = f"{self.cycle}:{mission_route(origin, destination)}"
         self.set_stage(stage, f"{origin} -> {destination}")
 
-    def drive(self, origin, destination):
+    def drive(self, origin, destination, resume=False):
         """hospital_mission 을 돌린다. 도중 실패(종료 1)면 resume 으로 현재 위치에서 이어 간다.
 
         hospital_mission 은 사람 앞에서 15 s 넘게 양보하면 '차선이 막혔다는 증거는 아님' 으로 실패한다.
         처음부터 다시 할 수는 없으므로(도킹 자세 출발 검사) 같은 경로를 현재 위치부터 이어 간다.
         종료 코드: 0 성공, 1 실패, 2 잘못된 route, -1 시간 초과 (2/-1 은 재시도하지 않는다)."""
-        code = self._run_mission(origin, destination, resume=False)
+        code = self._run_mission(origin, destination, resume=resume)
         for attempt in range(1, int(self.get_parameter("resume_attempts").value) + 1):
             if code != 1:
                 break
@@ -221,15 +233,18 @@ class RobotAgent(Node):
         route = mission_route(origin, destination)
         cmd = shlex.split(self.get_parameter("mission_command").value) + [
             "--ros-args", "-p", f"route_id:={route}", "-p", f"resume:={str(resume).lower()}"]
+        ns = self.get_namespace().rstrip("/")
+        if not self.global_nav and ns:
+            # Nav2 (follow_path, map, scan ...) 가 이 로봇 네임스페이스에 있다
+            cmd += ["-r", f"__ns:={ns}", "-r", "/tf:=tf", "-r", "/tf_static:=tf_static"]
         if self.fleet:
             # 관제 구역 예약: 이 로봇의 zone_hold 를 따르고, 이 구간(leg) 메시지만 쓴다
-            ns = self.get_namespace().rstrip("/")
             cmd += ["-p", "require_zone_hold:=true", "-p", f"zone_leg:={self.leg}",
                     "-r", f"zone_hold:={ns}/zone_hold"]
         self.get_logger().info(f"mission: {' '.join(cmd)}")
         # 파이프로 읽으면 하위 파이썬이 출력을 모아 두므로 버퍼를 끈다 (도킹 시작 줄을 바로 봐야 한다)
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
-                                env={**os.environ, "PYTHONUNBUFFERED": "1"})
+                                env={**os.environ, "PYTHONUNBUFFERED": "1"}, start_new_session=True)
         self._docking = False
 
         def forward():
@@ -241,25 +256,41 @@ class RobotAgent(Node):
         reader = threading.Thread(target=forward, daemon=True)
         reader.start()
         end = time.monotonic() + self.get_parameter("mission_timeout_s").value
-        while proc.poll() is None:
-            if not rclpy.ok() or time.monotonic() > end:
-                self.get_logger().error(f"mission {route} timed out — stopping it")
-                proc.terminate()
+        try:
+            while proc.poll() is None:
+                if not rclpy.ok() or time.monotonic() > end:
+                    self.get_logger().error(f"mission {route} timed out — stopping it")
+                    return -1
+                if self._docking:
+                    self._docking = False
+                    self.set_stage("PLACE_DOCKING" if destination == ANALYSIS else "PICK_DOCKING",
+                                   f"docking at {destination}")
+                self.spin_for(0.5)
+            return proc.returncode
+        finally:
+            # 시간 초과든 에이전트 종료(Ctrl-C)든 주행을 남겨 두지 않는다 — p7b 에서 로봇이 계속 달렸다
+            # ros2 run 래퍼와 실제 노드를 같이 — 자기 세션(프로세스 그룹)으로 띄워 그룹째 멈춘다
+            if proc.poll() is None:
+                os.killpg(proc.pid, signal.SIGINT)
                 try:
                     proc.wait(timeout=10)
                 except subprocess.TimeoutExpired:
-                    proc.kill()
-                reader.join(timeout=2)
-                return -1
-            if self._docking:
-                self._docking = False
-                self.set_stage("PLACE_DOCKING" if destination == ANALYSIS else "PICK_DOCKING",
-                               f"docking at {destination}")
-            self.spin_for(0.5)
-        reader.join(timeout=2)
-        return proc.returncode
+                    os.killpg(proc.pid, signal.SIGKILL)
+            reader.join(timeout=2)
 
     # ── 사이클 ───────────────────────────────────────────────────
+    def run_start(self):
+        """start:=return — 복귀 차선 위(빈 랙)에서 채취실까지. 처음부터가 아니라 현재 위치에서 이어 간다."""
+        if self.get_parameter("start").value != "return":
+            return True
+        self.start_leg("RETURNING", ANALYSIS, COLLECTION)
+        code = self.drive(ANALYSIS, COLLECTION, resume=True)
+        if code != 0:
+            self.set_stage("ERROR", f"start drive {ANALYSIS}->{COLLECTION} exit {code}")
+            return False
+        self.set_stage("IDLE", "at collection")
+        return True
+
     def run_cycle(self):
         self.cycle += 1
         t0 = time.monotonic()
@@ -336,7 +367,12 @@ def main(args=None):
     ok = True
     try:
         node.spin_for(2.0)
-        for _ in range(int(node.get_parameter("run_cycles").value)):
+        # 시작 위치가 차선 위면 위치(TF)를 받은 뒤 출발한다 — 관제가 이 위치로 첫 예약을 잡는다
+        while rclpy.ok() and node.pose is None and node.get_parameter("start").value == "return":
+            node.spin_for(0.5)
+        if not node.run_start():
+            ok = False
+        for _ in range(int(node.get_parameter("run_cycles").value) if ok else 0):
             if node.fleet:
                 # 관제 지시를 기다린다 (그동안 위치·상태는 타이머가 계속 보낸다)
                 while rclpy.ok() and node._task is None:
@@ -357,6 +393,7 @@ def main(args=None):
         if node.rec:
             node.rec.close()
         node.destroy_node()
+        node._tf_node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
     sys.exit(0 if ok else 1)

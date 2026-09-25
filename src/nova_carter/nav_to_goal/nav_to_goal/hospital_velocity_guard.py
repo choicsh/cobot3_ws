@@ -25,9 +25,9 @@ class HospitalVelocityGuard(Node):
         self.command, self.command_stamp = (0., 0.), -math.inf
         self.previous_state = None
         self.last_time = None
-        self.create_subscription(Twist, '/cmd_vel_smoothed', self.receive, 10)
-        self.publisher = self.create_publisher(Twist, '/cmd_vel_human_checked', 10)
-        self.state_publisher = self.create_publisher(String, '/hospital/human_guard_state', 10)
+        self.create_subscription(Twist, 'cmd_vel_smoothed', self.receive, 10)
+        self.publisher = self.create_publisher(Twist, 'cmd_vel_human_checked', 10)
+        self.state_publisher = self.create_publisher(String, 'hospital/human_guard_state', 10)
         self.create_timer(.05, self.tick)
 
     def receive(self, msg):

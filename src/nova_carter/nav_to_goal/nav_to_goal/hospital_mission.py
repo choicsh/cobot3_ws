@@ -198,13 +198,13 @@ class AheadBlockageMonitor:
         self.subscriptions = [
             navigator.create_subscription(
                 Costmap,
-                "/local_costmap/costmap_raw",
+                "local_costmap/costmap_raw",
                 self._costmap_callback,
                 LATEST_SENSOR_QOS,
             ),
             navigator.create_subscription(
                 PointCloud,
-                "/hospital/predicted_obstacles",
+                "hospital/predicted_obstacles",
                 self._prediction_callback,
                 LATEST_SENSOR_QOS,
             ),
@@ -619,7 +619,7 @@ def run_mission(navigator, route_id, resume=False, zone_hold=None):
     blockage_monitor = AheadBlockageMonitor(navigator, tf_buffer)
     plan_publisher = navigator.create_publisher(
         Path,
-        "/plan",
+        "plan",
         QoSProfile(
             depth=1,
             reliability=QoSReliabilityPolicy.RELIABLE,

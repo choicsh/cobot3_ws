@@ -214,7 +214,7 @@ class ArmTaskController:
         elif cmd == "load":
             self._reset_run_state()
             self.hooks.reset()
-            # 책상이 비었으면 지난 사이클에 하역한 트레이를 새 트레이로 되돌려 놓는다 (P6, 2사이클째부터)
+            # 책상이 비었으면 보관소(또는 지난 사이클에 하역한) 트레이를 새 트레이로 놓는다 (P6, P7)
             self.hooks.registry.restock(self.log)
             self.cmd, self.result, self.detail = cmd, "running", text
             self.loaded = [False] * len(RACK_SLOTS)
@@ -226,6 +226,7 @@ class ArmTaskController:
             self.log(f"load         시작 ({text})")
         else:  # unload
             self._reset_run_state()
+            self.hooks.registry.clear_analysis(self.log)
             # 이 컨트롤러가 적재한 칸만. 적재 기록이 없으면(재시작 등) 원본처럼 세 칸 다
             filled = [k for k in range(len(RACK_SLOTS)) if self.loaded[k]] or list(range(len(RACK_SLOTS)))
             self.unload_queue = sorted(filled, reverse=True)   # 3번부터 (원본 unload_slot 순서)

@@ -14,6 +14,8 @@ assets/start_pose_robotN.json 에 기록한다 (AMCL 초기 위치 입력용).
     검출은 로봇마다 tray_detector 를 네임스페이스로 띄운다 (admin_ws/README.md).
     GUI 에서는 뷰포트를 클릭한 뒤 L(적재) / U(하역) 키로 robot1 에 명령할 수도 있다.
 책상 트레이(/World/tray)는 시작 시 2개를 더 복제해 가로 한 줄로 놓는다 (원본 P&P 와 같다).
+예비 트레이(--reserve-sets, 기본 로봇 수 - 1 세트)는 바닥 아래 보관소에 두고, 적재 때 채취실 책상이 비었으면
+보관소에서 채운다. 하역 전에는 분석실 책상의 지난 트레이를 보관소로 옮긴다 (arm/trays.py).
 """
 
 import argparse
@@ -34,6 +36,8 @@ parser.add_argument("--pose", action="append", default=[], metavar="I:X,Y,YAW",
                     help="로봇 I 의 시작 자세, 예: --pose 2:20.2,17.5,180 또는 도킹 자세 --pose 1:collection")
 parser.add_argument("--robot1-global-nav", action="store_true",
                     help="로봇 1 주행 토픽을 전역 이름으로 (기존 hospital_navigation.launch.py 를 그대로 쓰는 단일 로봇 시험)")
+parser.add_argument("--reserve-sets", type=int, default=None, metavar="N",
+                    help="예비 트레이 N세트(3개씩)를 보관소에 둔다. 기본 = 로봇 수 - 1 (다음 로봇이 채취실에 왔을 때 새 트레이)")
 parser.add_argument("--preload-rack", action="append", type=int, default=[], metavar="I",
                     help="로봇 I 의 랙 3칸에 트레이를 미리 싣는다 (하역 단독 시험용)")
 args = parser.parse_args()
@@ -125,6 +129,8 @@ if not args.no_arm:
     # 트레이 책상(East, 채취실)에 도킹해 있는 로봇 1 의 팔 base 기준으로 복제한다
     trays.spawn_copies(*SingleXFormPrim(f"{scene.robot_prim(1)}/{ARM_BASE_REL}").get_world_pose(),
                        simulation_app.update)
+    reserve_sets = args.robots - 1 if args.reserve_sets is None else args.reserve_sets
+    trays.spawn_reserve(3 * reserve_sets, simulation_app.update)
     for index in args.preload_rack:
         trays.preload_rack(index, *SingleXFormPrim(f"{scene.robot_prim(index)}/{ARM_BASE_REL}").get_world_pose(),
                            simulation_app.update)

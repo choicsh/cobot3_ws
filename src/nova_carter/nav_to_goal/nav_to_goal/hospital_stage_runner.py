@@ -55,8 +55,8 @@ def follow_stage(navigator, tf_buffer, plan_publisher, stage_name, route,
     lane = lane_for_path(reference_points) if mppi else None
     observations = SafetyObservations(navigator, tf_buffer, with_maps=True)
     qos = QoSProfile(depth=1, durability=QoSDurabilityPolicy.TRANSIENT_LOCAL)
-    reference_pub = navigator.create_publisher(Path, '/hospital/reference_plan', qos)
-    state_pub = navigator.create_publisher(String, '/hospital/mission_state', qos)
+    reference_pub = navigator.create_publisher(Path, 'hospital/reference_plan', qos)
+    state_pub = navigator.create_publisher(String, 'hospital/mission_state', qos)
     reference_pub.publish(reference)
     active = reference
     active_index = reference_index = 0

@@ -36,15 +36,15 @@ class SafetyObservations:
         self.node, self.buffer = node, buffer
         self.tracks = self.odom = self.local = self.static = None
         self.subscriptions = [
-            node.create_subscription(PointCloud, '/hospital/tracked_obstacles',
+            node.create_subscription(PointCloud, 'hospital/tracked_obstacles',
                                      self._tracks, LATEST_SENSOR_QOS),
-            node.create_subscription(Odometry, '/chassis/odom', self._odom, LATEST_SENSOR_QOS),
+            node.create_subscription(Odometry, 'chassis/odom', self._odom, LATEST_SENSOR_QOS),
         ]
         if with_maps:
             self.subscriptions += [
-                node.create_subscription(Costmap, '/local_costmap/costmap_raw',
+                node.create_subscription(Costmap, 'local_costmap/costmap_raw',
                                          self._local, LATEST_SENSOR_QOS),
-                node.create_subscription(OccupancyGrid, '/map', self._map,
+                node.create_subscription(OccupancyGrid, 'map', self._map,
                     QoSProfile(depth=1, durability=QoSDurabilityPolicy.TRANSIENT_LOCAL)),
             ]
 
