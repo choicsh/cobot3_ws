@@ -209,3 +209,33 @@ def test_arrival_and_collision_monitor_configuration_contract():
     assert params['collision_monitor']['ros__parameters']['cmd_vel_in_topic'] == 'cmd_vel_human_checked'
     launch = (root/'carter_navigation/launch/hospital_navigation.launch.py').read_text()
     assert 'executable="hospital_velocity_guard"' in launch
+
+
+def test_already_inside_gap_moving_away_is_allowed_slowly():
+    from nav_to_goal.hospital_avoidance import MovingBody, SafetySettings, limited_command
+    settings = SafetySettings()
+    # 2026-09-25 rosbag: a person stood beside-behind the robot (0.46 m behind
+    # base_link, 1.3 m to the side) for 2 minutes; every command was rejected.
+    person = [MovingBody(1, -0.46, 1.2, 0.0, 0.0, 0.4)]
+    command, state, _ = limited_command((0.0, 0.0, 0.0), (0.0, 0.0), (0.6, 0.0), person, settings)
+    assert state == 'ESCAPING'
+    assert 0.0 < command[0] <= settings.passing_speed + 1e-9
+
+
+def test_already_inside_gap_moving_closer_still_stops():
+    from nav_to_goal.hospital_avoidance import MovingBody, limited_command
+    ahead = [MovingBody(1, 0.8, 0.3, 0.0, 0.0, 0.4)]          # in front, inside the gap
+    command, state, _ = limited_command((0.0, 0.0, 0.0), (0.0, 0.0), (0.6, 0.0), ahead)
+    assert command == (0.0, 0.0) and state == 'NO_SAFE_COMMAND'
+
+
+def test_path_escapes_only_when_path_leads_away():
+    from nav_to_goal.hospital_avoidance import MovingBody, SafetySettings, path_escapes
+    settings = SafetySettings()
+    path = [(0.05*i, 0.0, 0.0) for i in range(200)]             # straight ahead
+    beside = [MovingBody(1, -0.46, 1.2, 0.0, 0.0, 0.4)]
+    ahead = [MovingBody(1, 2.0, 0.6, 0.0, 0.0, 0.4)]
+    far = [MovingBody(1, 6.0, 3.0, 0.0, 0.0, 0.4)]
+    assert path_escapes(path, (0.0, 0.0, 0.0), (0.0, 0.0), beside, settings.preferred_gap, settings)
+    assert not path_escapes(path, (0.0, 0.0, 0.0), (0.0, 0.0), ahead, settings.preferred_gap, settings)
+    assert not path_escapes(path, (0.0, 0.0, 0.0), (0.0, 0.0), far, settings.preferred_gap, settings)  # not inside

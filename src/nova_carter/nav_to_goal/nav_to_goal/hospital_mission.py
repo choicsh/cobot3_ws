@@ -513,7 +513,56 @@ def split_route(lane_id, route):
     raise ValueError(f"Unknown lane: {lane_id}")
 
 
-def run_mission(navigator, route_id):
+def _project_segment(segment, x, y):
+    """(거리, 남은 부분 segment 또는 None) — 점 (x, y) 를 segment 에 투영해 그 뒤쪽만 남긴다."""
+    if segment[0] == "line":
+        (x0, y0), (x1, y1) = segment[1], segment[2]
+        dx, dy = x1 - x0, y1 - y0
+        length2 = dx * dx + dy * dy
+        t = 0.0 if length2 == 0 else max(0.0, min(1.0, ((x - x0) * dx + (y - y0) * dy) / length2))
+        px, py = x0 + t * dx, y0 + t * dy
+        rest = None if (1.0 - t) * math.sqrt(length2) < PATH_STEP else ("line", (px, py), (x1, y1))
+        return math.hypot(x - px, y - py), rest, math.atan2(dy, dx)
+    (cx, cy), radius, start, finish = segment[1], segment[2], segment[3], segment[4]
+    angle = math.degrees(math.atan2(y - cy, x - cx))
+    lo, hi = min(start, finish), max(start, finish)
+    # 호의 각도 범위([lo, hi], 360 넘어갈 수 있음)에 맞게 360 배수를 옮긴 뒤 자른다
+    angle = min((angle + 360.0 * k for k in range(-2, 3)),
+                key=lambda a: 0.0 if lo <= a <= hi else min(abs(a - lo), abs(a - hi)))
+    angle = max(lo, min(hi, angle))
+    px, py = cx + radius * math.cos(math.radians(angle)), cy + radius * math.sin(math.radians(angle))
+    remaining = abs(finish - angle)
+    rest = None if math.radians(remaining) * radius < PATH_STEP else ("arc", (cx, cy), radius, angle, finish)
+    yaw = math.radians(angle) + (math.pi / 2 if finish > start else -math.pi / 2)
+    return math.hypot(x - px, y - py), rest, yaw
+
+
+def resume_stages(stages, pose, max_distance=1.0, max_heading=math.radians(60.0)):
+    """차선 중간에서 멈춘 로봇이 같은 경로를 이어 가도록 stages 를 현재 위치부터 자른다.
+
+    stages = [(이름, route segments, ...)], pose = (x, y, yaw). 가장 가까운 segment(진행 방향이
+    max_heading 안인 것)를 찾아 그 stage 의 그 segment 를 투영점부터 남기고, 앞쪽은 버린다.
+    경로에서 max_distance 보다 멀면 None (이어갈 수 없다 — 경로 밖이다).
+
+    양보 예산 초과(yield_budget_exceeded_not_proof_of_lane_blockage)로 끝난 미션을 처음 도킹 자세부터
+    다시 할 수는 없으므로(출발 검사) 에이전트가 이 모드로 재시도한다 (2026-09-25 P4)."""
+    best = None
+    for si, stage in enumerate(stages):
+        for gi, segment in enumerate(stage[1]):
+            distance, rest, yaw = _project_segment(segment, pose[0], pose[1])
+            heading = abs(math.atan2(math.sin(pose[2] - yaw), math.cos(pose[2] - yaw)))
+            if heading <= max_heading and (best is None or distance < best[0]):
+                best = (distance, si, gi, rest)
+    if best is None or best[0] > max_distance:
+        return None
+    _, si, gi, rest = best
+    first = list(stages[si])
+    first[1] = ([rest] if rest is not None else []) + list(stages[si][1][gi + 1:])
+    out = ([tuple(first)] if first[1] else []) + [tuple(s) for s in stages[si + 1:]]
+    return out
+
+
+def run_mission(navigator, route_id, resume=False):
     lane_id = ROUTES[route_id]
     route = LANES[lane_id]
     departure, transit, arrival = split_route(lane_id, route)
@@ -533,9 +582,23 @@ def run_mission(navigator, route_id):
     current_tf = tf_buffer.lookup_transform('map', 'base_link', Time()).transform
     current = (current_tf.translation.x, current_tf.translation.y,
                _yaw_from_quaternion(current_tf.rotation))
+    stages = [
+        ("station_departure", departure, "FollowPath", "transit_goal_checker"),
+        (lane_id, transit, "FollowPathMPPI", "transit_goal_checker"),
+        # transit(0.8 rad)은 FollowPathDock의 회전 창(0.05 m)에 들기 전에 도착 처리해서 책상 옆 직진 방향이
+        # 맞지 않는다. general은 그 창과 같다. 마지막 값 = 책상 긴 변이 로봇 우측에 오는 직진 방향
+        ("station_arrival", arrival, "FollowPathDock", "general_goal_checker", ARRIVAL_YAWS[route_id]),
+    ]
+    if resume:
+        stages = resume_stages(stages, current)
+        if stages is None:
+            navigator.get_logger().error(f'Resume: pose {current} is not on {lane_id}. No goal sent.')
+            return MissionStatus.FAILED
+        print(f"[MISSION] resume from {current[0]:.2f}, {current[1]:.2f}: "
+              f"{', '.join(s[0] for s in stages)}", flush=True)
     # 책상 옆에서 AMCL이 수십 cm 밀리면 costmap이 차체를 책상 안에 둔다.
     # 출발 전에 라이다로 잰 책상 기준 자세로 AMCL을 다시 맞춘다.
-    if math.dist(current[:2], TABLES[origin]['dock'][:2]) < 1.0:
+    if not resume and math.dist(current[:2], TABLES[origin]['dock'][:2]) < 1.0:
         docking = TableDocking(navigator, tf_buffer)
         try:
             docking.relocalize(origin)
@@ -548,7 +611,7 @@ def run_mission(navigator, route_id):
     # Isaac에서 정지 중인 로봇이 분당 ~6 cm 밀리므로 첫 직선 위 가장 가까운 점과 비교한다.
     expected = min(sample_route(departure[:1]),
                    key=lambda p: math.dist(p[:2], current[:2]))
-    if (math.dist(current[:2], expected[:2]) > .5 or
+    if not resume and (math.dist(current[:2], expected[:2]) > .5 or
             abs(math.atan2(math.sin(current[2]-expected[2]), math.cos(current[2]-expected[2]))) > .35):
         navigator.get_logger().error(
             f'Unexpected start pose {current}; expected dock {expected}. No goal sent.')
@@ -564,29 +627,6 @@ def run_mission(navigator, route_id):
         ),
     )
 
-    stages = [
-        (
-            "station_departure",
-            departure,
-            "FollowPath",
-            "transit_goal_checker",
-        ),
-        (
-            lane_id,
-            transit,
-            "FollowPathMPPI",
-            "transit_goal_checker",
-        ),
-        (
-            "station_arrival",
-            arrival,
-            "FollowPathDock",
-            # transit(0.8 rad)은 FollowPathDock의 회전 창(0.05 m)에 들기 전에
-            # 도착 처리해서 책상 옆 직진 방향이 맞지 않는다. general은 그 창과 같다.
-            "general_goal_checker",
-            ARRIVAL_YAWS[route_id],  # 책상 긴 변이 로봇 우측에 오는 직진 방향
-        ),
-    ]
 
     for stage in stages:
         status = run_path_stage(
@@ -631,7 +671,10 @@ def main():
         [Parameter("use_sim_time", Parameter.Type.BOOL, True)]
     )
     navigator.declare_parameter("route_id", "lab_to_specimen")
+    # True: 도킹 자세 출발 검사 없이 현재 위치에서 같은 경로를 이어 간다 (resume_stages)
+    navigator.declare_parameter("resume", False)
     route_id = navigator.get_parameter("route_id").value
+    resume = bool(navigator.get_parameter("resume").value)
 
     if route_id not in ROUTES:
         navigator.get_logger().error(
@@ -643,7 +686,7 @@ def main():
 
     status = MissionStatus.FAILED
     try:
-        status = run_mission(navigator, route_id)
+        status = run_mission(navigator, route_id, resume)
     except KeyboardInterrupt:
         navigator.cancelTask()
         print(f"[MISSION] {MissionStatus.CANCELED.value}")

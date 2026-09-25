@@ -78,7 +78,7 @@ def ramp(value, target, up, down, dt):
     return value + max(-limit*dt, min(limit*dt, target-value))
 
 
-def command_clearance(pose, velocity, command, tracks, settings=SafetySettings()):
+def command_clearance(pose, velocity, command, tracks, settings=SafetySettings(), include_now=True):
     """Roll out measured velocity -> command, including reaction/ramp and tail.
 
     A stop is simulated with finite deceleration, not an instantaneous freeze.
@@ -86,7 +86,7 @@ def command_clearance(pose, velocity, command, tracks, settings=SafetySettings()
     """
     x, y, yaw = pose
     v, w = velocity
-    gap = predicted_gap(pose, tracks, 0., settings)
+    gap = predicted_gap(pose, tracks, 0., settings) if include_now else math.inf
     for k in range(1, math.ceil(settings.horizon/settings.dt)+1):
         seconds = k*settings.dt
         target_v, target_w = velocity if seconds <= settings.reaction_time else command
@@ -128,8 +128,48 @@ def limited_command(pose, velocity, command, tracks, settings=SafetySettings()):
                 continue
             state = ('CLEAR' if gap >= settings.preferred_gap else 'PASS_MARGIN_SHORTFALL') if scale == 1. else 'YIELDING'
             return candidate, state, gap
+    # Already inside the minimum gap (a person stopped beside the robot, or one
+    # walked through it): every rollout above includes that current gap, so all
+    # commands fail and robot and person can wait for each other forever
+    # (2026-09-25: a crossing pedestrian stood 0.4 m beside-behind the robot
+    # for 2 minutes). Allow a slow command that does not close the distance.
+    escape = escape_command(pose, velocity, command, tracks, settings)
+    if escape is not None:
+        return escape
     state = 'YIELD_MARGIN_SHORTFALL' if gap >= settings.minimum_gap else 'NO_SAFE_COMMAND'
     return (0., 0.), state, gap
+
+
+def _geometric(settings):
+    """Pure geometry: no growth of track uncertainty with look-ahead time.
+
+    'Does this motion close the distance?' must not count the uncertainty that
+    grows by itself; beside a stopped person every motion would look closer."""
+    return replace(settings, uncertainty_rate=0.)
+
+
+def escape_command(pose, velocity, command, tracks, settings=SafetySettings(), tolerance=.01):
+    """(slow command, 'ESCAPING', gap) if already inside minimum_gap and the
+    command, capped at passing_speed, keeps the geometric gap from shrinking."""
+    geometric = _geometric(settings)
+    now = predicted_gap(pose, tracks, 0., geometric)
+    if now >= settings.minimum_gap or abs(command[0]) < .01:
+        return None
+    k = min(1., settings.passing_speed/abs(command[0]))
+    slow = command[0]*k, command[1]*k
+    future = command_clearance(pose, velocity, slow, tracks, geometric, include_now=False)
+    return (slow, 'ESCAPING', future) if future >= now-tolerance else None
+
+
+def path_escapes(path, pose, velocity, tracks, threshold, settings=SafetySettings(), tolerance=.01):
+    """True if already inside threshold and following path at passing speed
+    keeps the geometric gap from shrinking (the stage need not yield)."""
+    geometric = _geometric(settings)
+    now = predicted_gap(pose, tracks, 0., geometric)
+    if now >= threshold:
+        return False
+    future = path_clearance(path, pose, velocity, tracks, geometric, settings.passing_speed, include_now=False)
+    return future >= now-tolerance
 
 
 @dataclass(frozen=True)
@@ -271,7 +311,7 @@ def tail_clear_for_rejoin(lane, pose, tracks, settings=SafetySettings()):
     return True
 
 
-def path_clearance(path, pose, velocity, tracks, settings=SafetySettings(), speed=None):
+def path_clearance(path, pose, velocity, tracks, settings=SafetySettings(), speed=None, include_now=True):
     """Approximate pursuit rollout, with acceleration/yaw-rate limits.
 
     Tests reference selection, not MPPI's internal sampled trajectories. The
@@ -283,7 +323,7 @@ def path_clearance(path, pose, velocity, tracks, settings=SafetySettings(), spee
     x, y, yaw = pose
     v, w = velocity
     cursor = 0
-    gap = predicted_gap(pose, tracks, 0., settings)
+    gap = predicted_gap(pose, tracks, 0., settings) if include_now else math.inf
     for k in range(1, math.ceil(settings.horizon/settings.dt)+1):
         cursor = min(range(cursor, min(len(path), cursor+65)),
                      key=lambda i: math.hypot(path[i][0]-x, path[i][1]-y))

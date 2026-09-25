@@ -54,6 +54,12 @@ def generate_launch_description():
                 "use_sim_time", default_value="True"
             ),
             DeclareLaunchArgument(
+                "start_pose_path",
+                default_value=os.path.expanduser("~/cobot3_ws/isaacpjt/assets/start_pose.json"),
+                description="AMCL 초기 위치 파일 (run_hospital_sim: start_pose.json, "
+                            "run_fleet_sim: start_pose_robotN.json)",
+            ),
+            DeclareLaunchArgument(
                 "use_rviz",
                 default_value="True",
                 description="RViz 실행 여부 (선택적으로 use_rviz:=False)",
@@ -88,7 +94,8 @@ def generate_launch_description():
                 executable="hospital_amcl_initial_pose",
                 name="hospital_amcl_initial_pose",
                 output="screen",
-                parameters=[{"use_sim_time": use_sim_time}],
+                parameters=[{"use_sim_time": use_sim_time,
+                             "start_pose_path": LaunchConfiguration("start_pose_path")}],
             ),
             Node(
                 package="pointcloud_to_laserscan",

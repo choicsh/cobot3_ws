@@ -3,6 +3,15 @@ from collections import deque
 from dataclasses import dataclass, field
 import math
 
+# A never-moved object that stays still this long is a static obstacle (cone,
+# cart), not a standing person: it leaves the person tracks and the static
+# blockage/detour path and costmap handle it. Without this, an unmapped cone
+# beside the lane was a "person" forever and the robot yielded until the 15 s
+# yield budget failed the mission (2026-09-25, cones at x=-10 on lane_upper).
+# A person who stands still longer than this is passed with costmap clearance
+# instead of the 1 m person margin (accepted trade-off, 2026-09-25).
+STANDING_STATIC_S = 8.0
+
 
 @dataclass
 class Track:
@@ -16,6 +25,7 @@ class Track:
     history: deque = field(default_factory=lambda: deque(maxlen=8))
     track_id: int = 0
     was_moving: bool = False
+    first_stamp: float = None
 
 
 class Tracker:
@@ -69,26 +79,30 @@ class Tracker:
                 track.motion_until = stamp + 2.0
         for j, (x, y) in enumerate(detections):
             if j not in used_detections:
-                track = Track(x, y, stamp)
+                track = Track(x, y, stamp, first_stamp=stamp)
                 track.track_id = self.next_id
                 self.next_id += 1
                 track.history.append((stamp, x, y))
                 self.tracks.append(track)
         return self.tracks
 
-    def snapshots(self, stamp, radius=0.4, standing_ok=None, standing_hits=5):
+    def snapshots(self, stamp, radius=0.4, standing_ok=None, standing_hits=5,
+                  standing_static_s=STANDING_STATIC_S):
         """Current positions + velocity + observation age, not collapsed futures.
 
         Never-moved objects are included only after `standing_hits` scans and
         when `standing_ok(x, y)` accepts them (e.g. far from mapped structure):
         a person standing beside the lane was otherwise invisible until it
         started walking, by which time the robot had already passed it.
+        They drop out again once they have stood still for `standing_static_s`
+        since first seen (STANDING_STATIC_S).
         """
         return [(t.track_id, t.x+t.vx*(stamp-t.stamp), t.y+t.vy*(stamp-t.stamp),
                  t.vx, t.vy, radius, stamp-t.stamp)
                 for t in self.tracks if 0 <= stamp-t.stamp <= self.timeout and (
                     (t.was_moving and t.hits >= 3) or
                     (standing_ok is not None and t.hits >= standing_hits and
+                     stamp-t.first_stamp < standing_static_s and
                      standing_ok(t.x, t.y)))]
 
     def predictions(self, stamp, horizon=1.8, step=0.2, radius=0.4):

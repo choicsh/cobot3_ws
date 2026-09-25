@@ -53,3 +53,29 @@ def test_standing_person_is_tracked_only_when_persistent_and_accepted():
     # and without a predicate the old moving-only contract is unchanged.
     assert tracker.snapshots(0.4, standing_ok=lambda x, y: False) == []
     assert tracker.snapshots(0.4) == []
+
+
+def test_never_moved_object_becomes_static_after_standing_static_s():
+    from nav_to_goal.obstacle_tracking import STANDING_STATIC_S
+    tracker = Tracker()
+    accept = lambda x, y: True
+    seen = {}
+    for i in range(int(STANDING_STATIC_S / 0.1) + 5):
+        t = i*0.1
+        tracker.update([(3.0, 1.0)], t)                         # a cone: never moves
+        seen[round(t, 1)] = len(tracker.snapshots(t, standing_ok=accept))
+    assert seen[1.0] == 1                                       # early: may be a person
+    assert seen[round(STANDING_STATIC_S - 0.5, 1)] == 1
+    assert seen[round(STANDING_STATIC_S + 0.2, 1)] == 0         # still for > 8 s: static
+
+
+def test_moving_person_stays_tracked_after_standing_static_s():
+    tracker = Tracker()
+    t = 0.0
+    for i in range(8):                                          # walks 1 m/s, then stops
+        tracker.update([(3.0, i*0.125)], t)
+        t += 0.125
+    for _ in range(100):                                        # stands for ~12 s
+        tracker.update([(3.0, 7*0.125)], t)
+        t += 0.125
+    assert len(tracker.snapshots(t - 0.125, standing_ok=lambda x, y: True)) == 1

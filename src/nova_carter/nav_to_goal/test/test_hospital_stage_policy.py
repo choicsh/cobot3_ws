@@ -137,7 +137,7 @@ def stage_harness(monkeypatch, mode):
     namespace = {name: getattr(geometry, name) for name in (
         'SafetySettings', 'choose_candidate', 'densify_planner_path',
         'forward_path_valid', 'lane_for_path',
-        'offset_candidates', 'path_clearance', 'tail_clear_for_rejoin', 'wrap')}
+        'offset_candidates', 'path_clearance', 'path_escapes', 'tail_clear_for_rejoin', 'wrap')}
     namespace.update(math=math, SafetyObservations=Observations, Path=PathMessage,
         yaw_of=lambda q: 2*math.atan2(q.z, q.w),
         rclpy=NS(ok=lambda: True, spin_once=step),

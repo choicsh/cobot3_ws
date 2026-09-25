@@ -13,7 +13,7 @@ from std_msgs.msg import String
 
 from nav_to_goal.hospital_avoidance import (
     SafetySettings, choose_candidate, densify_planner_path, forward_path_valid,
-    lane_for_path, offset_candidates, path_clearance, tail_clear_for_rejoin, wrap,
+    lane_for_path, offset_candidates, path_clearance, path_escapes, tail_clear_for_rejoin, wrap,
 )
 from nav_to_goal.hospital_safety import SafetyObservations, yaw_of
 
@@ -207,7 +207,13 @@ def follow_stage(navigator, tf_buffer, plan_publisher, stage_name, route,
             # candidate mechanism here to resolve apparent moving wall corners.
             gap = (path_clearance(points, pose, velocity, tracks, settings, .6)
                    if mppi else math.inf)
-            risk = mppi and gap < (settings.minimum_gap if in_detour else settings.preferred_gap)
+            threshold = settings.minimum_gap if in_detour else settings.preferred_gap
+            risk = mppi and gap < threshold
+            if risk and path_escapes(points, pose, velocity, tracks, threshold, settings):
+                # Already inside the margin, but the path leads away: yielding would
+                # only wait for a person who may be waiting for us. The output
+                # guard caps the speed (PASSING_SLOW / ESCAPING).
+                risk = False
             if in_detour and lane.local(pose)[0] >= rejoin_s-4.0:
                 risk = risk or not tail_clear_for_rejoin(lane, pose, tracks, settings)
             blockage = blockage_monitor.observe(reference, reference_index) if mppi and blockage_monitor else None
