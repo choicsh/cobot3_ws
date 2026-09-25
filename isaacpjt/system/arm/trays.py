@@ -77,7 +77,14 @@ class TrayRegistry:
         벌리면 파지점 도달거리가 0.69~1.09m 로 퍼지는데, 1.10m 부근은 joint_5 가 0 으로 밀려
         손목 특이점이다. 가로로만 벌리면 0.90~0.93m 에 모여 전부 안전하다 (원본 spawn_tray_copies)."""
         stage = omni.usd.get_context().get_stage()
-        origin = np.array(stage.GetPrimAtPath(TRAY_PRIM_PATH).GetAttribute("xformOp:translate").Get(), dtype=float)
+        translate = stage.GetPrimAtPath(TRAY_PRIM_PATH).GetAttribute("xformOp:translate")
+        origin = np.array(translate.Get(), dtype=float)
+        # 원본 트레이를 도킹한 로봇 기준 제자리(TRAY_ORIGIN_BASE)로 옮긴다. 높이(책상 위)는 씬 값 그대로
+        target = np.asarray(base_pos, dtype=float) + quat_to_matrix(base_quat) @ np.array([*TRAY_ORIGIN_BASE, 0.0])
+        moved = float(np.linalg.norm(target[:2] - origin[:2]))
+        origin[:2] = target[:2]
+        translate.Set(Gf.Vec3d(*origin))
+        print(f"   tray origin  world {vec(origin)}  (base {TRAY_ORIGIN_BASE}, 씬 위치에서 {moved * 100:.1f}cm 이동)")
         radial = world_to_base_pos(origin, base_pos, base_quat)[:2]
         radial = radial / np.linalg.norm(radial)
         lateral = quat_to_matrix(base_quat) @ np.array([-radial[1], radial[0], 0.0])
@@ -106,6 +113,27 @@ class TrayRegistry:
             self.bodies.append(f"{path}/{TRAY_BODY_REL}")
         update()
         return origin
+
+    def preload_rack(self, robot_index, base_pos, base_quat, update):
+        """로봇 랙 3칸에 트레이를 실어 둔다 — 하역만 따로 시험할 때 (spawn_copies 뒤, world.reset 전).
+
+        자리는 적재가 실제로 남기는 자리: body 원점 = 칸 TCP 목표 + (0, RACK_TRAY_ORIGIN_DY), 높이는 칸 바닥,
+        방위는 책상 스폰 방위 + 90도 (랙에서 트레이 로컬 +X 가 base -x, 2026-09-25 적재 실측과 같다)."""
+        stage = omni.usd.get_context().get_stage()
+        rack_quat_base = quat_mul(quat_from_axis([0, 0, 1], 90.0), self.spawn_quat_base)
+        world_quat = quat_mul(base_quat, rack_quat_base)
+        for slot, tcp in enumerate(RACK_SLOTS):
+            origin_base = np.array([tcp[0], tcp[1] + RACK_TRAY_ORIGIN_DY, RACK_TRAY_Z_BASE + 0.003])
+            pos = np.asarray(base_pos, dtype=float) + quat_to_matrix(base_quat) @ origin_base
+            path = f"{TRAY_PRIM_PATH}_rack{robot_index}_{slot + 1}"
+            omni.usd.duplicate_prim(stage, TRAY_PRIM_PATH, path)
+            prim = stage.GetPrimAtPath(path)
+            prim.GetAttribute("xformOp:translate").Set(Gf.Vec3d(*pos))
+            prim.GetAttribute("xformOp:orient").Set(Gf.Quatf(float(world_quat[0]), *map(float, world_quat[1:])))
+            attach_aruco(path, random.choice(ARUCO_IDS))
+            self.bodies.append(f"{path}/{TRAY_BODY_REL}")
+            print(f"   rack preload robot{robot_index} 랙 {slot + 1}번  {path}  world {vec(pos)}")
+        update()
 
     def tray_yaw_base_deg(self):
         """책상 트레이의 base 기준 방위(로컬 +X). 파지 yaw 를 이 축에 맞춘다 (geometry.square_grasp_yaw)."""

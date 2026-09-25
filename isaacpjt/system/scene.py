@@ -217,11 +217,13 @@ def _disconnect(stage, attribute_path):
 def add_robots(stage, poses, front_camera=True):
     """poses[i-1] = (x, y, yaw_deg) 인 로봇 i 를 만들고 ROS 그래프를 네임스페이스로 복제한다.
 
-    로봇 1 은 씬에 있던 것을 그대로 쓰되(poses[0] 은 무시) 네임스페이스만 robot1 로 바꾼다."""
+    로봇 1 은 씬에 있던 것을 쓰고 네임스페이스만 robot1 로 바꾼다. poses[0] 이 None 이면 씬 자세 그대로,
+    값이 있으면 그 자세로 옮긴다 (세션 레이어)."""
     root = stage.GetRootLayer()
     session = stage.GetSessionLayer()
     Sdf.CreatePrimInLayer(session, "/World")
-    for index, (x, y, yaw_deg) in enumerate(poses, start=1):
+    for index, pose in enumerate(poses, start=1):
+        x, y, yaw_deg = pose if pose is not None else (0.0, 0.0, 0.0)
         prim, graph = robot_prim(index), robot_graph(index)
         if index > 1:
             if not Sdf.CopySpec(root, SOURCE_ROBOT, session, prim):
@@ -232,7 +234,7 @@ def add_robots(stage, poses, front_camera=True):
             _remap_layer_paths(session, graph, SOURCE_ROBOT + "/", prim + "/")
             _remap_layer_paths(session, prim, SOURCE_ROBOT + "/", prim + "/")
         with Usd.EditContext(stage, session):
-            if index > 1:
+            if index > 1 or poses[0] is not None:
                 xform = stage.GetPrimAtPath(prim)
                 xform.GetAttribute("xformOp:translate").Set(Gf.Vec3d(x, y, 0.0))
                 xform.GetAttribute("xformOp:orient").Set(

@@ -196,10 +196,13 @@ POINT3_RPY = (-89.3, 0.1, 180.0)
 # 놓기 위 안전 위치는 POINT4_TCP 에서 z 만 올려 만들므로 자동으로 같이 움직인다.
 # 후퇴점(POINT5)도 같은 양만큼 옮겨 수평 후퇴 15cm 를 유지한다.
 # z 이력: 0.2500 -> 0.2600(+1cm, 그리퍼 열 때 트레이 내부 형상과 충돌해서) -> 0.2700(+1cm)
-POINT4_TCP = np.array([-0.0093, 0.7890, 0.2700])    # 놓는 위치 (랙 가운데 슬롯)
+# 이력(2026-09-25): y 0.7890 -> 0.8280 (+3.9cm). 트레이 축에 맞춰 물게 된 뒤(square_grasp_yaw)
+# 0.789 에서는 트레이 중심이 칸 깊이 중심(USD 실측 0.802)보다 3.9cm 앞이라 앞쪽 1.4cm 가 랙 바닥 밖으로
+# 나갔다. 0.819 에서 테두리에 닿던 이력은 최대 19도 비스듬히 물던 때(깊이 16cm 차지)의 일이다 — 지금은 14cm.
+POINT4_TCP = np.array([-0.0093, 0.8280, 0.2700])    # 놓는 위치 (랙 가운데 슬롯)
 POINT4_RPY = (-89.3, 0.1, 180.0)
 
-POINT5_TCP = np.array([-0.0093, 0.6390, 0.2700])    # 놓고 후퇴하는 안전 위치 (수평 15cm 후퇴, z 는 POINT4 와 같게)
+POINT5_TCP = np.array([-0.0093, 0.6780, 0.2700])    # 놓고 후퇴하는 안전 위치 (수평 15cm 후퇴, z 는 POINT4 와 같게)
 POINT5_RPY = (-89.3, 0.1, 180.0)
 
 POINT6_TCP = np.array([-0.0093, 0.7690, 0.25])   # 처음에 내려놓는 위치 (base +y 로 50mm 더 안쪽)
@@ -238,6 +241,11 @@ RACK_TRAY_ALIGN     = True
 # 스텝이 실패해 건너뛰어졌거나 트레이를 놓친 경우를 거른다 — 엉뚱한 트레이를 옮기지 않는다.
 # 칸 간격(0.165)의 절반보다 작게 둬서 옆 칸 트레이가 후보로 들어올 여지도 없앤다
 RACK_TRAY_MATCH_R_M = 0.08
+# 칸 바닥에 앉은 트레이만 정렬한다. 칸막이에 걸려 기운 트레이를 수평으로 세우면 칸막이에 박힌 자세가
+# 되어 PhysX 가 튕겨 낸다 (2026-09-25 실측: 41도 기운 트레이를 세우자 12cm 밀려 테두리 위로 올라갔다).
+RACK_TRAY_Z_BASE    = 0.150    # 칸 바닥에 앉은 트레이 body 원점 높이(base) — USD 랙 바닥 윗면과 같다
+ALIGN_MAX_TILT_DEG  = 10.0
+ALIGN_Z_TOL_M       = 0.02
 
 # 시작 시 원본 트레이(/World/tray)를 이만큼 더 복제해 흩뿌린다. 자세는 원본 그대로,
 # 위치는 원본을 중심으로 **가로 방향 한 줄**(base->트레이 방향에 수직)로 ±TRAY_SPREAD_R_M.
@@ -301,9 +309,11 @@ GRIPPER_WAIT_STEPS  = 120    # 그리퍼가 실제로 여닫힐 때까지 제자
 # 60Hz 가정(GRIPPER_WAIT_STEPS=120 이 약 2초인 것과 같은 기준) — 랙에 내려놓기
 # 전 흔들림이 가라앉을 시간을 준다. 1초 = 60 스텝
 # 이력: 60(1초) -> 120(2초). 보간 속도를 2.5배로 올린 뒤 아직 흔들리는 중에 하강했다.
+#       -> 60(1초) (2026-09-25 요청). 도착은 ease 2 로 감속하고, 트레이 축에 맞춰 물게 된 뒤로는
+#       흔들림이 작다 — 실측으로 하강 중 걸림이 다시 생기면 되돌릴 것.
 # 이름 이력: RACK_PLACE_WAIT_STEPS -> PLACE_WAIT_STEPS. 적재(랙)와 하역(책상) 양쪽의
 # 수직 하강 직전에 같이 쓴다 — 두 자리 모두 같은 원인(도착 감속 충격)으로 흔들린다.
-PLACE_WAIT_STEPS = 120
+PLACE_WAIT_STEPS = 60
 # 놓는 위치 바로 위 안전 지점의 높이(= 수직으로 내려가는 거리). 대각선으로 진입하면
 # 트레이가 랙 테두리에 걸려서, 슬롯 위로 먼저 간 뒤 수직으로만 내려가게 한다.
 # 이력: 0.10 -> 0.11 (안전 위치가 너무 낮아서, POINT4 z +1cm 와 합쳐 총 +2cm)
@@ -428,7 +438,7 @@ STEP_EXTRA_TICKS        = 120
 STEP_CONTACT_TOL_M      = 0.03
 WRIST_NEAR_SINGULAR_DEG = 8.0
 # 파지 yaw 를 정면(0.0)에서 검출 방위각(1.0) 쪽으로 양보해 가는 순서.
-# 앞쪽부터 IK 를 물어보고 처음 풀리는 값을 쓴다 (pick_grasp_yaw_weight).
+# 이제 check_math 의 grasp_frame 검증에만 쓴다 — 파지 yaw 는 plan_grasp 가 트레이 축으로 정한다.
 #
 # 되돌림(2026-09-23): (0.0, 0.3, 0.6, 1.0) 으로 넣었다가 (1.0,) 으로 복구했다.
 # 트레이는 팔 기준 방위각이 90도 가까운 자리에 있어서(스캔이 joint_1 을 -90도 돌려야 보인다)
@@ -555,6 +565,10 @@ def check_math():
         assert np.allclose(d0, [0.0, 1.0, 0.0], atol=1e-9), f"w=0.0 이 정면이 아니다: {target} -> {d0}"
         assert np.allclose(q0_, make_target_quat(*POINT2_RPY), atol=1e-9), f"w=0.0 자세가 POINT2_RPY 가 아니다: {target}"
 
+    # 트레이 축 스냅 — 책상 트레이(base yaw +90)는 방위각이 어디든 -90(base +x) 으로 문다
+    for bearing in (-103.1, -90.0, -70.7):
+        assert abs(square_grasp_yaw(bearing, 90.0) + 90.0) < 1e-9, bearing
+
     # rack_yaw_delta_deg 구조 검증 — 씬 좌표와 무관하게 항상 성립해야 하는 성질들
     for p in ([-0.15, 0.80, 0.28], [0.80, 0.03, 0.11], [0.10, -0.75, 0.20]):
         p = np.array(p)
@@ -607,38 +621,48 @@ def grasp_frame(grasp_base, weight=1.0):
     direction 도 같이 돌려야 한다 — 접근 후퇴(APPROACH_BACKOFF_M)가 그리퍼가
     보는 방향과 어긋나면 옆에서 들이민다. check_math 의 tool_z 불변식이 이걸 잡는다."""
     _, yaw_deg = approach_direction(grasp_base)
-    rz = quat_from_axis([0, 0, 1], yaw_deg * weight)
+    return grasp_frame_yaw(yaw_deg * weight)
+
+
+def grasp_frame_yaw(yaw_deg):
+    """base z 축으로 yaw_deg 돌린 파지 자세와 접근 방향. yaw 는 approach_direction 과 같은 정의
+    (Rz(yaw)*[0,1,0] = 접근 방향, 0 = base +y, -90 = base +x)."""
+    rz = quat_from_axis([0, 0, 1], yaw_deg)
     q = quat_mul(rz, make_target_quat(*POINT2_RPY))
     direction = quat_to_matrix(rz) @ np.array([0.0, 1.0, 0.0])
     return direction, q / np.linalg.norm(q)
 
 
-def pick_grasp_yaw_weight(lula, grasp_base, base_pos, base_quat):
-    """정면(0.0)부터 방위각(1.0)까지 순서대로 IK 를 물어보고 처음 풀리는 각도를 쓴다.
+def square_grasp_yaw(bearing_deg, tray_yaw_base_deg):
+    """방위각을 트레이 축(tray_yaw_base_deg + k*90)에 스냅한 파지 yaw.
 
-    팔은 정면에서 가장 여유가 크고, 방위각이 커질수록 손목이 특이점 쪽으로 끌려간다.
-    그래서 정면을 먼저 시도하고 안 되면 방위각 쪽으로 한 칸씩 양보한다. 전부 실패하면
-    1.0(방위각) 으로 떨어진다 — 기존 동작이라 최소한 지금보다 나빠지지 않는다.
+    이력(2026-09-25): 파지 yaw = base->트레이 방위각이었다. 트레이는 책상에 반듯이 놓여 있는데 가로로
+    +-25cm 흩어져 있어 방위각이 -69 ~ -103도로 퍼지고, 그 차이(최대 19도)만큼 비스듬히 물어 그대로 랙에
+    넣었다. 칸 폭 15.4cm 에 9.1x14cm 트레이가 19도 돌면 13.2cm 라 여유가 1cm, 파지점 오차가 넘으면
+    칸막이 위에 얹혀 40도 기울었다. 트레이 축에 맞춰 물면 어긋남이 0 이다.
+    트레이 로컬 +X 방위가 a 이면 트레이 변에 수직인 접근 yaw 도 a + k*90 이다."""
+    k = round((bearing_deg - tray_yaw_base_deg) / 90.0)
+    return (tray_yaw_base_deg + 90.0 * k + 180.0) % 360.0 - 180.0
 
-    팔을 움직이지 않고 미리 물어본다. warm_start 를 주지 않아 solver 기본 시드를 쓰므로
-    같은 입력이면 항상 같은 답이 나온다 (build_return_steps 가 따로 불러도 일치한다).
 
-    ponytail: 파지점 하나만 본다. 접근/들어올리기는 같은 yaw 에 더 쉬운 자세라 보통 같이 풀린다.
-    ponytail: (1-w)*|yaw_deg| 가 크면 접근선이 옆 트레이를 가로지를 수 있다. 실제로 부딪히면
-              그때 상한을 넣을 것 — 지금은 IK 가 풀리는지만 본다."""
+def plan_grasp(lula, tray_world, base_pos, base_quat):
+    """검출점(월드) -> (파지점 base, 파지 yaw). 트레이 축 yaw 를 먼저, 안 풀리면 방위각(예전 동작).
+    조건은 예전 pick_grasp_yaw_weight 와 같다 — IK 가 풀리고 joint_5 가 손목 특이점 밖이어야 채택."""
+    surface = world_to_base_pos(tray_world, base_pos, base_quat)
+    bearing = approach_direction(surface)[1]
+    square = square_grasp_yaw(bearing, tray_yaw_deg(_tray_spawn_quat_base))
     j5 = list(lula.get_joint_names()).index("joint_5")
-    for w in GRASP_YAW_WEIGHTS:
-        _, q = grasp_frame(grasp_base, w)
-        pos, quat = base_pose_to_world(grasp_base, q, base_pos, base_quat)
+    for name, yaw in (("트레이 축", square), ("방위각", bearing)):
+        grasp = grasp_point_base(tray_world, base_pos, base_quat, yaw)
+        _, q = grasp_frame_yaw(yaw)
+        pos, quat = base_pose_to_world(grasp, q, base_pos, base_quat)
         sol, ok = lula.compute_inverse_kinematics(EE_LINK_NAME, tcp_to_flange(pos, quat), quat)
         if ok and abs(np.degrees(sol[j5])) >= WRIST_NEAR_SINGULAR_DEG:
-            print(f"   파지 yaw weight {w:.2f} 채택 "
-                  f"(방위각 {approach_direction(grasp_base)[1]:+.1f}deg 중 "
-                  f"{approach_direction(grasp_base)[1] * w:+.1f}deg 사용, "
+            print(f"   파지 yaw     {name} {yaw:+.1f}deg 채택 (방위각 {bearing:+.1f}, 트레이 축 {square:+.1f}, "
                   f"joint_5 {np.degrees(sol[j5]):+.1f}deg)")
-            return w
-    print("   파지 yaw — 어느 weight 로도 IK 가 안 풀렸다. 방위각(1.0) 그대로 간다")
-    return 1.0
+            return grasp, yaw
+    print(f"   파지 yaw     트레이 축 {square:+.1f} / 방위각 {bearing:+.1f} 둘 다 IK 가 안 풀렸다 — 방위각으로 간다")
+    return grasp_point_base(tray_world, base_pos, base_quat, bearing), bearing
 
 
 def rack_yaw_delta_deg(grasp_base, place_base):
@@ -1350,12 +1374,16 @@ def optical_to_world(point_optical, color_camera_path):
     return np.array(mat.Transform(usd_point), dtype=float)
 
 
-def grasp_point_base(tray_world, base_pos, base_quat):
+def grasp_point_base(tray_world, base_pos, base_quat, yaw_deg=None):
     """검출점(월드) -> 파지 목표(base 기준).
 
-    접근 방향(base 에서 트레이를 향하는 방향)으로 트레이 중심 보정과 높이 보정을 준다."""
+    접근 방향으로 트레이 중심 보정과 높이 보정을 준다. yaw_deg 를 주면 그 파지 방향(plan_grasp),
+    없으면 base 에서 트레이를 향하는 방위각 방향으로 민다."""
     surface = world_to_base_pos(tray_world, base_pos, base_quat)
-    direction, _ = approach_direction(surface)
+    if yaw_deg is None:
+        direction, _ = approach_direction(surface)
+    else:
+        direction, _ = grasp_frame_yaw(yaw_deg)
     return surface + direction * TRAY_HALF_DEPTH_M + np.array([0.0, 0.0, GRASP_ABOVE_CENTER_M])
 
 
@@ -1382,7 +1410,7 @@ def find_first_tray_optical(verbose=False):
     return next(iter_tray_optical(verbose=verbose), None)
 
 
-def first_tray_grasp(color_camera_path, base_pos, base_quat, verbose=False,
+def first_tray_grasp(lula, color_camera_path, base_pos, base_quat, verbose=False,
                      centered_first=False):
     """집을 트레이의 파지점(base)과 월드 좌표를 구한다. 없으면 None.
 
@@ -1408,7 +1436,7 @@ def first_tray_grasp(color_camera_path, base_pos, base_quat, verbose=False,
                   f"(허용 {CENTER_TOL_M * 100:.0f}cm). 정렬한 그 트레이가 아니다")
             continue
         tray_world = optical_to_world(point_optical, color_camera_path)
-        grasp = grasp_point_base(tray_world, base_pos, base_quat)
+        grasp, yaw = plan_grasp(lula, tray_world, base_pos, base_quat)
         reach = float(np.linalg.norm(grasp))
         if not (GRASP_REACH_MIN_M <= reach <= GRASP_REACH_MAX_M):
             print(f"   후보{i + 1} 무시 — 파지점이 base 에서 {reach:.3f}m "
@@ -1416,8 +1444,8 @@ def first_tray_grasp(color_camera_path, base_pos, base_quat, verbose=False,
             continue
         print(f"   트레이 conf {conf:.2f}  cam {vec(point_optical, 3)}  "
               f"world {vec(tray_world)}  파지(base) {vec(grasp, 4)}  "
-              f"reach {reach:.3f}m  yaw {approach_direction(grasp)[1]:+.1f}deg")
-        return grasp, tray_world
+              f"reach {reach:.3f}m  yaw {yaw:+.1f}deg")
+        return grasp, yaw
     return None
 
 
@@ -1687,12 +1715,11 @@ def wrist_unlock_step():
     return {"type": "joint", "label": "손목 풀기(재시도)", "target": target, "gripper": None}
 
 
-def build_return_steps(lula, grasp_base, base_pos, base_quat):
+def build_return_steps(lula, grasp_base, grasp_yaw_deg, base_pos, base_quat):
     """들고 있던 트레이를 원래 집은 자리에 되돌려 놓고 홈으로. 적재 실패 복구용.
 
     그 자리는 방금 집어 온 곳이라 비어 있다 — 아무 데나 떨어뜨리는 것보다 안전하다."""
-    direction, grasp_quat = grasp_frame(
-        grasp_base, pick_grasp_yaw_weight(lula, grasp_base, base_pos, base_quat))
+    direction, grasp_quat = grasp_frame_yaw(grasp_yaw_deg)
 
     def to_world_q(tcp):
         return base_pose_to_world(tcp, grasp_quat, base_pos, base_quat)
@@ -1832,6 +1859,15 @@ def align_tray_on_rack(slot, base_pos, base_quat):
         pos, quat = body.get_world_pose()
         pos = np.asarray(pos, dtype=float)
 
+        # 칸 바닥에 반듯이 앉은 트레이만 맞춘다 — 걸려서 기운 걸 세우면 칸막이에 박혀 튕겨 나간다
+        local = quat_to_matrix(quat_mul(quat_conj(base_quat), np.asarray(quat, dtype=float)))
+        tilt = float(np.degrees(np.arccos(np.clip(local[2, 2], -1.0, 1.0))))
+        z = float(world_to_base_pos(pos, base_pos, base_quat)[2])
+        if tilt > ALIGN_MAX_TILT_DEG or abs(z - RACK_TRAY_Z_BASE) > ALIGN_Z_TOL_M:
+            print(f"   rack align   랙 {slot + 1}번 {held['path']} — 기울기 {tilt:.1f}deg, z(base) {z:+.3f} "
+                  f"(바닥 {RACK_TRAY_Z_BASE:+.3f}). 칸에 안 앉았다 — 정렬하지 않는다")
+            return
+
         target_quat = rack_square_quat(quat, base_quat)
         # 슬롯 중심에 트레이 수평 중심이 오도록. p_rel 은 이상적인 TCP 자세로 돌려서 얹는다
         ideal_pos, ideal_quat = base_to_world(RACK_SLOTS[slot], POINT4_RPY, base_pos, base_quat)
@@ -1858,7 +1894,7 @@ def align_tray_on_rack(slot, base_pos, base_quat):
         print(f"   rack align   랙 {slot + 1}번 정렬 실패 (무시하고 계속): {exc}")
 
 
-def build_pick_steps(lula, grasp_base, base_pos, base_quat, slot):
+def build_pick_steps(lula, grasp_base, grasp_yaw_deg, base_pos, base_quat, slot):
     """검출로 구한 grasp_base(파지점, base 기준)로 집어서 RACK_SLOTS[slot] 에 놓는다.
 
     build_sequence 와 같은 형태지만 POINT1/POINT2(파지 지점)만 검출값으로
@@ -1869,8 +1905,7 @@ def build_pick_steps(lula, grasp_base, base_pos, base_quat, slot):
     def to_world(tcp, rpy):
         return base_to_world(tcp, rpy, base_pos, base_quat)
 
-    direction, grasp_quat = grasp_frame(
-        grasp_base, pick_grasp_yaw_weight(lula, grasp_base, base_pos, base_quat))
+    direction, grasp_quat = grasp_frame_yaw(grasp_yaw_deg)   # plan_grasp 가 고른 yaw
 
     def to_world_q(tcp):
         return base_pose_to_world(tcp, grasp_quat, base_pos, base_quat)
@@ -1926,7 +1961,9 @@ def build_unload_steps(lula, slot, desk_z, base_pos, base_quat):
     def to_world(tcp, rpy):
         return base_to_world(tcp, rpy, base_pos, base_quat)
 
-    direction, desk_quat = grasp_frame(DESK_ROW_CENTER)
+    # 이력(2026-09-25): DESK_ROW_CENTER 방위각(-86.6도)으로 놓아 트레이가 3.4도 비스듬했다. 트레이 축에 맞춘다
+    direction, desk_quat = grasp_frame_yaw(
+        square_grasp_yaw(approach_direction(DESK_ROW_CENTER)[1], tray_yaw_deg(_tray_spawn_quat_base)))
 
     def to_world_q(tcp):
         return base_pose_to_world(tcp, desk_quat, base_pos, base_quat)
@@ -2193,7 +2230,7 @@ def main():
         print(f"   복구         {reason} — {where} 계속한다 (적재 실패 {stage_fails}/{MAX_STAGE_FAILS})")
         sequence = PickPlaceSequence(
             robot, ik_solver, arm_indices,
-            build_return_steps(lula, grasp, base_pos, base_quat) if grasp is not None else [home_step()])
+            build_return_steps(lula, *grasp, base_pos, base_quat) if grasp is not None else [home_step()])
         sequence.reset()
         sequence.gripper = held
         pick_state = "recover"
@@ -2317,7 +2354,7 @@ def main():
                 # settle_next == "pick" — 중앙 정렬 후 다시 검출해서 최종 파지점을 구한다
                 try:
                     # centered_first — 바로 앞 정렬 단계가 중앙에 맞춰 놓은 그 트레이를 집는다
-                    found = first_tray_grasp(color_camera_path, base_pos, base_quat,
+                    found = first_tray_grasp(lula, color_camera_path, base_pos, base_quat,
                                              verbose=True, centered_first=True)
                 except Exception:
                     import traceback
@@ -2335,9 +2372,9 @@ def main():
                     continue
                 retry_count = 0
 
-                grasp, _tray_world = found
+                grasp, grasp_yaw = found
                 grasp_log.append(grasp)
-                steps = build_pick_steps(lula, grasp, base_pos, base_quat, slot_index)
+                steps = build_pick_steps(lula, grasp, grasp_yaw, base_pos, base_quat, slot_index)
                 sequence = PickPlaceSequence(robot, ik_solver, arm_indices, steps)
                 sequence.reset()
                 pick_state = "pick"

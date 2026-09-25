@@ -31,7 +31,9 @@ parser.add_argument("--front-cam", action="store_true",
                     help="전방 스테레오 카메라 발행 (병원 주행은 안 씀. 켜면 3대에서 실시간 비율 0.67->0.60)")
 parser.add_argument("--walk-blend", type=float, default=0.75)
 parser.add_argument("--pose", action="append", default=[], metavar="I:X,Y,YAW",
-                    help="로봇 I(2 이상)의 시작 자세 덮어쓰기, 예: --pose 2:20.2,17.5,180")
+                    help="로봇 I 의 시작 자세, 예: --pose 2:20.2,17.5,180 또는 도킹 자세 --pose 1:collection")
+parser.add_argument("--preload-rack", action="append", type=int, default=[], metavar="I",
+                    help="로봇 I 의 랙 3칸에 트레이를 미리 싣는다 (하역 단독 시험용)")
 args = parser.parse_args()
 if not args.no_arm and args.no_wrist:
     parser.error("팔은 손목 카메라 검출이 필요하다 — --no-wrist 는 --no-arm 과 같이 쓸 것")
@@ -68,16 +70,25 @@ settings.set_int("/app/runLoops/main/rateLimitFrequency", 30)
 scene.configure_people(args.walk_blend)
 simulation_app.update()
 
-# 차선 위 빈 자리. 로봇 1 값은 쓰지 않는다(씬에 있는 자세 그대로).
+# 로봇 1 은 None = 씬 USD 자세 (20.27, 13.746, 90) — P&P 를 맞춘 자세다. 실제 도킹 자세와 다르다(아래).
+# 2·3 은 운송 차선(lane_lower) 남쪽 직선 위 빈 자리.
 ROBOT_POSES = [
-    (20.27, 13.745, 90.0),     # robot1: East 책상(채취실) 도킹 자세
-    (-5.0, -1.5, 180.0),       # robot2: lane_lower 남쪽 직선
-    (-20.0, -1.5, 180.0),      # robot3: lane_lower 남쪽 직선
+    None,
+    (-5.0, -1.5, 180.0),
+    (-20.0, -1.5, 180.0),
 ]
+# 책상 도킹이 끝났을 때의 base_link 자세 — nav_to_goal/hospital_docking.TABLES 의 dock 과 같은 값
+# (책상 긴 변이 로봇 우측, 간격 0.15 m). 로봇 프림 원점 = base_link 이다.
+# 씬 USD 자세보다 책상에서 8.5 cm 멀고 6.7 cm 북쪽이다.
+NAMED_POSES = {
+    "collection": (20.185, 13.8125, 90.0),     # East_DockDesk, 채취실 (적재)
+    "analysis": (-44.741, 12.9125, -90.0),     # West_DockDesk, 분석실 (하역)
+}
 
 for item in args.pose:
     index, values = item.split(":")
-    ROBOT_POSES[int(index) - 1] = tuple(float(v) for v in values.split(","))
+    ROBOT_POSES[int(index) - 1] = (NAMED_POSES[values] if values in NAMED_POSES
+                                   else tuple(float(v) for v in values.split(",")))
 
 behavior_paths, behavior_script = scene.validated_behavior_prims()
 previous_prompt = settings.get_as_bool("/app/scripting/ignoreWarningDialog")
@@ -111,6 +122,9 @@ if not args.no_arm:
     # 트레이 책상(East, 채취실)에 도킹해 있는 로봇 1 의 팔 base 기준으로 복제한다
     trays.spawn_copies(*SingleXFormPrim(f"{scene.robot_prim(1)}/{ARM_BASE_REL}").get_world_pose(),
                        simulation_app.update)
+    for index in args.preload_rack:
+        trays.preload_rack(index, *SingleXFormPrim(f"{scene.robot_prim(index)}/{ARM_BASE_REL}").get_world_pose(),
+                           simulation_app.update)
     for index in range(1, args.robots + 1):
         io = ArmRosIO(index, simulation_app.update)
         io.build()
