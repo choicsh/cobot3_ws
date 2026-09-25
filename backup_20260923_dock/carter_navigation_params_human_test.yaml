@@ -118,7 +118,7 @@ bt_navigator:
     #
     # install 이 아니라 src 경로를 가리킨다. BT 를 고칠 때마다 colcon build 를 다시
     # 하지 않아도 되고, 지금 단계에서는 radius 를 여러 번 만질 가능성이 높다.
-    default_nav_through_poses_bt_xml: "/home/hhj/cobot3_ws/src/nova_carter/carter_navigation/behavior_trees/nav_through_poses_human_test.xml"
+    default_nav_through_poses_bt_xml: "/home/rokey/cobot3_ws/src/nova_carter/carter_navigation/behavior_trees/nav_through_poses_human_test.xml"
 
     # plugin_lib_names is used to add custom BT plugins to the executor (vector of strings).
     # Built-in plugins are added automatically
@@ -245,13 +245,15 @@ controller_server:
       # 횡방향 오차는 이 tolerance 가 아니라 경로 추종 정확도와 AMCL 이 정한다.
       # planner_server 의 GridBased.tolerance 와 **항상 같이 움직일 것**.
       xy_goal_tolerance: 0.1
-      # 2.9도. AMCL 각도 추정 오차가 하한(~0.03)
-      # 3.15(pi, 사실상 무한)로 풀어 최종 정렬을 스크립트에 넘겼다가 **원복했다** (2026-09-23).
-      # 스크립트 회전이 위치를 망가뜨려서다 — 실측으로, 105도 제자리 회전 한 번에 base_link 가
-      # 0.22 m 이동했다 (역산 회전 반경 0.138 m. base_link 가 구동륜 축에서 14 cm 떨어져 있다).
-      # 도킹 통로의 서쪽 여유가 0.04 m 뿐이라 이 이동량을 감당할 수 없다.
-      # 최종 정렬은 Nav2 가 끝내고, 스크립트는 직진만 한다.
-      yaw_goal_tolerance: 0.05
+      # 0.05 -> 3.15 (pi, 사실상 무한) (2026-09-23).
+      # **Nav2 에게 최종 방향을 아예 맡기지 않는다.** 위치(xy 0.1)와 정지만 보고 SUCCEEDED 를 낸다.
+      # 최종 회전은 through_pose_human_test.py 가 cmd_vel 로 직접 한다 (도킹 직진과 같은 방식).
+      # 이유: 목표 근처 정렬에서 좌우 반전 진동, 먼 쪽으로 한 바퀴 회전 등이 반복됐고
+      #       critic 조합으로 잡는 시도가 여러 번 실패했다. 도착 지점은 자유반경 2.50m 라
+      #       (맵 실측) 장애물 회피가 필요 없는 구간이고, 스크립트 쪽 제어가 결정적이다.
+      # 주의: general_goal_checker 는 navigate_to_pose 도 함께 쓴다. 그쪽에서 최종 방향이
+      #       필요해지면 goal_checker_plugins 에 별도 체커를 추가해 goal_checker_id 로 고를 것.
+      yaw_goal_tolerance: 3.15
       trans_stopped_velocity: 0.03   # 3cm/s 이하여야 도착 인정 (시뮬 속도 잡음 고려해 0.02 대신)
       rot_stopped_velocity: 0.03     # 1.7도/s 이하여야 도착 인정. 미세 떨림으로 늦어지면 0.05 로 완화
   # DWB parameters

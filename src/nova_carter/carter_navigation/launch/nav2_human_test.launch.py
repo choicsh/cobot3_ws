@@ -92,7 +92,7 @@ def generate_launch_description():
                 "target_frame": "front_3d_lidar",
                 "transform_tolerance": 0.01,
                 "min_height": -0.8,    # 로봇 2배 스케일: 라이다 장착 높이도 2배
-                "max_height": 3.0,     # 〃
+                "max_height": 2.0,     # 3.0 -> 2.0 (사람 키 수준 제한, 상공 연산 배제)
                 # XT-32 는 원래 360도 회전형인데 여기서 +-90도로 잘라내고 있었다.
                 # 그러면 로봇이 지나온 자리가 뒤로 빠지는 순간 관측이 끊기고, raytrace clearing 은
                 # "지금 광선이 통과한 셀"만 지우므로 사람이 떠난 자리가 영구 장애물로 남는다.
@@ -102,7 +102,8 @@ def generate_launch_description():
                 # 차체 자기 반사는 footprint_clearing_enabled 가 지운다.
                 "angle_min": -3.14159,  # -M_PI
                 "angle_max": 3.14159,   #  M_PI
-                "angle_increment": 0.0087,
+                # 0.0087(722빔) -> 0.0174(약 360빔, 1도 분해능). CPU 변환 부하 50% 절감
+                "angle_increment": 0.0174,
                 "scan_time": 0.3333,
                 "range_min": 0.05,
                 "range_max": 100.0,

@@ -61,20 +61,26 @@ DOCK_BACK_M = 4.0   # 마지막 경유지를 도킹 축 위 이만큼 뒤에 둔
                     #   도킹점 +0.0m 0.55 / +2.0m 0.70 / +3.0m 1.55 / +4.0m 2.50
                     # 막는 건 서쪽(-x) 책상 한쪽뿐이고 동쪽은 뚫려 있다.
                     # 3.0 이었을 때 회전을 책상 바로 옆에서 해야 해 정렬이 안 됐다 -> 4.0.
+ARRIVE_M = 0.5      # 마지막 경유지까지 이 거리 안에 들면 Nav2 를 취소하고 스스로 도킹한다.
+                    # **Nav2 의 마지막 판정을 기다리지 않는다.** 정지거리(0.348 m)가 성공 창
+                    # (xy_goal_tolerance 0.1)보다 커서, 목표를 지나친 자리에서 RotateToGoal 이
+                    # 병진을 전부 불법 처리해 고착되는 일이 재현됐다 (실측: 0.33 m 앞에서 정지).
+                    # do_dock() 이 정지 위치에서 도킹점까지 다시 재므로 축 방향 오차는
+                    # 전부 흡수된다 — Nav2 가 정확히 설 이유 자체가 없다.
+                    # 0.5 인 이유: 취소 시점 속도 1.18 m/s, 감속 2.0 -> 타력주행 0.348 m.
+                    #   0.5 에서 취소하면 경유지 0.15 m 부근에 선다. 지나치지 않는 값이다.
+# 도킹 직진(4m) 중 풋프린트가 통과 가능한 횡오차 한계. 맵 실측값이다.
+# 책상이 서쪽(-x)에만 있어 극단적으로 비대칭이다:
+#   서쪽(책상 쪽) +0.04 m,  동쪽 -0.80 m
+# 축에서 서쪽으로 5cm 만 밀려도 도킹점 근처에서 책상에 닿는다 (실측으로 박았다).
+DOCK_LAT_WEST_MAX = 0.04
+DOCK_LAT_EAST_MAX = 0.80
+SNAP_SKIP_M = 0.10  # 경유지까지 이보다 가까우면 조준 방위가 잡음에 묻히므로 보정을 건너뛴다
+
 DOCK_GUARD_M = 1.0  # 마지막 경유지에서 이 거리 안에 있을 때만 도킹한다.
                     # Nav2 결과(SUCCEEDED)만 믿으면 안 된다. 실측으로, 로봇이 Nav2 구간을
                     # 한 발짝도 못 갔는데 SUCCEEDED 가 나와 UNDOCK 종료 지점(-1.765, 3.425)에서
                     # 3m 를 돌진했고, 그 방향은 2.25m 앞이 벽이었다.
-# do_dock() 의 횡오차 경고 임계값. **경고만 하고 주행은 막지 않는다** (판단 재료용).
-# 부호 규약은 do_dock() 과 같다: + 가 서쪽(책상 쪽), - 가 동쪽(열린 쪽).
-DOCK_LAT_WEST_MAX = 0.04  # 서쪽 = 책상 쪽 여유. do_dock() docstring 의 실측값.
-                          # 교차검증: 도킹점 x -44.826 에서 책상 동쪽 면 x -45.391 까지 0.565 m,
-                          # 차체 반폭 0.5 + footprint_padding 0.01 을 빼면 0.055 m.
-                          # 둘 중 작은 쪽(실측 0.04)을 쓴다.
-DOCK_LAT_EAST_MAX = 0.50  # 동쪽은 벽이 아니라 열린 공간이라 물리 한계가 아니다.
-                          # 맵 실측으로 "축 좌우 0.5m, 4m 전 구간 자유"가 확인된 범위까지만
-                          # 정상으로 본다. 그 밖이면 검증 안 된 자리라는 뜻이다.
-
 # (삭제됨) 옛 맵 WP5 의 통과폭 0.90m 경고는 병원 맵과 무관해 지웠다.
 # 새 맵 도킹 구간: 경유지 (-44.826, 16.980) -> 도킹 (-44.826, 12.980) 의 4m 직진.
 # 두 점 모두 West_Room(x -49.20~-35.70, y 3.91~22.63) 안이고, 책상 동쪽 면(x -45.391)
@@ -97,30 +103,10 @@ def _axis_point(back_m):
 
 DOCK_APPROACH = (*_axis_point(DOCK_BACK_M), DOCK_POSE[2])
 
-# 도킹 축 위 정렬점. **마지막 구간을 축을 따라가는 직선으로 만드는 게 목적**이다.
-# 없으면 로봇이 DOCK_APPROACH 에 엉뚱한 방위로 도착해 거기서 큰 제자리 회전을 해야 하는데,
-# 이 로봇은 그게 불가능하다 (2026-09-23 실측):
-#   base_link 회전 반경 0.155 m -> 90도 회전이 위치를 0.219 m 망친다.
-#   general_goal_checker 의 xy 허용은 0.1 m 이므로 위치를 지킨 채 돌 수 있는 각도는 37.6도뿐.
-#   실제로는 137도를 돌아야 했고, 결과는 87초 넘는 무한 좌우 회전이었다:
-#     위치 0.009 m 일 때 yaw 오차 137도 / yaw 오차 2.1도 일 때 위치 0.189 m
-#     -> goal checker 두 조건 동시 만족 0회 (2563 샘플)
-# 여기서 미리 축 방위로 서고 직선으로 들어가면 최종 회전이 작아져 수렴한다.
-#
-# 7.0 인 이유 — 맵 실측 자유반경 (제자리 회전 필요 1.06 m):
-#   +4m 2.60 / +5m 3.00 / +6m 3.00 / +7m 2.55 / +8m 1.55 / +9m 0.55
-# +7m 은 회전 여유가 넉넉하면서 DOCK_APPROACH 까지 3 m 직선이 남는다.
-# (GoalCritic.threshold_to_consider 3.3 과도 맞는다 — 여기서부터 목표 수렴이 켜진다)
-ALIGN_BACK_M = 7.0
-assert ALIGN_BACK_M > DOCK_BACK_M, "정렬점은 DOCK_APPROACH 보다 뒤에 있어야 한다"
-DOCK_ALIGN = (*_axis_point(ALIGN_BACK_M), DOCK_POSE[2])
-
-# upper_lane — 맵 실측상 y~16 띠가 East 방부터 West 방까지 완전히 뚫려 있어
-#   (x -49~25 전 구간 free) 사실상 직선이다.
-#   이력: 경유지가 DOCK_APPROACH 하나뿐이었다. 그때는 RemovePassedGoals 가 아무것도 안 지워서
-#   (소스가 while (goal_poses.size() > 1)) radius / hz / prune 이 통과 판정에 무관했다.
-#   2026-09-23 에 DOCK_ALIGN 을 앞에 넣으면서 **경유지가 2개가 됐다** — 이제 DOCK_ALIGN 은
-#   radius 0.7 안으로 지나가야 지워진다. 축 위 직선이라 여유는 충분하다.
+# upper_lane — 경유지가 끝점 하나뿐이다. 맵 실측상 y~16 띠가 East 방부터 West 방까지
+#   완전히 뚫려 있어(x -49~25 전 구간 free) 사실상 직선이다. 경유지가 하나면
+#   RemovePassedGoals 는 아무것도 안 지우므로(소스가 while (goal_poses.size() > 1))
+#   VIAPOINT_RADIUS / BT 의 radius / hz / forward_prune_distance 가 통과 판정에 영향을 안 준다.
 #
 # lower_lane — 병원 남쪽 (-10.968, -1.543) 을 경유한다 (맵 실측 +-3m 전부 free).
 #   이쪽은 **진짜 경유지**라 radius 0.7 안으로 지나가야 하고, 못 지나가면 경유지가 안 지워져
@@ -139,11 +125,10 @@ DOCK_ALIGN = (*_axis_point(ALIGN_BACK_M), DOCK_POSE[2])
 #     향하게 됐기 때문). 여유가 0.28 -> 0.168 m 로 줄었으니 WP1 에서 되돌아가는 현상이
 #     재발하면 여기부터 의심할 것. 신규 점 자체는 반경 4m 안이 전부 free (맵 실측).
 ROUTES = {
-    "upper_lane": [DOCK_ALIGN, DOCK_APPROACH],
+    "upper_lane": [DOCK_APPROACH],
     "lower_lane": [
         (-10.968, -1.543, 145.0),
         (-30.906349182128906, 12.407171249389648, 161.8),
-        DOCK_ALIGN,
         DOCK_APPROACH,
     ],
 }
@@ -352,34 +337,85 @@ def wait_for_mission(node):
 
 
 def do_dock(drv, here):
-    """마지막 경유지에서 도킹점까지 **직진만** 한다. Nav2 미사용, 회전 없음.
+    """Nav2 가 놓고 간 자리에서 도킹점까지 스스로 간다. Nav2 미사용.
 
-    최종 방향 정렬은 Nav2 가 끝낸 상태로 넘어온다 (general_goal_checker.yaw_goal_tolerance
-    0.05 = 2.9도). 여기서 회전하지 않는 이유는 실측 때문이다 — 105도 제자리 회전 한 번에
-    base_link 가 0.22 m 움직였다 (역산 회전 반경 0.138 m. base_link 가 구동륜 축에서
-    14 cm 떨어져 있다). 도킹 통로의 서쪽 여유가 0.04 m 뿐이라 감당할 수 없는 양이다.
-    **위치를 맞춘 뒤 회전하면 그 회전이 위치를 망친다.**
+    Nav2 는 위치만 맞추고 방향은 안 본다 (params 의 yaw_goal_tolerance 3.15).
+    여기서 **도킹 축 방향(DOCK_POSE 의 yaw)으로 고정 회전**한 뒤 축을 따라 직진한다.
 
-    전진 거리는 고정값이 아니라 현재 위치에서 도킹점까지의 **축 방향 투영**이다.
-    Nav2 가 경유지에 얼마나 못 미치거나 지나쳤든 앞뒤 오차는 여기서 흡수된다.
-    유클리드 거리를 쓰면 횡오차가 있을 때 그만큼 더 가서 책상 옆을 지나쳐 버린다.
+    도킹점을 겨냥하는 방식(횡오차를 흡수하는 대신 비스듬히 진입)도 만들어 봤지만,
+    책상과 나란하지 않게 들어가 자세가 틀어졌다 (육안 확인, 2026-09-23). 되돌렸다.
+    지금 방식은 **자세는 항상 축과 나란하고, 횡방향 오차는 그대로 남는다.**
+    책상 쪽 여유가 6cm 뿐이므로 Nav2 정지 위치의 횡오차가 그만큼 중요해진다 —
+    도착 후 아래 '횡오차' 출력을 볼 것. 이게 크면 Nav2 정지 정확도부터 봐야 한다.
+
+    전진 거리는 유클리드 거리가 아니라 **축 방향 투영**이다. 횡오차가 있을 때
+    유클리드로 가면 그만큼 더 가서 책상 옆을 지나쳐 버린다.
+
+    진입 뒤 한 번 더 정렬한다. run_forward 는 angular.z 를 0 으로 두고 병진만 하므로
+    직진 중 yaw 가 밀리는 걸 잡아주지 않는다.
+
+    도킹점에서 크게 돌 수는 없다 — 풋프린트가 자유 공간에 남는 한계가 맵 실측으로
+    서쪽 2.0도 / 동쪽 6.0도 뿐이다 (책상이 서쪽 0.565m 에 있다. 축 위 지점별 한계:
+    +0.0m 2/6도, +1.0m 4.5/6도, +2.0m 79.5/6도, +3.0m 이상 제한 없음).
+    그런데 **목표각 쪽으로 도는 건 항상 안전하다.** 자유 범위가 목표각을 품은 한 구간
+    [-6도, +2도] 이라, 지금 자세가 충돌 없이 서 있다면 이미 그 범위 안이고,
+    목표각으로 좁히는 회전은 침범에서 멀어지는 방향이기 때문이다.
+    (반대로 재정렬 각도가 이 범위를 넘게 나온다면, 그건 이미 진입 중에 책상을
+     스쳤다는 뜻이다. 그 경우 회전이 문제가 아니라 진입 자체를 봐야 한다.)
     """
     gx, gy, gyaw_deg = DOCK_POSE
     gyaw = math.radians(gyaw_deg)
+    ax, ay = DOCK_APPROACH[0], DOCK_APPROACH[1]
+
+    # --- 1단계: 마지막 경유지로 붙는다 (횡오차 보정) ---
+    # ARRIVE_M 으로 Nav2 를 일찍 끊으면 경유지까지 최대 0.5 m 가 남는다. 그 오차의 축 방향
+    # 성분은 아래 투영이 흡수하지만 **횡방향은 흡수하지 못한다**. 서쪽 여유가 0.04 m 뿐이라
+    # 그대로 직진하면 책상에 닿는다 (실측). 그래서 먼저 경유지를 찍고 간다.
+    # 이 자리는 자유반경 1.5 m 이상이라 회전이 자유롭다 (맵 실측).
+    x, y, _ = here
+    d_ap = math.dist((x, y), (ax, ay))
+    print(f"\n[DOCK] Nav2 미사용. 현재 ({x:.3f}, {y:.3f}), 마지막 경유지까지 {d_ap:.3f} m")
+    if d_ap > SNAP_SKIP_M:
+        print(f"       경유지 ({ax:.3f}, {ay:.3f}) 로 먼저 붙는다")
+        if not drv.turn_to(math.atan2(ay - y, ax - x), "DOCK-SNAP-TURN"):
+            return False
+        if not drv.run_forward(d_ap, "DOCK-SNAP"):
+            return False
+        here = drv.wait_pose() or here
+    else:
+        print(f"       {SNAP_SKIP_M:.2f} m 안이라 경유지 보정은 건너뛴다")
+
+    # --- 2단계: 도킹 축으로 정렬 ---
+    if not drv.turn_to(gyaw, "DOCK-TURN"):
+        return False
+
+    # --- 3단계: 횡오차 확인 후 직진 ---
+    here = drv.wait_pose() or here
     x, y, yaw = here
-    along = (gx - x) * math.cos(gyaw) + (gy - y) * math.sin(gyaw)     # 축 방향 투영
+    along = (gx - x) * math.cos(gyaw) + (gy - y) * math.sin(gyaw)    # 축 방향 투영
     lateral = -(gx - x) * math.sin(gyaw) + (gy - y) * math.cos(gyaw)  # + 서쪽(책상), - 동쪽
-    drift = math.degrees(math.atan2(math.sin(gyaw - yaw), math.cos(gyaw - yaw)))
-    print(f"\n[DOCK] Nav2 미사용, 직진만. 현재 ({x:.3f}, {y:.3f}) yaw {math.degrees(yaw):+.2f} deg")
-    print(f"       도킹점 ({gx:.3f}, {gy:.3f}) yaw {gyaw_deg:+.1f} deg  "
-          f"(축 대비 {drift:+.2f} deg)")
     print(f"       축 방향 {along:.3f} m 전진,  횡오차 {lateral:+.3f} m "
-          f"({'서쪽/책상쪽' if lateral > 0 else '동쪽'}, 보정 안 함)")
-    # 통과 가능 범위를 벗어나도 멈추지 않고 경고만 한다. 판단 재료를 남기는 게 목적이다.
+          f"({'서쪽/책상쪽' if lateral > 0 else '동쪽'})")
     if lateral > DOCK_LAT_WEST_MAX or lateral < -DOCK_LAT_EAST_MAX:
-        print(f"       ** 경고: 횡오차가 통과 범위(서 {DOCK_LAT_WEST_MAX:.2f} / "
-              f"동 {DOCK_LAT_EAST_MAX:.2f} m, 맵 실측)를 벗어났다. 책상에 닿을 수 있다 **")
-    return drv.run_forward(along, "DOCK")
+        print(f"       ** 중단 — 횡오차가 통과 범위를 벗어났다 "
+              f"(서 {DOCK_LAT_WEST_MAX:.2f} / 동 {DOCK_LAT_EAST_MAX:.2f} m, 맵 실측). "
+              f"그대로 가면 책상에 박는다 **")
+        return False
+    if not drv.run_forward(along, "DOCK-DRIVE"):
+        return False
+
+    # --- 4단계: 진입 후 재정렬 ---
+    after = drv.wait_pose()
+    if after is None:
+        print("       재정렬 건너뜀 — TF 를 못 읽었다")
+        return True
+    drift = math.degrees(math.atan2(math.sin(gyaw - after[2]), math.cos(gyaw - after[2])))
+    print(f"       진입 후 yaw {math.degrees(after[2]):+.2f} deg, "
+          f"축 대비 {drift:+.2f} deg 밀렸다 -> 재정렬")
+    if abs(drift) > 6.0:
+        print(f"       ** {abs(drift):.1f} deg 는 도킹점 자유 범위(서 2.0 / 동 6.0 deg)를 넘는다. "
+              f"진입 중 책상을 스쳤을 수 있다 — 육안 확인 필요 **")
+    return drv.turn_to(gyaw, "DOCK-REALIGN")
 
 
 def announce_done(node):
@@ -403,13 +439,16 @@ def main():
 
     drv = StraightDriver()
 
-    # [가드 해제] 미션 신호 대기 없이 바로 출발 허용
-    # if "--solo" not in sys.argv:
-    #     wait_for_mission(drv)
+    if "--solo" not in sys.argv:
+        wait_for_mission(drv)
 
     print(f"\n[UNDOCK] cmd_vel 로 {UNDOCK_M:.1f} m 전진 (Nav2 미사용)")
     if not drv.run_forward(UNDOCK_M, "UNDOCK"):
-        print("  undock 경고: 미도달 (중단하지 않고 Nav2 계속 진행)")
+        print("  undock 실패. 중단한다.")
+        drv.destroy_node()
+        nav.destroyNode()
+        rclpy.shutdown()
+        return
 
     # Probe 는 undock 이 끝난 뒤에 만든다. undock 중 대기가 "정지"로 잡히면 안 되고,
     # 계측 시각 t0 도 Nav2 구간 시작에 맞춘다.
@@ -420,6 +459,7 @@ def main():
     nav.goThroughPoses(poses)
 
     last = 0.0
+    arrived = False           # Nav2 를 우리가 취소했는가 (= 도착으로 친다)
     while not nav.isTaskComplete():
         # 드라이버 노드도 계속 돌려야 한다. TF 리스너는 노드를 spin 해야 데이터가 들어오는데,
         # 여기서 안 돌리면 Nav2 구간 내내 버퍼가 undock 직후 값에 멈춘다.
@@ -434,27 +474,47 @@ def main():
                   f"v={probe.v_now:.2f}  정지 {len(probe.stops)}회  "
                   f"우회 {len(probe.detours)}회")
 
+        # 마지막 경유지에 충분히 붙으면 Nav2 의 도착 판정을 기다리지 않고 끊는다.
+        # feedback 의 distance_remaining 이 아니라 TF 실측 거리를 쓴다 — 전자는 경로를 따라
+        # 남은 길이라 경유지를 지나친 뒤에도 줄지 않는 경우가 있다.
+        p_now = drv.pose()
+        if p_now is not None and math.dist(p_now[:2], WAYPOINTS[-1][:2]) <= ARRIVE_M:
+            print(f"\n[NAV] 마지막 경유지 {ARRIVE_M:.1f} m 안 진입 — Nav2 취소하고 직접 도킹한다")
+            nav.cancelTask()
+            arrived = True
+            break
+
+    if arrived:
+        here = drv.wait_stopped()   # 타력주행이 끝날 때까지 (시간이 아니라 이동량으로 판정)
+        print(f"[NAV] 정지 완료 ({here[0]:.3f}, {here[1]:.3f}) "
+              f"yaw {math.degrees(here[2]):+.1f} deg" if here else "[NAV] 정지 후 TF 를 못 읽었다")
+
     result = {
         TaskResult.SUCCEEDED: "SUCCEEDED",
         TaskResult.CANCELED: "CANCELED",
         TaskResult.FAILED: "FAILED",
     }.get(nav.getResult(), str(nav.getResult()))
+    # 우리가 끊었으면 Nav2 상태는 의미가 없다. cancelTask 뒤 isTaskComplete 를 다시 안 부르므로
+    # BasicNavigator.status 가 갱신되지 않아 getResult() 는 UNKNOWN 을 낸다. 그대로 찍으면 오해를 준다.
+    if arrived:
+        result = f"CANCELED (마지막 경유지 {ARRIVE_M:.1f} m 진입 — 의도된 취소, 실패 아님)"
 
-    # 도킹 전에 실제 위치와 Nav2 성공 여부를 확인한다 (마지막 경유지 도달 시에만 도킹 수행)
+    # 도킹 전에 실제 위치를 확인한다. Nav2 결과만으로는 부족하다 (DOCK_GUARD_M 주석 참고).
     dock_ok = None
-    here = drv.wait_pose(timeout=3.0)
+    if not arrived:
+        here = drv.wait_pose(timeout=3.0)
     d_last = math.dist(here[:2], WAYPOINTS[-1][:2]) if here else float("inf")
-    if result != "SUCCEEDED":
-        print(f"\n[DOCK] 건너뜀 — Nav2 주행 미완료 (결과: {result})")
+    if not arrived and result != "SUCCEEDED":
+        print(f"\n[DOCK] 건너뜀 — Nav2 결과가 {result}")
     elif d_last > DOCK_GUARD_M:
-        print(f"\n[DOCK] 건너뜀 — 마지막 경유지까지 {d_last:.2f} m (허용 반경 {DOCK_GUARD_M:.1f} m 이탈). "
-              f"현재 위치: {'(%.3f, %.3f)' % here[:2] if here else '알 수 없음'}")
-    elif here:
+        print(f"\n[DOCK] 건너뜀 — 마지막 경유지까지 {d_last:.2f} m "
+              f"(허용 {DOCK_GUARD_M:.1f} m). 현재 위치 "
+              f"{'(%.3f, %.3f)' % here[:2] if here else '알 수 없음'}")
+        print("        Nav2 결과만으로는 도착을 믿을 수 없다 (DOCK_GUARD_M 주석 참고).")
+    else:
         dock_ok = do_dock(drv, here)
         if dock_ok:
             announce_done(drv)
-    else:
-        print("\n[DOCK] 건너뜀 — 현재 위치(TF)를 읽을 수 없습니다.")
 
     probe.report(WAYPOINTS, result)
     if dock_ok is None:
