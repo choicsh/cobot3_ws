@@ -11,6 +11,7 @@ Pick & Place는 포함하지 않으며 선택 차선이 막혀도 다른 차선�
 
 from enum import Enum
 import math
+import os
 import time
 
 import rclpy
@@ -596,7 +597,22 @@ def run_mission(navigator, route_id):
     return MissionStatus.SUCCEEDED
 
 
+def _use_large_udp_buffers():
+    """TableDocking이 받는 800 KB 라이다가 기본 UDP 버퍼에서 유실되지 않게 한다."""
+    if os.environ.get("FASTRTPS_DEFAULT_PROFILES_FILE"):
+        return
+    from ament_index_python.packages import (
+        PackageNotFoundError, get_package_share_directory)
+    try:
+        share = get_package_share_directory("carter_navigation")
+    except PackageNotFoundError:
+        return
+    os.environ["FASTRTPS_DEFAULT_PROFILES_FILE"] = os.path.join(
+        share, "params", "fastdds_udp_4mb.xml")
+
+
 def main():
+    _use_large_udp_buffers()
     rclpy.init()
     navigator = BasicNavigator()
     navigator.set_parameters(

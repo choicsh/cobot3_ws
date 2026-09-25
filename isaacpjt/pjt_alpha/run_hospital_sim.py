@@ -170,6 +170,42 @@ with Usd.EditContext(world.stage, world.stage.GetSessionLayer()):
         world.stage.GetPrimAtPath('/World/Characters').SetActive(False)
 
 
+FRONT_LIDAR_PRIM = "/World/robot_nova/nova_carter/chassis_link/sensors/XT_32/front_3d_lidar"
+
+
+def lighten_front_lidar(stage):
+    """Isaac 라이다 발행이 약 5 MB/s에서 막혀 770 KB 스캔이 10 Hz 중 6.4 Hz만 나갔다.
+
+    USD 라이다는 발광기 128개 = 고도 32개 x 방위 오프셋 4개(-3~+3 deg)라 수평 간격이
+    0.1 deg로 Nav2 스캔(0.5 deg)보다 훨씬 촘촘하다. 고도마다 방위 0에 가장 가까운
+    발광기 하나만 남기고(실제 XT-32의 32채널) 발사 빈도를 18 kHz(0.2 deg)로 두면
+    306 KB, 8.4 Hz, 최대 간격 0.3 s (2026-09-25 실측). 세션 레이어만 바꾼다.
+    """
+    lidar = stage.GetPrimAtPath(FRONT_LIDAR_PRIM)
+    prefix = "omni:sensor:Core:emitterState:s001:"
+    azimuth = list(lidar.GetAttribute(prefix + "azimuthDeg").Get())
+    elevation = list(lidar.GetAttribute(prefix + "elevationDeg").Get())
+    keep = {}
+    for index, (az, el) in enumerate(zip(azimuth, elevation)):
+        key = round(el, 2)
+        if key not in keep or abs(az) < abs(azimuth[keep[key]]):
+            keep[key] = index
+    indices = sorted(keep.values(), key=lambda i: elevation[i])
+    for name in ("azimuthDeg", "elevationDeg", "fireTimeNs"):
+        attribute = lidar.GetAttribute(prefix + name)
+        values = list(attribute.Get())
+        attribute.Set(type(attribute.Get())([values[i] for i in indices]))
+    channel = lidar.GetAttribute(prefix + "channelId")
+    channel.Set(type(channel.Get())(list(range(1, len(indices) + 1))))
+    lidar.GetAttribute("omni:sensor:Core:numberOfEmitters").Set(len(indices))
+    lidar.GetAttribute("omni:sensor:Core:numberOfChannels").Set(len(indices))
+    lidar.GetAttribute("omni:sensor:Core:reportRateBaseHz").Set(18000)
+    print(f"[HOSPITAL] front lidar: {len(indices)} channels, 18 kHz", flush=True)
+
+
+with Usd.EditContext(world.stage, world.stage.GetSessionLayer()):
+    lighten_front_lidar(world.stage)
+
 def bake_navmesh(timeout_seconds=30.0):
     """USD에 구성된 병원 NavMesh 볼륨을 standalone 실행 시 굽는다."""
     import omni.anim.navigation.core as navigation

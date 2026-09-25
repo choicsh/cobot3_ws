@@ -4,7 +4,11 @@ import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.actions import (
+    DeclareLaunchArgument,
+    IncludeLaunchDescription,
+    SetEnvironmentVariable,
+)
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
@@ -30,8 +34,12 @@ def generate_launch_description():
         carter_share, "rviz2", "carter_navigation.rviz"
     )
 
+    # 800 KB 라이다 PointCloud2 가 기본 UDP 수신 버퍼(208 KB)에서 유실되지 않게 한다.
+    dds_profile = os.path.join(carter_share, "params", "fastdds_udp_4mb.xml")
+
     return LaunchDescription(
         [
+            SetEnvironmentVariable("FASTRTPS_DEFAULT_PROFILES_FILE", dds_profile),
             DeclareLaunchArgument(
                 "map",
                 default_value=default_map_file,
