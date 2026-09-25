@@ -191,6 +191,7 @@ admin_ws/src/tray_detector/          # 토픽 ns 파라미터화
 | **P4** | 단일 로봇 E2E (DB 없음) | `robot_agent`, `hospital_mission` 라이브러리화/이름 변경 | 적재→운송→하역→복귀 1사이클 무개입 성공 |
 | **P5** | DB 연동 | `hospital_system/db.py`, 컨테이너 확인, agent 상태/이벤트 기록, 트레이·작업 기록 | 사이클 1회 후 `tray`/`transport_task`/`task_status_log` 정합, Redis state 갱신 |
 | **P6** | 관제 | `lane_graph`(구역 분할·경로 생성·예약), `priority`, `fleet_manager`(작업 생성·배정·route 기록) | CPU 테스트: 가상 로봇 3대 순환 1000 스텝 충돌/교착 0, 우선순위 순서 검증. 실기: 로봇 1대 관제 지시만으로 2사이클 |
+| **P6b** | 관제 웹 | `origin/feature/HJ` 의 `monitoring_web/`(표준 라이브러리 HTTP + SSE) 가져오기: 조회 SQL 을 v5 스키마로(`tray`, `tray_ids[]`/`slot_nos[]`, 영문 ENUM), 긴급도 3 = 긴급, 지도 `hospital_integration_human`(원점·크기는 yaml 에서), 위치·heartbeat 는 Redis, P6 의 구역 예약·경로 표시 | 로봇 1대 실행 중 브라우저에서 위치·단계·작업·이벤트가 DB 와 일치 |
 | **P7** | 다중 로봇 | Nav2/agent/detector 네임스페이스, 로봇 2대 → 3대, 필요 시 PC 분산 | 동시 운용, 구역 중복 점유 0, 책상 동시 점유 0, 긴급도 높은 작업 먼저 하역, DB 정합 |
 
 P1 을 앞에 둔 이유: 2대 부하가 안 되면 P7 설계(카메라·라이다 해상도, 헤드리스 등)가 바뀌므로 가장 먼저 확인한다.
@@ -210,6 +211,7 @@ P1 을 앞에 둔 이유: 2대 부하가 안 되면 P7 설계(카메라·라이�
 | D5 | 대기 위치 | 책상마다 대기 칸 2개(§3.2). 위치는 P6 에서 지도로 확정 |
 | D6 | 맵 충돌 | `feature/note` 의 `hospital_integration_human` 맵(map_excluded, 원점 변경) 대신 주행을 튜닝한 `hospital-dispatch` 맵 유지 |
 | D7 | USD 충돌 (`robot_nova.usd`, `integration_*.usd`) | `hospital-dispatch` 쪽 유지. P&P에 필요한 차이(카메라 등)는 P2에서 확인 후 반영 |
+| D8 | 관제 웹 (`feature/HJ` `monitoring_web/`) | P6 뒤에 P6b 로 넣는다 (2026-09-26 사용자 결정). 옛 스키마(`specimen`, 한글 상태, 1 = 긴급) 기준이라 그대로는 동작하지 않는다. `seed_robotdb3_demo.sql` 은 전 테이블 TRUNCATE 라 쓰지 않는다 |
 
 ## 6. 위험
 
