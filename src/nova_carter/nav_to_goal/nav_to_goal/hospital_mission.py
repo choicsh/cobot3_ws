@@ -637,6 +637,8 @@ def run_mission(navigator, route_id, resume=False):
             print(f"[MISSION] {status.value}: {stage[0]}")
             return status
 
+    # robot_agent 가 이 줄을 보고 단계를 PLACE_DOCKING / PICK_DOCKING 으로 바꾼다
+    print(f"[MISSION] DOCKING: {destination}", flush=True)
     docking = TableDocking(navigator, tf_buffer)
     try:
         if not docking.move(destination):

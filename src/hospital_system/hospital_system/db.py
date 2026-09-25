@@ -1,6 +1,10 @@
 """
-hospital_amr_db_v5_module.py
+hospital_system.db (feature/note DB_container/hospital_amr_db_v5_module.py 를 옮김)
 병원 검체 운송 AMR — DB 구조 v5 단위 작업 함수 모듈 (psycopg2 + redis)
+
+접속 주소는 환경변수 HOSPITAL_PG_DSN / HOSPITAL_REDIS_URL (없으면 localhost). 관제 PC 가 따로면 로봇 PC 에서
+    export HOSPITAL_PG_DSN=postgresql://rokey:rokey@<관제PC>:5432/robotdb3_sql
+    export HOSPITAL_REDIS_URL=redis://rokey:rokey@<관제PC>:6379/0
 
 수행 로직(설계서) ↔ 함수
  [연결 확인]
@@ -24,7 +28,7 @@ hospital_amr_db_v5_module.py
   stream:robot_events  이벤트 발생 시 추가 후 SQL 연동        → robot_event_publish() → robot_event_sync()
 
 사용 예)
-    import hospital_amr_db_v5_module as db
+    from hospital_system import db
 
     rid = db.robot_info_insert("AMR-01", "MediCart-S3", 3)
     db.robot_info_update(rid, is_active=True)
@@ -35,10 +39,11 @@ hospital_amr_db_v5_module.py
     tid = db.transport_task_insert(["TR20260923-0001"], "채혈실", "혈액검사실", robot_id=rid)
     db.transport_task_update(tid, status="IN_TRANSIT", departed_at=db.NOW)
 
-설치:  pip install psycopg2-binary redis
-데모:  python hospital_amr_db_v5_module.py --demo   (DEMO- 접두어 데이터를 실제 DB에 기록)
+설치:  sudo apt install python3-psycopg2 python3-redis   (또는 pip install psycopg2-binary redis)
+데모:  python3 -m hospital_system.db --demo   (DEMO- 접두어 데이터를 실제 DB에 기록)
 """
 import json
+import os
 import time
 from datetime import datetime, timezone
 
@@ -47,8 +52,8 @@ from psycopg2 import sql
 from psycopg2.extras import Json, RealDictCursor, execute_values
 import redis
 
-PG_DSN = "postgresql://rokey:rokey@localhost:5432/robotdb3_sql"
-REDIS_URL = "redis://rokey:rokey@localhost:6379/0"
+PG_DSN = os.environ.get("HOSPITAL_PG_DSN", "postgresql://rokey:rokey@localhost:5432/robotdb3_sql")
+REDIS_URL = os.environ.get("HOSPITAL_REDIS_URL", "redis://rokey:rokey@localhost:6379/0")
 
 ROBOT_STATUSES = ("IDLE", "PICK_DOCKING", "PICKING", "DELIVERING",
                   "PLACE_DOCKING", "PLACING", "RETURNING", "ERROR")
@@ -304,6 +309,45 @@ def transport_task_get(task_id, with_log=False, conn=None):
              WHERE task_id = %s ORDER BY changed_at, log_id
         """, (task_id,), "all", conn)
     return row
+
+
+def tray_id_for(task_id, slot, day=None):
+    """트레이 ID = TR{YYYYMMDD}-{task_id}-S{slot} (ArUco 는 긴급도 3종뿐이라 개체를 구분하지 못한다)"""
+    day = day or datetime.now()
+    return f"TR{day:%Y%m%d}-{task_id}-S{slot}"
+
+
+def loaded_task_create(robot_id, trays, origin, destination, test_type="GENERAL", conn=None):
+    """
+    적재가 끝난 트레이들로 작업을 만들고 로봇에 배정한다 — 한 트랜잭션.
+      trays : [(slot, priority), ...]  (slot 1~3, priority 1~3)
+    tray_id 에 task_id 가 들어가고 작업 insert 는 트레이가 먼저 있어야 하므로(트리거) 시퀀스에서
+    task_id 를 먼저 받는다. 상태 이력: NULL → WAITING → ASSIGNED.
+    반환: (task_id, [tray_id, ...])
+    """
+    trays = list(trays)
+    if not 1 <= len(trays) <= 3:
+        raise ValueError("트레이는 1~3개여야 합니다.")
+    conn = conn or get_pg()
+    with conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT nextval(pg_get_serial_sequence('transport_task', 'task_id')) AS id")
+            task_id = cur.fetchone()["id"]
+            tray_ids = [tray_id_for(task_id, slot) for slot, _ in trays]
+            execute_values(cur, """
+                INSERT INTO tray (tray_id, test_type, priority, specimen_count, packed_at) VALUES %s
+            """, [(tid, test_type, int(p), 0) for tid, (_, p) in zip(tray_ids, trays)],
+                template="(%s, %s, %s, %s, now())")
+            cur.execute("""
+                INSERT INTO transport_task (task_id, tray_ids, slot_nos, robot_id, origin, destination)
+                VALUES (%s, %s::varchar[], %s::smallint[], %s, %s, %s)
+            """, (task_id, tray_ids, [int(s) for s, _ in trays], robot_id, origin, destination))
+            cur.execute("UPDATE transport_task SET status = 'ASSIGNED' WHERE task_id = %s", (task_id,))
+            execute_values(cur, """
+                INSERT INTO task_status_log (task_id, from_status, to_status) VALUES %s
+            """, [(task_id, None, "WAITING"), (task_id, "WAITING", "ASSIGNED")],
+                template="(%s, %s::task_status, %s::task_status)")
+    return task_id, tray_ids
 
 
 # =====================================================================

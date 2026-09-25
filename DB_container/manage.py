@@ -22,7 +22,7 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy, HistoryPo
 from geometry_msgs.msg import PoseWithCovarianceStamped
 from nav_msgs.msg import Odometry
 
-import hospital_amr_db_v5_module as db
+from hospital_system import db   # colcon build 후 install/setup.bash 를 source
 
 
 def yaw_from_quat(q):

@@ -62,8 +62,8 @@ CREATE TABLE robot_info (
 CREATE TABLE tray (
     tray_id         VARCHAR(30)  PRIMARY KEY,                          -- 트레이 ID (바코드)
     test_type       VARCHAR(50)  NOT NULL,                             -- 검사 종류
-    priority        SMALLINT     NOT NULL DEFAULT 3
-                    CHECK (priority BETWEEN 1 AND 3),                  -- 긴급도 1~3
+    priority        SMALLINT     NOT NULL DEFAULT 1
+                    CHECK (priority BETWEEN 1 AND 3),                  -- 긴급도 1~3 (3 이 가장 긴급, 미검출 = 1)
     specimen_count  SMALLINT     NOT NULL DEFAULT 0
                     CHECK (specimen_count >= 0),                       -- 담긴 검체 수
     packed_at       TIMESTAMPTZ,                                       -- 트레이 구성 시각

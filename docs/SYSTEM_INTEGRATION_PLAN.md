@@ -374,3 +374,29 @@ frame id 는 그대로(`base_link`, `odom`) — 로봇마다 tf 토픽이 다르
 콘은 추적 범위(8 m) 안에 들어와 8 s 가 지나기 전(약 3.7 m 앞)까지 사람으로 보여 한 번 비켜 간다 — 실패는 아니고
 보수적인 우회. 이전 실행(p4a–d, p4f)은 위 표의 문제들로 실패했다.
 원본 `pick_and_place_detection.py` 에는 이번 운반·대기 수정(관절 보간 경유점, 안정 대기)이 아직 없다.
+
+### P5 DB 연동 — 완료 (2026-09-26)
+구성: P4 + `db_worker`. 컨테이너 `robotdb3_sql`/`robotdb3_nosql`(feature/note 절차로 이미 구축, 스키마 적용됨).
+
+- `DB_container/hospital_amr_db_v5_module.py` → `hospital_system/db.py` 로 이동. 접속 주소는 `HOSPITAL_PG_DSN` /
+  `HOSPITAL_REDIS_URL`(없으면 localhost). `manage.py` 는 `from hospital_system import db` 로.
+- 스키마 `tray.priority DEFAULT 3 → 1`(D2). 실행 중 DB 에는 `ALTER TABLE ... SET DEFAULT 1` 로 반영.
+- `db.loaded_task_create`: 트레이 + 작업을 한 트랜잭션으로. tray_id 에 task_id 가 들어가고(D3) 작업 insert 는 트레이가 먼저
+  있어야 하므로(트리거) 시퀀스에서 task_id 를 먼저 받는다. 상태 이력 NULL → WAITING → ASSIGNED.
+- `records.py`(에이전트 쪽 기록): Redis `robot:{id}:state`(단계·task_id·AMCL 위치), heartbeat 1 s(TTL 3 s), 이벤트 스트림
+  (`STAGE`, `TASK_CREATED`, `MISSION_RESUME`, `UNLOADED`); Postgres `robot_info`(이름=네임스페이스, 실행 중 is_active),
+  작업 IN_TRANSIT(출발) → ARRIVED(도킹 완료) → COMPLETED(하역 제자리, 아니면 FAILED), 실패 시 FAILED.
+  시작 시 DB 가 꺼져 있으면 종료(`-p use_db:=false` 로 끌 수 있음), 도중 기록 실패는 경고만.
+- `PICKING_UP` 은 쓰지 않는다 — D4 로 작업이 적재·긴급도 판독 뒤에 생기기 때문. P6 에서 관제가 적재 전에 작업을 만들면 쓴다.
+- 도킹 단계: `hospital_mission` 이 도킹 시작 때 `[MISSION] DOCKING: <책상>` 을 출력 → 에이전트가 PLACE_DOCKING / PICK_DOCKING.
+- `db_worker`(관제 PC, ROS 없음): 스트림 → `robot_event_log`(컨슈머 그룹 + ACK), 5 s 마다 heartbeat 살아 있는 로봇의 state →
+  `robot_state_history`. P6 에서 fleet_manager 로 흡수.
+- 의존성: `python3-psycopg2`, `python3-redis`(package.xml). 이 PC 시스템 파이썬에는 아직 없어 시험은 `--system-site-packages`
+  venv(psycopg2-binary, redis)로 돌렸다.
+
+**결과**: p5a 1사이클 무개입 성공 573 s(적재 84 s, 운송 207 s + 도킹 24 s, 하역 51 s, 복귀 181 s + 도킹 27 s),
+적재 3/3·하역 3/3 제자리. DB 정합: task 2 = 트레이 3개 `TR20260926-2-S1..3`(긴급도 3, 1, 3 = 판독값), 상태 이력
+WAITING → ASSIGNED → IN_TRANSIT → ARRIVED → COMPLETED, departed_at/arrived_at 기록, 이벤트 9건 전부 `robot_event_log` 로 이동,
+위치 이력 모든 단계 기록, 종료 뒤 Redis state IDLE·task_id 없음, is_active FALSE.
+- 남은 점: Redis 위치는 `/amcl_pose` 라 AMCL 이 갱신할 때만 바뀐다 — 종료 시 y 13.28 로 도킹 자세(13.81)보다 0.5 m 전 값이 남았다.
+  관제가 위치로 판단하는 P6 에서는 TF(map→base_link) 주기 조회로 바꾼다.

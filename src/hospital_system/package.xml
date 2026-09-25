@@ -3,13 +3,16 @@
 <package format="3">
   <name>hospital_system</name>
   <version>0.1.0</version>
-  <description>병원 검체 운송 통합 시스템 — 로봇 에이전트(팔+주행 순서 조율), 이후 관제/DB</description>
+  <description>병원 검체 운송 통합 시스템 — 로봇 에이전트(팔+주행 순서 조율), DB 기록, 이후 관제</description>
   <maintainer email="alqp201@gmail.com">barlide</maintainer>
   <license>Apache-2.0</license>
 
   <exec_depend>rclpy</exec_depend>
   <exec_depend>std_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
   <exec_depend>nav_to_goal</exec_depend>
+  <exec_depend>python3-psycopg2</exec_depend>
+  <exec_depend>python3-redis</exec_depend>
 
   <test_depend>python3-pytest</test_depend>
 
