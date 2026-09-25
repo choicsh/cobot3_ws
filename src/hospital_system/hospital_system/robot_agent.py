@@ -84,15 +84,23 @@ class RobotAgent(Node):
     def arm(self, cmd):
         """arm/command 를 보내고 결과(status dict)를 기다린다. 시간 초과면 None."""
         text = f"{cmd}:{int(time.time() * 1000)}"
+        # Isaac 의 OmniGraph 구독이 이 발행자를 찾을 때까지 기다린다. Nav2 가 같이 뜨는 동안은 DDS 발견이
+        # 20 s 넘게 걸린 적이 있다 (2026-09-26 p4f: 상태는 받는데 명령이 한 번도 전달되지 않았다)
+        end = time.monotonic() + 60.0
+        while self.arm_pub.get_subscription_count() == 0 and time.monotonic() < end:
+            self.spin_for(0.5)
         started = False
-        # 구독이 붙기 전에 보낸 한 번이 사라질 수 있어 running 이 보일 때까지 몇 번 보낸다
-        for _ in range(20):
+        # 구독이 붙은 직후 보낸 한 번이 사라질 수 있어 받았다는 상태가 보일 때까지 몇 번 보낸다
+        for i in range(60):
             self.arm_pub.publish(String(data=text))
             self.spin_for(1.0)
             s = self.arm_status or {}
             if s.get("cmd_text") == text:
                 started = True
                 break
+            if i and i % 10 == 0:
+                self.get_logger().warn(f"arm has not taken {text} yet ({i} s, "
+                                       f"subscribers {self.arm_pub.get_subscription_count()})")
         if not started:
             self.get_logger().error(f"arm did not accept {text} (last status {self.arm_status})")
             return None

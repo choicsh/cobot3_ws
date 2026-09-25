@@ -12,7 +12,7 @@ from nav_to_goal.hospital_avoidance import (
     LaneFrame, MovingBody, SafetySettings, body_gap, choose_candidate,
     command_clearance, forward_path_valid, limited_command, offset_candidates,
     path_clearance,
-    tail_clear_for_rejoin,
+    rejoin_clear,
 )
 from nav_to_goal.hospital_costmap import Grid
 from nav_to_goal.obstacle_tracking import Tracker
@@ -121,11 +121,52 @@ def test_hold_extends_until_static_obstacle_is_behind_tail():
         assert lane.local(path[-1])[0]-4 >= 9.-1e-6
 
 
-def test_rejoin_checks_tail_not_only_front_passing():
-    lane = LaneFrame(0, 0, 0, 40)
+def _rejoin_path(x0, y0, length=4.0, tail=12.0, step=.05):
+    """Detour at y0 bending back to the lane (y=0) over `length`, then straight."""
+    pts = []
+    for i in range(int((length+tail)/step)+1):
+        x = x0+i*step
+        u = min(1., (x-x0)/length)
+        pts.append((x, y0*(.5+.5*math.cos(math.pi*u)), 0.))
+    return pts
+
+
+def test_rejoin_blocked_while_turning_into_a_person_beside():
+    # Person on the lane beside the robot's front: turning back in closes on them.
+    person = [MovingBody(1, 6.3, 0, 0, 0, .4)]
+    assert not rejoin_clear(_rejoin_path(6, 1.5), (6, 1.5, 0), (.6, 0), person)
+
+
+def test_rejoin_allowed_once_person_is_behind_the_tail():
     person = [MovingBody(1, 5, 0, 0, 0, .4)]
-    assert not tail_clear_for_rejoin(lane, (6, 1.5, 0), person)
-    assert tail_clear_for_rejoin(lane, (8, 1.5, 0), person)
+    # Beside the rear on the rejoin side: turning right swings the tail left,
+    # away from them, so the gap does not shrink (was refused by the old zone test).
+    assert rejoin_clear(_rejoin_path(6, 1.5), (6, 1.5, 0), (.6, 0), person)
+    assert rejoin_clear(_rejoin_path(8, 1.5), (8, 1.5, 0), (.6, 0), person)
+
+
+def test_rejoin_ignores_person_across_the_corridor_walking_past():
+    # rosbag p4e 608.6 s: person 1.0 m ahead, 3.0 m to the right (beyond the
+    # lane from a left detour), walking the other way at 0.53 m/s.
+    person = [MovingBody(1, 10.99, -1.5, -.53, 0, .4)]
+    assert rejoin_clear(_rejoin_path(10, 1.5), (10, 1.5, 0), (.6, 0), person)
+
+
+def test_rejoin_accounts_for_tail_swing_toward_person_beside_rear():
+    # rosbag p4e 640.5 s: person 0.5 m behind base_link (beside the rear half),
+    # 2.0 m to the left, standing. Turning right swings the 1.38 m rear left,
+    # to 0.80 m of them (< preferred 1.0 m): still refused, for a real reason.
+    person = [MovingBody(1, 9.49, 3.48, 0, 0, .4)]
+    assert not rejoin_clear(_rejoin_path(10, 1.5), (10, 1.5, 0), (.6, 0), person)
+    # Once they are behind the tail, the same turn is allowed.
+    behind = [MovingBody(1, 7.8, 3.48, 0, 0, .4)]
+    assert rejoin_clear(_rejoin_path(10, 1.5), (10, 1.5, 0), (.6, 0), behind)
+
+
+def test_rejoin_blocked_by_person_on_the_rejoin_side():
+    # Someone standing on the lane just ahead where the robot turns back in.
+    person = [MovingBody(1, 12.5, .3, 0, 0, .4)]
+    assert not rejoin_clear(_rejoin_path(10, 1.5), (10, 1.5, 0), (.6, 0), person)
 
 
 def test_side_latch_and_alternative_if_side_blocked():

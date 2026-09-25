@@ -300,15 +300,25 @@ def offset_candidates(lane, pose, settings=SafetySettings(), preferred_side=0, c
     return candidates
 
 
-def tail_clear_for_rejoin(lane, pose, tracks, settings=SafetySettings()):
-    """Do not turn back into the line while a nearby track remains abreast."""
-    progress = lane.local(pose)[0]
-    for track in tracks:
-        s, d, _ = lane.local((track.x, track.y, 0.))
-        if (abs(d) <= settings.lane_half_width+track.radius and
-                progress-settings.rear-settings.preferred_gap-track.radius <= s <= progress+2.0):
-            return False
-    return True
+def rejoin_clear(path, pose, velocity, tracks, settings=SafetySettings(), tolerance=.01):
+    """May the robot turn back into the lane along path (its active remaining path)?
+
+    Follows the actual rejoin path with the full footprint and asks whether the
+    gap to any track falls below preferred_gap, or below the current gap if it
+    is already smaller. Pure geometry (see _geometric); the output guard still
+    checks every real command with the full rules.
+
+    Replaced a zone test that refused to rejoin while any track stood anywhere
+    across the corridor (+-2.8 m) from 2.8 m behind to 2 m ahead: a person on
+    the far side, or one already passed and standing behind, forced a second
+    sideways detour on an open lane (2026-09-26 rosbag p4e).
+    """
+    if not tracks:
+        return True
+    geometric = _geometric(settings)
+    now = predicted_gap(pose, tracks, 0., geometric)
+    future = path_clearance(path, pose, velocity, tracks, geometric, include_now=False)
+    return future >= min(settings.preferred_gap, now)-tolerance
 
 
 def path_clearance(path, pose, velocity, tracks, settings=SafetySettings(), speed=None, include_now=True):
