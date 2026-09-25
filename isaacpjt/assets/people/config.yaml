@@ -52,6 +52,6 @@ isaacsim.replicator.agent:
   scene:
     asset_path: /home/rokey/cobot3_ws/isaacpjt/assets/hospital_integration_human.usd
   sensor:
-    camera_num: 4
+    camera_num: 0
   event:
     event_list: []
