@@ -84,3 +84,4 @@ def test_grasp_point_pushes_along_grasp_yaw():
     assert np.allclose(grasp[:2], [0.80 + g.TRAY_HALF_DEPTH_M, 0.25])   # 옆으로 안 밀린다
     old = g.grasp_point_base(surface, base_pos, base_quat)             # 원본: 방위각 방향
     assert abs(old[1] - 0.25) > 0.01
+

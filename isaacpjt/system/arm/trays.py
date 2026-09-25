@@ -193,6 +193,32 @@ class TrayHooks:
         self.held = None
         self.aligned.clear()
 
+    def settled(self, seq, final=False):
+        """물린 트레이가 멈췄는지 — 놓기 전 대기(hold 'until')에서 매 틱 부른다.
+
+        TCP 에 가장 가까운 트레이(물린 것)의 각속도와 기울기를 본다. 결과를 한 번 로그로 남긴다
+        (멈춤을 확인했을 때, 또는 최대 대기가 끝났는데도 안 멈췄을 때 final=True)."""
+        try:
+            tcp_pos, _ = seq._current_flange_pose()
+            path, dist = self.registry.nearest(tcp_pos, ())
+            if path is None or dist > RACK_TRAY_MATCH_R_M:
+                if final:
+                    print(f"{self.tag}   settle       물린 트레이를 못 찾았다 — 최대 대기 후 진행")
+                return False
+            body = self.registry.body(path)
+            _, quat = body.get_world_pose()
+            ang = float(np.linalg.norm(body.get_angular_velocity()))
+            tilt = float(np.degrees(np.arccos(np.clip(quat_to_matrix(np.asarray(quat, dtype=float))[2, 2], -1.0, 1.0))))
+        except Exception as exc:
+            if final:
+                print(f"{self.tag}   settle       측정 실패 (무시): {exc}")
+            return False
+        ok = ang < SETTLE_MAX_ANG_VEL and tilt < SETTLE_MAX_TILT_DEG
+        if ok or final:
+            print(f"{self.tag}   settle       {seq.step_tick / 60:.2f}s  기울기 {tilt:.1f}deg  각속도 {ang:.2f}rad/s  "
+                  f"{'안정 — 하강' if ok else '최대 대기 끝, 아직 흔들림 — 그대로 하강'}")
+        return ok
+
     def capture(self, seq, slot):
         """그리퍼를 열기 **직전에** 트레이 원점이 TCP 기준 어디에 있는지 잰다 (p_rel).
 

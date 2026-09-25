@@ -17,4 +17,4 @@ isaacpjt/M0609/teleop/_detections/
 runs/detect/isaacpjt/sdg/runs/tray/
 *.pt
 !runs/detect/isaacpjt/sdg/runs/tray-2/weights/best.pt
-isaacpjt/assets/fleet_start_poses.json
+isaacpjt/assets/start_pose_robot*.json

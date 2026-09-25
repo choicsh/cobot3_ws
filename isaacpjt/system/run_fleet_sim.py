@@ -6,7 +6,7 @@
 
 로봇 i 의 ROS 토픽은 /robot{i}/ 아래다 (scene.py 참고). 로봇 1 은 씬 원래 위치(East 책상 옆),
 2·3 은 운송 차선(lane_lower) 남쪽 직선 위에 서쪽을 보고 놓는다. 시작 자세는
-assets/fleet_start_poses.json 에 기록한다 (AMCL 초기 위치 입력용).
+assets/start_pose_robotN.json 에 기록한다 (AMCL 초기 위치 입력용).
 
 팔 (arm/controller.py) — 로봇마다 ArmTaskController. 명령/상태는 OmniGraph 로 주고받는다:
     ros2 topic pub --once /robot1/arm/command std_msgs/String "{data: 'load:1'}"
@@ -32,6 +32,8 @@ parser.add_argument("--front-cam", action="store_true",
 parser.add_argument("--walk-blend", type=float, default=0.75)
 parser.add_argument("--pose", action="append", default=[], metavar="I:X,Y,YAW",
                     help="로봇 I 의 시작 자세, 예: --pose 2:20.2,17.5,180 또는 도킹 자세 --pose 1:collection")
+parser.add_argument("--robot1-global-nav", action="store_true",
+                    help="로봇 1 주행 토픽을 전역 이름으로 (기존 hospital_navigation.launch.py 를 그대로 쓰는 단일 로봇 시험)")
 parser.add_argument("--preload-rack", action="append", type=int, default=[], metavar="I",
                     help="로봇 I 의 랙 3칸에 트레이를 미리 싣는다 (하역 단독 시험용)")
 args = parser.parse_args()
@@ -103,7 +105,8 @@ if scene.set_viewport_lighting("Default"):
 world = World(stage_units_in_meters=1.0, physics_dt=1.0 / 60.0, rendering_dt=1.0 / 30.0)
 stage = world.stage
 scene.setup_people(stage, behavior_paths, behavior_script, enabled=not args.no_people)
-scene.add_robots(stage, ROBOT_POSES[:args.robots], front_camera=args.front_cam)
+scene.add_robots(stage, ROBOT_POSES[:args.robots], front_camera=args.front_cam,
+                 global_nav_robot1=args.robot1_global_nav)
 for _ in range(5):
     simulation_app.update()
 if not args.no_wrist:
@@ -141,13 +144,13 @@ for arm in arms:
     # 물리 스텝(60 Hz)마다 1틱 — 원본 P&P 와 같은 시뮬 시간 기준
     world.add_physics_callback(f"arm_robot{arm.index}", lambda _dt, a=arm: a.tick())
 
-poses = {}
+# 로봇마다 AMCL 초기 위치 파일 (hospital_navigation.launch.py start_pose_path:=... 로 넘긴다)
 for index in range(1, args.robots + 1):
     x, y, yaw = scene.base_link_pose(index)
-    poses[scene.namespace(index)] = {"frame": "map", "x": x, "y": y, "yaw_deg": yaw}
-    print(f"[FLEET] /{scene.namespace(index)} base_link x={x:.3f} y={y:.3f} yaw={yaw:.1f}", flush=True)
-with open(scene.ASSETS_DIR / "fleet_start_poses.json", "w", encoding="utf-8") as f:
-    json.dump(poses, f, indent=2)
+    path = scene.ASSETS_DIR / f"start_pose_{scene.namespace(index)}.json"
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump({"frame": "map", "x": x, "y": y, "yaw_deg": yaw}, f, indent=2)
+    print(f"[FLEET] /{scene.namespace(index)} base_link x={x:.3f} y={y:.3f} yaw={yaw:.1f} -> {path.name}", flush=True)
 
 omni.timeline.get_timeline_interface().play()
 print(f"[FLEET] 재생 시작 — 로봇 {args.robots}대, 사람 {'없음' if args.no_people else '3명'}, "

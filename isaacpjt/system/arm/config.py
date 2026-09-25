@@ -337,3 +337,12 @@ RACK_TRAY_ORIGIN_DY = -0.042
 # 카메라 거리 0.39 m 가 되어 중앙 정렬 재검출이 빗나가고 트레이가 기울었다 (2026-09-25 P3). 사람이 트레이를
 # 놓는 자리를 도킹 자세 기준으로 정해 튜닝된 상대 배치를 그대로 쓴다 (책상 모서리에서 약 11 cm 안쪽).
 TRAY_ORIGIN_BASE = (0.831, 0.101)
+# 놓기 전 대기(PLACE_WAIT_STEPS)를 고정 시간 대신 '물린 트레이가 멈출 때까지' 로. 최소 PLACE_WAIT_STEPS(1 s),
+# 최대 PLACE_WAIT_MAX_STEPS(2 s). 1 s 고정으로 줄인 뒤 바깥쪽 트레이(joint_1 회전이 큰)가 아직 흔들리는 중에
+# 하강해 랙 테두리에 걸려 39도 기운 사례가 있었다 (2026-09-25 p4b 3번 칸).
+PLACE_WAIT_MAX_STEPS = 120
+SETTLE_MAX_ANG_VEL   = 0.10    # rad/s (약 6 deg/s)
+SETTLE_MAX_TILT_DEG  = 5.0
+# 운반 중 '놓기 위 안전 위치' 로 가기 전 관절 보간 경유점 높이 (그 위 RACK_ABOVE_Z_M 에서 수직 하강).
+# 관절 보간은 도중에 TCP 가 최대 6cm 처진다 — 5cm 면 0.361 까지 처지고 7cm 면 목표 높이(0.38) 아래로 안 간다 (오프라인 IK 재생).
+CARRY_WAYPOINT_Z_M = 0.07

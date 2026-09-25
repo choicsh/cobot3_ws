@@ -344,3 +344,27 @@ frame id 는 그대로(`base_link`, `odom`) — 로봇마다 tf 토픽이 다르
 - Isaac 을 종료 직후 연달아 띄울 때 NVIDIA Vulkan 렌더러에서 세그폴트 2회(약 15회 중). 코드와 무관한 드라이버 쪽 충돌로 보이며,
   시험 스크립트에 20 s 간격과 실행 중 종료 감지를 넣었다.
 - 다음 사이클용 트레이 재배치(책상이 비면 새 트레이)는 P4/P6 에서 다룬다 — 지금은 시작 시 한 번 배치한다.
+
+### P4 단일 로봇 E2E — 완료 (2026-09-26)
+구성: `run_fleet_sim.py --robots 1 --pose 1:collection --robot1-global-nav` + `tray_detector`(/robot1) +
+`hospital_navigation.launch.py`(RViz, `start_pose_path`) + `hospital_system/robot_agent`(/robot1).
+
+- 새 패키지 `src/hospital_system`: `robot_agent`(PICKING → DELIVERING → PLACING → RETURNING → IDLE, DB 상태값과 같은 이름),
+  `stations.py`(collection/analysis ↔ 주행 코드 lab/specimen 대응을 한 곳에). 주행은 `hospital_mission` 을 하위 프로세스로
+  돌리고 종료 코드로 판단. 적재 경고가 있으면 주행하지 않는다(트레이가 그리퍼에 걸린 채 달린 사례).
+- `--robot1-global-nav`: 로봇 1 주행 토픽을 전역 이름으로 두어 검증된 Nav2 를 그대로 쓴다(네임스페이스는 P7).
+- RViz 에 `/hospital/reference_plan`(초록, 구간 전체 기준 경로) 표시 추가.
+
+**실행 중 발견·수정한 문제**
+
+| 증상 | 원인 | 수정 |
+|---|---|---|
+| 복귀 중 콘 3개 앞에서 15 s 양보 후 실패 | 09-25 "서 있는 사람 인식" 이후 지도에 없는 정지 물체(콘)가 영원히 사람 추적 | 한 번도 안 움직인 물체는 8 s 뒤 정적 장애물로(`obstacle_tracking.STANDING_STATIC_S`) |
+| 3번 트레이가 랙에 걸려 그리퍼에 매달림 | '놓기 위' IK 보간 중 손목 특이점 근처에서 joint_4 가 한 틱 20° 이상 튐 → 트레이 흔들림 | 운반 마지막 구간을 관절 보간(IK 1회)으로 +7 cm 경유점까지, 거기서 수직 하강(`joint_ik`). 오프라인 IK 재생 33경로: 틱당 최악 11.6 → 1.9°, 충돌 후보 0. 검토했던 "툴 yaw 회전(A안)"은 이미 실린 트레이 위를 가로질러 13/33 충돌 후보라 폐기 |
+| 놓기 전 대기 1 s 로 줄인 뒤 흔들리는 채 하강 | 고정 대기 | 최소 1 s + 트레이가 멈출 때까지(각속도 < 0.1 rad/s, 기울기 < 5°) 최대 2 s. 실측 1.00–1.27 s |
+| 보행자와 서로 양보하며 118 s 정지(rosbag 확인) | 이미 최소 간격(0.4 m) 안이면 멀어지는 명령도 모두 거부 | 거리를 좁히지 않는 명령/경로는 0.3 m/s 이하로 허용(`escape_command`, `path_escapes`, 가드 상태 `ESCAPING`). 단위 테스트만 — 실주행에서 아직 발동 안 함 |
+| 양보 예산 초과 시 미션 전체 실패, 재시도 불가 | `hospital_mission` 은 도킹 자세에서만 출발 | `resume:=true` — 현재 위치에서 같은 경로를 이어 감(`resume_stages`). 에이전트가 최대 3회 재시도 |
+
+**결과**: p4e 1사이클 무개입 성공 556 s (적재 75 s, 운송 225 s, 하역 48 s, 복귀 207 s). 적재 3/3·하역 3/3 제자리,
+양쪽 주행 첫 시도에 도킹. 이전 실행(p4a–d)은 위 표의 문제들로 실패했다. 성공은 아직 1회라 P6/P7 에서 반복으로 재확인한다.
+원본 `pick_and_place_detection.py` 에는 이번 운반·대기 수정(관절 보간 경유점, 안정 대기)이 아직 없다.

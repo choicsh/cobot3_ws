@@ -214,11 +214,14 @@ def _disconnect(stage, attribute_path):
     stage.GetAttributeAtPath(attribute_path).SetConnections([])
 
 
-def add_robots(stage, poses, front_camera=True):
+def add_robots(stage, poses, front_camera=True, global_nav_robot1=False):
     """poses[i-1] = (x, y, yaw_deg) 인 로봇 i 를 만들고 ROS 그래프를 네임스페이스로 복제한다.
 
     로봇 1 은 씬에 있던 것을 쓰고 네임스페이스만 robot1 로 바꾼다. poses[0] 이 None 이면 씬 자세 그대로,
-    값이 있으면 그 자세로 옮긴다 (세션 레이어)."""
+    값이 있으면 그 자세로 옮긴다 (세션 레이어).
+
+    global_nav_robot1: 로봇 1 의 주행 그래프(cmd_vel, chassis/odom, tf, 라이다)를 전역 이름 그대로 둔다.
+    네임스페이스 없는 기존 hospital Nav2 launch 를 그대로 쓰는 단일 로봇 시험용 (P4). 팔/손목 카메라는 /robot1 그대로."""
     root = stage.GetRootLayer()
     session = stage.GetSessionLayer()
     Sdf.CreatePrimInLayer(session, "/World")
@@ -239,7 +242,8 @@ def add_robots(stage, poses, front_camera=True):
                 xform.GetAttribute("xformOp:translate").Set(Gf.Vec3d(x, y, 0.0))
                 xform.GetAttribute("xformOp:orient").Set(
                     Gf.Quatf(Gf.Rotation(Gf.Vec3d(0, 0, 1), yaw_deg).GetQuat()))
-            _set_namespace(stage, graph, namespace(index))
+            if not (index == 1 and global_nav_robot1):
+                _set_namespace(stage, graph, namespace(index))
             if not front_camera:
                 # 병원 주행은 전방 스테레오 카메라를 쓰지 않는다. render product 를 안 만들면 렌더 부하가 준다
                 _disconnect(stage, f"{graph}/ros_lidars/rp_cam_front.inputs:execIn")

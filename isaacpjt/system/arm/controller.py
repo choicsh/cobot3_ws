@@ -48,6 +48,7 @@ class ArmTaskController:
         self._status_tick = 0
         self._status_sent = None
         self.cmd = ""
+        self.cmd_text = ""           # 받은 명령 문자열 그대로(id 포함) — 에이전트가 자기 명령의 결과인지 맞춰 본다
         self.result = "idle"
         self.detail = ""
         self.loaded = [False] * len(RACK_SLOTS)
@@ -174,7 +175,7 @@ class ArmTaskController:
         self.hooks.reset()
         # 제네릭 구독 노드는 이전 Play 때 받은 명령을 들고 있다 — 그걸 새 명령으로 보지 않는다
         self._last_command = self.io.read_command()
-        self.cmd, self.result, self.detail = "", "idle", ""
+        self.cmd, self.cmd_text, self.result, self.detail = "", "", "idle", ""
         self.io.set_camera(False)
         self.publish(force=True)
 
@@ -197,6 +198,8 @@ class ArmTaskController:
         self.command(parse_command(text), text)
 
     def command(self, cmd, text=""):
+        if cmd in ("load", "unload", "stop") and (self.state is None or cmd == "stop"):
+            self.cmd_text = text
         if cmd == "stop":
             self._reset_run_state()
             self.io.set_camera(False)
@@ -237,7 +240,7 @@ class ArmTaskController:
         self.log(f"unload       랙 {slot + 1}번 -> 책상 {slot + 1}자리 (z {DESK_Z_M:.3f})")
         self.state = "unload"
         self.sequence = self._new(build_unload_steps(self.lula, slot, DESK_Z_M, base_pos, base_quat,
-                                                         self.hooks.registry.tray_yaw_base_deg()))
+                                                         self.hooks.registry.tray_yaw_base_deg(), self.hooks))
 
     def _check_placed(self, where, target_base, z_expected):
         """target_base(팔 base 기준) 에 트레이가 제대로 놓였는지. 가장 가까운 트레이 body 원점을 본다.
@@ -272,6 +275,7 @@ class ArmTaskController:
         return {
             "robot": f"robot{self.index}",
             "cmd": self.cmd,
+            "cmd_text": self.cmd_text,
             "result": self.result,           # idle | running | done | failed | stopped
             "state": self.state or "idle",
             "slot": self.slot_index if self.cmd == "load" else (self.unload_queue[0] if self.unload_queue else -1),

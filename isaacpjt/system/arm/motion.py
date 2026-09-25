@@ -295,6 +295,7 @@ def build_pick_steps(lula, grasp_base, grasp_yaw_deg, base_pos, base_quat, slot,
     p4 = to_world(place, POINT4_RPY)
     # 슬롯 바로 위 — x, y 는 놓는 위치와 같고 z 만 높다. 여기서 수직으로 내려간다
     p4_above = to_world(place + np.array([0.0, 0.0, RACK_ABOVE_Z_M]), POINT4_RPY)
+    p4_waypoint = to_world(place + np.array([0.0, 0.0, RACK_ABOVE_Z_M + CARRY_WAYPOINT_Z_M]), POINT4_RPY)
     p5 = to_world(place + RACK_RETREAT, POINT5_RPY)
 
     joint1_delta = np.zeros(6)
@@ -314,9 +315,17 @@ def build_pick_steps(lula, grasp_base, grasp_yaw_deg, base_pos, base_quat, slot,
         # 슬롯 바로 위로 먼저 가서, 거기서 수직으로만 내려간다.
         # ease 2 — 여기 도착할 때의 감속 충격이 트레이를 흔들어, 바로 다음 하강이
         # 흔들리는 중에 시작됐다. 도착 가속도를 0 으로 만들어 점차 느려지며 멈추게 한다.
-        {"type": "pose",  "label": f"놓기 위 안전 위치(+{RACK_ABOVE_Z_M * 100:.0f}cm)",
+        # joint_1 회전 뒤 자세가 놓는 자세와 최대 30deg 어긋난다(파지 yaw 가 트레이 축). 원본처럼 IK 로 보간하며
+        # 돌리면 손목이 특이점 근처(joint_5 -12 ~ -30)라 joint_4 가 한 틱에 20deg 넘게 튀어 물린 트레이가 흔들렸다
+        # (2026-09-25 p4b 3번 칸 걸림). 경유점까지는 관절 보간(IK 1회), 거기서 같은 자세로 수직 하강한다.
+        # 경유점 +7cm: 관절 보간은 도중에 최대 6cm 처져서, 경유점이 없으면 칸막이에 닿는 경우가 있었다
+        # (오프라인 IK 재생 33경로: 틱당 최악 11.6 -> 1.9deg, 실린 트레이·칸막이 충돌 후보 0).
+        {"type": "joint_ik", "label": f"놓기 위 경유점(+{(RACK_ABOVE_Z_M + CARRY_WAYPOINT_Z_M) * 100:.0f}cm, 관절)",
+         "target": p4_waypoint, "gripper": None, "speed": "carry", "ease": 2},
+        {"type": "pose",  "label": f"놓기 위 안전 위치(+{RACK_ABOVE_Z_M * 100:.0f}cm, 수직)",
          "target": p4_above, "gripper": None, "speed": "carry", "ease": 2},
-        {"type": "hold",  "label": f"하강 전 대기({PLACE_WAIT_STEPS / 60:.0f}s)", "gripper": None, "steps": PLACE_WAIT_STEPS},
+        {"type": "hold",  "label": "하강 전 대기(트레이 안정)", "gripper": None, "steps": PLACE_WAIT_MAX_STEPS,
+         "min_steps": PLACE_WAIT_STEPS, "until": hooks.settled},
         {"type": "pose",  "label": f"랙 {slot + 1}번 놓기(수직 하강)", "target": p4, "gripper": None, "tol": STEP_CONTACT_TOL_M, "speed": "slow"},
         # 랙 정렬 2단계. 여기 진입 시점은 손가락이 **아직 닫혀 있고** 팔이 슬롯에 멈춰 있는
         # 순간이라, 트레이가 그리퍼에 물린 상대 pose 를 재기에 맞다
@@ -330,7 +339,7 @@ def build_pick_steps(lula, grasp_base, grasp_yaw_deg, base_pos, base_quat, slot,
     ]
 
 
-def build_unload_steps(lula, slot, desk_z, base_pos, base_quat, tray_yaw_base_deg):
+def build_unload_steps(lula, slot, desk_z, base_pos, base_quat, tray_yaw_base_deg, hooks):
     """RACK_SLOTS[slot] 의 트레이를 꺼내 DESK_SLOTS[slot] 에 놓는다.
 
     적재의 역순이 아니라 하역 전용 시퀀스다 — 넣을 때와 뺄 때 걸리는 조건이 달라서
@@ -341,8 +350,8 @@ def build_unload_steps(lula, slot, desk_z, base_pos, base_quat, tray_yaw_base_de
         return base_to_world(tcp, rpy, base_pos, base_quat)
 
     # 원본은 DESK_ROW_CENTER 방위각(-86.6deg)으로 놓아 책상 위 트레이가 3.4deg 비스듬했다. 트레이 축에 맞춘다
-    direction, desk_quat = grasp_frame_yaw(
-        square_grasp_yaw(approach_direction(DESK_ROW_CENTER)[1], tray_yaw_base_deg))
+    desk_yaw = square_grasp_yaw(approach_direction(DESK_ROW_CENTER)[1], tray_yaw_base_deg)
+    direction, desk_quat = grasp_frame_yaw(desk_yaw)
 
     def to_world_q(tcp):
         return base_pose_to_world(tcp, desk_quat, base_pos, base_quat)
@@ -368,8 +377,11 @@ def build_unload_steps(lula, slot, desk_z, base_pos, base_quat, tray_yaw_base_de
          "speed": "carry", "ease": 2},
         # 적재 쪽과 대칭. ease 2 로 도착 가속도를 0 으로 만들고, 그래도 남는 흔들림은
         # 대기로 가라앉힌 뒤에 수직 하강한다 (적재의 '놓기 위 안전 위치' + '하강 전 대기' 와 같은 구성)
-        {"type": "pose",  "label": "책상 위",                  "target": to_world_q(lift), "gripper": None, "speed": "carry", "ease": 2},
-        {"type": "hold",  "label": f"하강 전 대기({PLACE_WAIT_STEPS / 60:.0f}s)", "gripper": None, "steps": PLACE_WAIT_STEPS},
+        # 적재와 같은 이유로 관절 보간 (랙 yaw -> 책상 yaw 재정렬에서 손목이 튄다). 책상 위 높이(TCP LIFT_Z_M)는
+        # 이미 책상 트레이 윗면보다 충분히 높아 경유점이 필요 없다
+        {"type": "joint_ik", "label": "책상 위(관절)",          "target": to_world_q(lift), "gripper": None, "speed": "carry", "ease": 2},
+        {"type": "hold",  "label": "하강 전 대기(트레이 안정)", "gripper": None, "steps": PLACE_WAIT_MAX_STEPS,
+         "min_steps": PLACE_WAIT_STEPS, "until": hooks.settled},
         {"type": "pose",  "label": f"책상 {slot + 1}자리 내려놓기(수직 하강)", "target": to_world_q(desk), "gripper": None, "tol": STEP_CONTACT_TOL_M, "speed": "slow"},
         {"type": "hold",  "label": "그리퍼 열기",              "gripper": "open"},
         {"type": "pose",  "label": "후퇴",                     "target": to_world_q(approach), "gripper": None, "speed": "slow"},
@@ -433,9 +445,30 @@ class PickPlaceSequence:
         if step.get("on_enter") is not None:
             step["on_enter"](self)
 
-        if step["type"] in ("pose", "hold"):
+        self.mode = step["type"]
+        if self.mode == "joint_ik":
+            # 목표 자세의 IK 를 지금 관절에서 이어 한 번만 풀고 관절 보간한다. 안 풀리면 IK 보간(pose)으로
+            pos, quat = step["target"]
+            # 가드(SingularityGuardedIK)를 거치지 않는다 — 목표까지의 전체 관절 변화를 '한 틱 튐' 으로 경고하게 된다
+            solver = getattr(self._ik, "_ik", self._ik)
+            action, ok = solver.compute_inverse_kinematics(target_position=tcp_to_flange(pos, quat),
+                                                           target_orientation=quat)
+            if ok and action.joint_positions is not None:
+                indices = action.joint_indices if action.joint_indices is not None else self._arm_indices
+                by_index = dict(zip(list(indices), list(action.joint_positions)))
+                q = self._robot.get_joint_positions()
+                self.start_joints = np.array([q[i] for i in self._arm_indices])
+                self.target_joints = np.array([by_index.get(i, q[i]) for i in self._arm_indices])
+                self.n_steps = steps_for_joint(self.start_joints, self.target_joints, speed=step.get("speed"))
+                self.mode = "joint"
+            else:
+                print(f"{self.tag}   [{self.index}] {step['label']} — IK 안 풀림, IK 보간으로 간다")
+                self.mode = "pose"
+        if self.mode == "joint" and self.start_joints is not None:
+            pass
+        elif self.mode in ("pose", "hold"):
             self.start_pos, self.start_quat = self._current_flange_pose()
-            if step["type"] == "hold":
+            if self.mode == "hold":
                 self.target_pos, self.target_quat = self.start_pos, self.start_quat
                 # steps 키가 있으면 그 길이만큼 제자리 대기한다 (없으면 그리퍼 여닫이 기준값)
                 self.n_steps = int(step.get("steps", GRIPPER_WAIT_STEPS))
@@ -470,7 +503,7 @@ class PickPlaceSequence:
         alpha = ease_alpha(alpha, step.get("ease", 1))
         solved = True
 
-        if step["type"] in ("pose", "hold"):
+        if self.mode in ("pose", "hold"):
             pos = lerp(self.start_pos, self.target_pos, alpha)
             quat = quat_slerp(self.start_quat, self.target_quat, alpha)
             action, solved = self._ik.compute_inverse_kinematics(
@@ -489,8 +522,15 @@ class PickPlaceSequence:
         self.step_rejects += 0 if solved else 1
 
         self.step_tick += 1
+        if self.mode == "hold" and step.get("until") is not None:
+            # 최소 min_steps 는 기다리고, 그 뒤 조건이 서면 일찍 끝낸다 (최대 n_steps)
+            if self.step_tick >= step.get("min_steps", self.n_steps) and self.step_tick < self.n_steps:
+                if step["until"](self, final=False):
+                    self.step_tick = self.n_steps
+            elif self.step_tick == self.n_steps:
+                step["until"](self, final=True)
         if self.step_tick >= self.n_steps:
-            if step["type"] == "pose":
+            if self.mode == "pose":
                 pos_err, rot_err = self._pose_error()
                 if pos_err > step.get("tol", STEP_POS_TOL_M) or rot_err > STEP_ROT_TOL_DEG:
                     if self.step_tick < self.n_steps + STEP_EXTRA_TICKS:
