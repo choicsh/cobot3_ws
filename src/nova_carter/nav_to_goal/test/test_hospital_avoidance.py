@@ -57,6 +57,19 @@ def test_guard_preserves_clear_command_and_reports_unavoidable_case():
     assert cmd == (0, 0) and state == 'NO_SAFE_COMMAND' and gap < 0
 
 
+def test_guard_passes_close_person_slowly_keeping_curvature():
+    # Person standing beside the path: body gap ~0.7 m -> within passing_gap 1.0.
+    near = [MovingBody(1, 1.0, .5+.4+.7, 0, 0, .4)]
+    cmd, state, gap = limited_command((0, 0, 0), (.6, 0), (.6, -.2), near)
+    assert state == 'PASSING_SLOW' and gap >= SafetySettings().minimum_gap
+    assert math.isclose(cmd[0], .3) and math.isclose(cmd[1], -.1)
+    # Same person 1.5 m away: full speed.
+    far = [MovingBody(1, 1.0, .5+.4+1.5, 0, 0, .4)]
+    assert limited_command((0, 0, 0), (.6, 0), (.6, .2), far)[:2] == ((.6, .2), 'CLEAR')
+    # Already slow enough (docking <= 0.18 m/s): unchanged.
+    assert limited_command((0, 0, 0), (.15, 0), (.15, 0), near)[0] == (.15, 0)
+
+
 @pytest.mark.parametrize('yaw', [0, math.pi])
 def test_forward_candidates_for_both_lanes(yaw):
     lane = LaneFrame(10, 2, yaw, 40)

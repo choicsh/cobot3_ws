@@ -76,12 +76,20 @@ class Tracker:
                 self.tracks.append(track)
         return self.tracks
 
-    def snapshots(self, stamp, radius=0.4):
-        """Current positions + velocity + observation age, not collapsed futures."""
+    def snapshots(self, stamp, radius=0.4, standing_ok=None, standing_hits=5):
+        """Current positions + velocity + observation age, not collapsed futures.
+
+        Never-moved objects are included only after `standing_hits` scans and
+        when `standing_ok(x, y)` accepts them (e.g. far from mapped structure):
+        a person standing beside the lane was otherwise invisible until it
+        started walking, by which time the robot had already passed it.
+        """
         return [(t.track_id, t.x+t.vx*(stamp-t.stamp), t.y+t.vy*(stamp-t.stamp),
                  t.vx, t.vy, radius, stamp-t.stamp)
-                for t in self.tracks if t.was_moving and t.hits >= 3 and
-                0 <= stamp-t.stamp <= self.timeout]
+                for t in self.tracks if 0 <= stamp-t.stamp <= self.timeout and (
+                    (t.was_moving and t.hits >= 3) or
+                    (standing_ok is not None and t.hits >= standing_hits and
+                     standing_ok(t.x, t.y)))]
 
     def predictions(self, stamp, horizon=1.8, step=0.2, radius=0.4):
         result = []

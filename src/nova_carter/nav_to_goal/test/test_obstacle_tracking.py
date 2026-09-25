@@ -38,3 +38,18 @@ def test_wall_rejected_small_cluster_retained():
     clusters = scan_clusters(points)
     assert len(clusters) == 1
     assert math.dist(clusters[0], (4.05, 1)) < 1e-9
+
+
+def test_standing_person_is_tracked_only_when_persistent_and_accepted():
+    tracker = Tracker()
+    for i in range(4):
+        tracker.update([(3.0, 1.0)], i*0.1)
+    accept = lambda x, y: True
+    assert tracker.snapshots(0.3, standing_ok=accept) == []  # 4 scans: not yet
+    tracker.update([(3.0, 1.0)], 0.4)
+    snaps = tracker.snapshots(0.4, standing_ok=accept)
+    assert len(snaps) == 1 and abs(snaps[0][3]) < .01 and abs(snaps[0][4]) < .01
+    # Near mapped structure (e.g. the dock desk) a standing object is ignored,
+    # and without a predicate the old moving-only contract is unchanged.
+    assert tracker.snapshots(0.4, standing_ok=lambda x, y: False) == []
+    assert tracker.snapshots(0.4) == []

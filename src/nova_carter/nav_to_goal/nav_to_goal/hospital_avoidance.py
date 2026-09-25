@@ -13,8 +13,13 @@ class SafetySettings:
     rear: float = 1.38
     half_width: float = 0.5
     minimum_gap: float = 0.4
-    preferred_gap: float = 0.6
+    # 0.6 이면 사람 옆 0.55 m 를 0.6 m/s 로 차선 이탈 없이 지나갔다(Isaac 실측).
+    # 예측 간격이 이보다 작으면 MPPI 복도에서 옆으로 비켜 가는 경로를 만든다.
+    preferred_gap: float = 1.0
     yield_gap: float = 1.0
+    # 비켜 갈 경로가 없거나(방 안 DWB) 아직 비켜 가는 중이면 이 간격 안에서는 천천히 지나간다.
+    passing_gap: float = 1.0
+    passing_speed: float = 0.3
     horizon: float = 3.0
     guard_horizon: float = 1.5
     dt: float = 0.1
@@ -113,6 +118,14 @@ def limited_command(pose, velocity, command, tracks, settings=SafetySettings()):
         gap = command_clearance(pose, velocity, candidate, tracks, settings)
         threshold = settings.minimum_gap if scale == 1. else settings.yield_gap
         if gap >= threshold:
+            if scale == 1. and gap < settings.passing_gap and abs(candidate[0]) > settings.passing_speed:
+                # Pass close people slowly; scale w with v to keep the curvature.
+                k = settings.passing_speed/abs(candidate[0])
+                slow = candidate[0]*k, candidate[1]*k
+                slow_gap = command_clearance(pose, velocity, slow, tracks, settings)
+                if slow_gap >= settings.minimum_gap:
+                    return slow, 'PASSING_SLOW', slow_gap
+                continue
             state = ('CLEAR' if gap >= settings.preferred_gap else 'PASS_MARGIN_SHORTFALL') if scale == 1. else 'YIELDING'
             return candidate, state, gap
     state = 'YIELD_MARGIN_SHORTFALL' if gap >= settings.minimum_gap else 'NO_SAFE_COMMAND'

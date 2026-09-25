@@ -226,6 +226,11 @@ class TableDocking:
         settled = None
         unavailable = None
         last_log = 0.
+        # A single edge fit once jumped ~12 deg (corner gap -0.14 m) at 0.8 m to
+        # go; the robot turns at most ~1.4 deg per 0.1 s. Reject such jumps and
+        # abort on a negative corner gap only if it persists.
+        previous_edge = None
+        overlap_since = None
         self.node.get_logger().info(
             f'[DOCK] {station} dock: pose=({table["dock"][0]:.3f}, {table["dock"][1]:.3f}), '
             f'gap={DOCK_GAP:.2f}, yaw={math.degrees(target_yaw):.0f} deg')
@@ -241,6 +246,14 @@ class TableDocking:
                     pose, edge, velocity = observed
                     progress, _, length = along_edge(table, pose[0], pose[1])
                     overlaps_table = (progress-1.38-.12 < length and progress+.48+.12 > 0.)
+                    if edge is not None:
+                        angle = math.atan(edge[0])
+                        # 3 deg plus what a 0.3 rad/s turn could add since the last fit.
+                        if (previous_edge is not None and now-previous_edge[0] < .5 and
+                                abs(angle-previous_edge[1]) > math.radians(3.)+.3*(now-previous_edge[0])):
+                            edge = None
+                        else:
+                            previous_edge = (now, angle)
                 # Beside the desk the side gap must come from the lidar edge.
                 if observed is None or (edge is None and overlaps_table):
                     self.publish()
@@ -264,10 +277,17 @@ class TableDocking:
                     gap_error = gap-DOCK_GAP
                     # Full chassis corners, not just centerline separation.
                     corner_gap = min(-HALF_WIDTH-slope*x-offset for x in (-1.38, .48))/math.hypot(1., slope)
+                    if corner_gap > 0.:
+                        overlap_since = None
                     if overlaps_table and corner_gap < .025:
                         if corner_gap <= 0.:
-                            self.node.get_logger().error(f'[DOCK] nonpositive measured corner gap {corner_gap:.3f} m')
-                            return False
+                            overlap_since = overlap_since or now
+                            if now-overlap_since >= .5:
+                                self.node.get_logger().error(f'[DOCK] nonpositive measured corner gap {corner_gap:.3f} m')
+                                return False
+                            self.publish()
+                            time.sleep(.04)
+                            continue
                         # Stop longitudinal motion and reduce the tilt that
                         # makes a corner closer than the centerline. Rotating
                         # toward a parallel pose increases this minimum gap.

@@ -12,6 +12,7 @@ Pick & Place는 포함하지 않으며 선택 차선이 막혀도 다른 차선�
 from enum import Enum
 import math
 import os
+import sys
 import time
 
 import rclpy
@@ -638,10 +639,11 @@ def main():
         )
         navigator.destroy_node()
         rclpy.shutdown()
-        return
+        sys.exit(2)
 
+    status = MissionStatus.FAILED
     try:
-        run_mission(navigator, route_id)
+        status = run_mission(navigator, route_id)
     except KeyboardInterrupt:
         navigator.cancelTask()
         print(f"[MISSION] {MissionStatus.CANCELED.value}")
@@ -653,6 +655,8 @@ def main():
         navigator.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
+    # 실패한 미션 뒤에 다음 미션이 이어서 실행되지 않도록 셸에 결과를 알린다.
+    sys.exit(0 if status == MissionStatus.SUCCEEDED else 1)
 
 
 if __name__ == "__main__":

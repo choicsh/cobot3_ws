@@ -31,6 +31,7 @@ class MovingObstaclePredictor(Node):
         self.listener = TransformListener(self.buffer, self)
         self.tracker = Tracker()
         self.static_mask = None
+        self.standing_mask = None
         self.create_subscription(OccupancyGrid, '/map', self.receive_map,
             QoSProfile(depth=1, durability=QoSDurabilityPolicy.TRANSIENT_LOCAL))
         self.last_tf_warning = -math.inf
@@ -47,6 +48,9 @@ class MovingObstaclePredictor(Node):
     def receive_map(self, msg):
         if msg.header.frame_id == 'map':
             self.static_mask = StaticScanMask(msg)
+            # A standing object counts as a person only this far from mapped
+            # structure: covers AMCL error beside the dock desk (gap 0.15 m).
+            self.standing_mask = StaticScanMask(msg, margin=.45)
 
     def scan(self, msg):
         try:
@@ -94,7 +98,11 @@ class MovingObstaclePredictor(Node):
         cloud.points = [Point32(x=x, y=y, z=0.0) for x, y, _ in predictions]
         cloud.channels = [ChannelFloat32(name="radius", values=[r for _, _, r in predictions])]
         self.publisher.publish(cloud)  # Also send empty clouds to clear old envelopes.
-        snapshots = self.tracker.snapshots(stamp, radius=self.radius)
+        standing_ok = None
+        if map_transform is not None and self.standing_mask is not None:
+            mx, my, c, s = map_transform
+            standing_ok = lambda x, y: not self.standing_mask.contains(mx+c*x-s*y, my+s*x+c*y)
+        snapshots = self.tracker.snapshots(stamp, radius=self.radius, standing_ok=standing_ok)
         state = PointCloud()
         state.header = cloud.header
         state.points = [Point32(x=t[1], y=t[2], z=0.0) for t in snapshots]
