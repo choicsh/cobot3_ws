@@ -141,6 +141,14 @@ open_stage(USD_PATH)
 while is_stage_loading():
     simulation_app.update()
 
+# 뷰포트 라이팅을 Stage Lights 대신 Default 로 (뷰포트 메뉴와 같은 액션). 헤드리스면 액션이 없다.
+import omni.kit.actions.core
+
+_lighting = omni.kit.actions.core.get_action_registry().get_action(
+    "omni.kit.viewport.menubar.lighting", "set_lighting_mode_rig")
+if _lighting is not None:
+    _lighting.execute("Default")
+
 # Keep 60 Hz physics, but refresh the operator view at 30 Hz. The application
 # still updates on every render tick; do not replace this with render=False,
 # which would also stop refreshing the UI and render-based sensors.
