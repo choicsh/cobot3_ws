@@ -69,3 +69,20 @@ ros2 topic hz /wrist_camera/color/image_raw /wrist_camera/depth/image_raw
 ```bash
 ros2 topic echo /tray_detection --once
 ```
+
+## 로봇 여러 대 (통합 시스템, `isaacpjt/system/run_fleet_sim.py`)
+
+토픽 이름이 상대 이름이라 네임스페이스를 주면 로봇별로 나뉜다. 로봇마다 하나씩 띄운다
+(구독 `/robotN/wrist_camera/...`, 발행 `/robotN/tray_detection`, `/robotN/aruco_markers`).
+디버그 이미지는 `~/tray_detections/robotN/` 에 따로 저장된다.
+
+```bash
+source /opt/ros/jazzy/setup.bash && export ROS_DOMAIN_ID=136
+for r in 1 2; do
+  PYTHONPATH=/opt/ros/jazzy/lib/python3.12/site-packages:$PYTHONPATH ~/yolo-venv/bin/python \
+    ~/cobot3_ws/admin_ws/src/tray_detector/tray_detector/detect_node.py \
+    ~/cobot3_ws/runs/detect/isaacpjt/sdg/runs/tray-2/weights/best.pt --ros-args -r __ns:=/robot$r &
+done
+```
+
+네임스페이스 없이 띄우면 예전처럼 `/wrist_camera/...` 를 본다 (`pick_and_place_detection.py` 단독 실행용).

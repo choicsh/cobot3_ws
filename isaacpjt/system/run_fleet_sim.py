@@ -2,11 +2,18 @@
 
     export ROS_DOMAIN_ID=136
     ~/isaacsim/python.sh isaacpjt/system/run_fleet_sim.py --robots 2
-    ~/isaacsim/python.sh isaacpjt/system/run_fleet_sim.py --robots 3 --no-wrist --headless
+    ~/isaacsim/python.sh isaacpjt/system/run_fleet_sim.py --robots 3 --no-arm --headless
 
 로봇 i 의 ROS 토픽은 /robot{i}/ 아래다 (scene.py 참고). 로봇 1 은 씬 원래 위치(East 책상 옆),
 2·3 은 운송 차선(lane_lower) 남쪽 직선 위에 서쪽을 보고 놓는다. 시작 자세는
 assets/fleet_start_poses.json 에 기록한다 (AMCL 초기 위치 입력용).
+
+팔 (arm/controller.py) — 로봇마다 ArmTaskController. 명령/상태는 OmniGraph 로 주고받는다:
+    ros2 topic pub --once /robot1/arm/command std_msgs/String "{data: 'load:1'}"
+    ros2 topic echo /robot1/arm/status
+    검출은 로봇마다 tray_detector 를 네임스페이스로 띄운다 (admin_ws/README.md).
+    GUI 에서는 뷰포트를 클릭한 뒤 L(적재) / U(하역) 키로 robot1 에 명령할 수도 있다.
+책상 트레이(/World/tray)는 시작 시 2개를 더 복제해 가로 한 줄로 놓는다 (원본 P&P 와 같다).
 """
 
 import argparse
@@ -18,13 +25,16 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--robots", type=int, default=2, choices=(1, 2, 3))
 parser.add_argument("--headless", action="store_true")
 parser.add_argument("--no-people", action="store_true")
-parser.add_argument("--no-wrist", action="store_true", help="손목 카메라 발행 안 함")
+parser.add_argument("--no-arm", action="store_true", help="팔 컨트롤러/트레이 복제 없이 주행 로봇만")
+parser.add_argument("--no-wrist", action="store_true", help="손목 카메라 그래프를 만들지 않음 (--no-arm 일 때만)")
 parser.add_argument("--front-cam", action="store_true",
                     help="전방 스테레오 카메라 발행 (병원 주행은 안 씀. 켜면 3대에서 실시간 비율 0.67->0.60)")
 parser.add_argument("--walk-blend", type=float, default=0.75)
 parser.add_argument("--pose", action="append", default=[], metavar="I:X,Y,YAW",
                     help="로봇 I(2 이상)의 시작 자세 덮어쓰기, 예: --pose 2:20.2,17.5,180")
 args = parser.parse_args()
+if not args.no_arm and args.no_wrist:
+    parser.error("팔은 손목 카메라 검출이 필요하다 — --no-wrist 는 --no-arm 과 같이 쓸 것")
 
 from isaacsim import SimulationApp
 
@@ -45,6 +55,8 @@ enable_extension("isaacsim.ros2.bridge")
 simulation_app.update()
 
 import carb  # noqa: E402
+import carb.input  # noqa: E402
+import omni.appwindow  # noqa: E402
 import omni.timeline  # noqa: E402
 from isaacsim.core.api import World  # noqa: E402
 from isaacsim.core.utils.stage import is_stage_loading, open_stage  # noqa: E402
@@ -87,9 +99,33 @@ if not args.no_wrist:
     for index in range(1, args.robots + 1):
         scene.build_wrist_camera_graph(stage, index)
 
+arms = []
+if not args.no_arm:
+    from isaacsim.core.prims import SingleXFormPrim  # noqa: E402
+    from arm.config import ARM_BASE_REL  # noqa: E402
+    from arm.controller import ArmTaskController  # noqa: E402
+    from arm.rosio import ArmRosIO  # noqa: E402
+    from arm.trays import TrayRegistry  # noqa: E402
+
+    trays = TrayRegistry()
+    # 트레이 책상(East, 채취실)에 도킹해 있는 로봇 1 의 팔 base 기준으로 복제한다
+    trays.spawn_copies(*SingleXFormPrim(f"{scene.robot_prim(1)}/{ARM_BASE_REL}").get_world_pose(),
+                       simulation_app.update)
+    for index in range(1, args.robots + 1):
+        io = ArmRosIO(index, simulation_app.update)
+        io.build()
+        arm = ArmTaskController(index, scene.robot_prim(index), io, trays)
+        arm.setup_drives(stage)
+        arm.register(world)
+        arms.append(arm)
+
 scene.bake_navmesh(simulation_app)
 world.reset()
 settings.set_bool("/app/scripting/ignoreWarningDialog", previous_prompt)
+for arm in arms:
+    arm.post_reset(world)
+    # 물리 스텝(60 Hz)마다 1틱 — 원본 P&P 와 같은 시뮬 시간 기준
+    world.add_physics_callback(f"arm_robot{arm.index}", lambda _dt, a=arm: a.tick())
 
 poses = {}
 for index in range(1, args.robots + 1):
@@ -104,8 +140,42 @@ print(f"[FLEET] 재생 시작 — 로봇 {args.robots}대, 사람 {'없음' if a
       f"손목 카메라 {'끔' if args.no_wrist else '켬'}, 전방 카메라 {'켬' if args.front_cam else '끔'}",
       flush=True)
 
+
+class KeyTap:
+    """뷰포트에 포커스가 있을 때의 키 PRESS 를 모아 둔다 (GUI 수동 시험용)."""
+
+    def __init__(self):
+        self._taps = []
+        self._keyboard = omni.appwindow.get_default_app_window().get_keyboard()
+        self._input = carb.input.acquire_input_interface()
+        self._sub = self._input.subscribe_to_keyboard_events(self._keyboard, self._on_event)
+
+    def _on_event(self, event, *_):
+        if event.type == carb.input.KeyboardEventType.KEY_PRESS:
+            self._taps.append(event.input.name)
+        return True
+
+    def take(self):
+        taps, self._taps = self._taps, []
+        return taps
+
+
+keys = KeyTap() if arms and not args.headless else None
+was_playing = False
 try:
     while simulation_app.is_running():
         world.step(render=True)
+        playing = world.is_playing()
+        if playing and not was_playing:
+            for arm in arms:
+                arm.on_play(world)
+        elif was_playing and not playing:
+            for arm in arms:
+                arm.on_stop()
+        was_playing = playing
+        if keys is not None and playing:
+            for key in keys.take():
+                if key in ("L", "U"):
+                    arms[0].command("load" if key == "L" else "unload", f"key {key}")
 finally:
     simulation_app.close()

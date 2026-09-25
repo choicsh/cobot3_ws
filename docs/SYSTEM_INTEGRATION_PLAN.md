@@ -91,8 +91,9 @@
 
 | 토픽 | 방향 | 타입 | 내용 |
 |---|---|---|---|
-| `/robotN/arm/command` | agent → Isaac | `std_msgs/String` | `load`, `unload`, `stop` |
-| `/robotN/arm/status` | Isaac → agent | `std_msgs/String`(JSON) | `{"state","command","result":"running/done/failed","urgency":[..3],"loaded":[..3]}` |
+| `/robotN/arm/command` | agent → Isaac | `std_msgs/String` | `load:<id>`, `unload:<id>`, `stop:<id>` (또는 JSON `{"cmd","id"}`). 문자열이 바뀔 때만 새 명령 |
+| `/robotN/arm/status` | Isaac → agent | `std_msgs/String`(JSON) | `{"robot","cmd","result":"idle/running/done/failed/stopped","state","slot","loaded":[3],"aruco":[3],"urgency":[3],"unloaded":[3],"warnings":[],"detail"}` — 바뀔 때 + 0.5 s 마다 |
+| `/robotN/tray_detection`, `/robotN/aruco_markers` | tray_detector → Isaac | `Float32MultiArray` | 기존 형식 그대로, 네임스페이스만 추가 |
 | `/robotN/task` | fleet → agent | `std_msgs/String`(JSON) | `{"task_id","origin","destination","route"}` |
 | `/robotN/agent_status` | agent → fleet | `std_msgs/String`(JSON) | 단계, 결과 |
 
@@ -275,3 +276,46 @@ frame id 는 그대로(`base_link`, `odom`) — 로봇마다 tf 토픽이 다르
 - 아직 **Nav2 ×3 을 같은 PC 에 올리지 않은 수치**다. MPPI 3개가 CPU 를 더 쓰므로 P7 에서 재측정하고,
   부족하면 로봇 스택(Nav2·agent)을 다른 PC 로 분산한다(§3.4).
 - 손목 카메라는 3대 동시에 약 2 Hz(R7). P2 에서 팔이 일하는 로봇만 발행하도록 켜고 끄는 방법을 넣는다.
+
+### P2 픽 앤 플레이스 기능 분리 — 완료 (2026-09-25)
+산출물: `isaacpjt/system/arm/` — `config.py`(상수), `geometry.py`(순수 계산), `motion.py`(스텝·시퀀스),
+`trays.py`(트레이 복제·랙 정렬), `rosio.py`(OmniGraph 입출력), `controller.py`(`ArmTaskController`),
+`isaacpjt/system/tests/test_arm_geometry.py`(CPU, 21개). `run_fleet_sim.py` 가 로봇마다 컨트롤러를 붙인다.
+원본 `pick_and_place_detection.py` 는 그대로 둔다.
+
+- 원본 코드는 줄 단위로 옮기고, 로봇 한 대 전제였던 전역 상태만 인스턴스로 바꿨다
+  (물고 있는 트레이·정렬 기록은 로봇별, 트레이 목록·rigid 핸들은 씬 공용).
+- 명령/상태: `/robotN/arm/command`, `/robotN/arm/status` (§3.1). `/mission_state`, `/nav_done`, `--drive-only` 제거.
+- 틱은 물리 콜백(60 Hz) — 원본과 같은 시뮬 시간 기준. 손목 카메라는 `load` 동안만 켠다
+  (IsaacCreateRenderProduct `enabled`, 끄면 렌더도 멈춘다. 2대 idle 시 실시간 비율 0.72 → 0.89).
+- `tray_detector` 는 토픽을 상대 이름으로 바꿔 `--ros-args -r __ns:=/robotN` 로 로봇별 실행.
+- 놓기 결과 확인을 추가했다: 시퀀스가 끝나도 트레이가 제자리가 아니면 `loaded`/`unloaded` 를 False 로,
+  `warnings` 에 사유를 넣는다 (원본은 떨어뜨려도 완료로 넘어갔다).
+
+**알고리즘 문제 발견과 수정 (원본에도 있던 것)**
+- 증상: 트레이가 랙 칸막이에 걸려 약 40° 기울고, 정렬(순간이동)이 그걸 세우다 튕겨 내 테두리 위로 올라감.
+  하역 때 떨어뜨림 (수평 89–115 cm). 원본 기준선에서도 같은 yaw 어긋남(방위각 −83° → 놓을 때 +7°) 확인.
+- 원인 1 — 파지 yaw 가 트레이 방향이 아니라 base→트레이 **방위각**이었다. 트레이는 책상에 반듯이 놓여 있는데
+  가로 ±25 cm 로 흩어져 방위각이 −69 ~ −103° 로 퍼지고, 그 차이(최대 19°)만큼 비스듬히 물어 그대로 랙에 넣었다.
+  USD 실측: 칸 폭 15.4 cm, 트레이 9.1×14 cm → 19° 돌면 13.2 cm, 여유 1 cm. 파지점도 방위각 방향으로
+  반폭만큼 밀어 중심이 약 1.9 cm 어긋나 여유를 넘었다. 로그상 방위각 오차 ≥ 16° 인 칸이 걸렸다.
+- 원인 2 — 랙 정렬이 기울어진 트레이도 수평으로 세워 칸막이에 박힌 자세를 만들었다.
+- 수정: 파지 yaw 를 트레이 축(base 기준 스폰 방위의 90° 격자)에 스냅(`geometry.square_grasp_yaw`,
+  `motion.plan_grasp`, IK/손목 특이점 검사 후 안 되면 원본 방위각), 파지점도 그 방향으로 민다.
+  하역 책상 자세도 같은 기준(원본은 3.4° 비스듬). 10° 넘게 기울었거나 바닥에 안 앉은 트레이는 정렬하지 않고 실패로 보고.
+- 랙 놓는 점 `POINT4/5` y +3.9 cm(0.789 → 0.828): 반듯이 물게 된 뒤 트레이 중심이 칸 깊이 중심보다
+  3.9 cm 앞이라 앞쪽 1.4 cm 가 랙 바닥 밖이었다. 이제 앞뒤 여유 각 2.5 cm.
+
+**검증** (로봇 1대, 병원 씬 East 책상, 매 실행 트레이 위치·긴급도 무작위)
+
+| | 수정 전 (3회, 9칸) | 수정 후 (6회, 18칸) |
+|---|---|---|
+| 놓을 때 트레이 yaw 어긋남 | 5–19° | 0–4° |
+| 칸막이에 걸림(기울기 ~40°) | 3칸 | 0 |
+| 랙 제자리 (칸 폭 방향 오차) | 1회 실패 | 18/18 (≤ 0.3 cm) |
+| 책상 하역 제자리 | 1회 2칸 떨어뜨림 | 18/18 |
+| 적재 / 하역 시간 | 69–93 s / 47–56 s | 69–78 s / 48–54 s |
+
+- 로봇 2대 동시(수정 전 코드): robot1 적재/하역과 robot2(트레이 없음 → 재시도·복구 후 `failed`)가 서로 간섭 없음.
+- ArUco 판독은 10프레임 중 칸별 3–10회(다수결 충분). 원본(카메라 15 Hz)보다 누적 프레임이 절반이다.
+- 남은 일: `tray_detector` 의 `demo` 자가 시험이 0923 `RACK_ROI` 변경 뒤로 깨져 있다(이번 변경과 무관, 원본에서도 실패).

@@ -28,16 +28,19 @@ from pathlib import Path
 import cv2
 import numpy as np
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from sensor_msgs.msg import CameraInfo, Image
 from std_msgs.msg import Float32MultiArray
 from ultralytics import YOLO
 
-COLOR_TOPIC = "/wrist_camera/color/image_raw"
-DEPTH_TOPIC = "/wrist_camera/depth/image_raw"
-INFO_TOPIC = "/wrist_camera/color/camera_info"
-RESULT_TOPIC = "/tray_detection"
-MARKER_TOPIC = "/aruco_markers"
+# 상대 이름 — 로봇마다 하나씩 띄울 때 네임스페이스를 붙인다 (없으면 예전처럼 /wrist_camera/...):
+#   detect_node.py <weights> --ros-args -r __ns:=/robot1
+COLOR_TOPIC = "wrist_camera/color/image_raw"
+DEPTH_TOPIC = "wrist_camera/depth/image_raw"
+INFO_TOPIC = "wrist_camera/color/camera_info"
+RESULT_TOPIC = "tray_detection"
+MARKER_TOPIC = "aruco_markers"
 
 CONF_THRESHOLD = 0.75    # 이력: 0.85 -> 0.75 (2026-09-23). 검출 자체가 덜 잡히는 편이라 낮춰본다
 MAX_TRAYS = 3            # 랙 자리가 3개다
@@ -155,14 +158,17 @@ class TrayDetector(Node):
         self.saved = 0
         self.last_log = ""       # 같은 내용이면 다시 안 찍는다 (터미널이 15Hz 로그에 버거워한다)
         self.seq = 0
-        OUT_DIR.mkdir(exist_ok=True)
+        # 로봇마다 저장 폴더를 나눈다 (~/tray_detections/robot1/ ...). 네임스페이스가 없으면 예전 자리
+        self.out_dir = OUT_DIR / self.get_namespace().strip("/")
+        self.out_dir.mkdir(parents=True, exist_ok=True)
 
         self.pub = self.create_publisher(Float32MultiArray, RESULT_TOPIC, 10)
         self.pub_markers = self.create_publisher(Float32MultiArray, MARKER_TOPIC, 10)
         self.create_subscription(CameraInfo, INFO_TOPIC, self._on_info, 1)
         self.create_subscription(Image, DEPTH_TOPIC, self._on_depth, 1)
         self.create_subscription(Image, COLOR_TOPIC, self._on_color, 1)
-        self.get_logger().info(f"{weights} 로드 (conf>={CONF_THRESHOLD}). {COLOR_TOPIC} 대기 중")
+        self.get_logger().info(f"{weights} 로드 (conf>={CONF_THRESHOLD}). "
+                               f"{self.resolve_topic_name(COLOR_TOPIC)} 대기 중")
 
     def _on_info(self, msg):
         # k = [fx, 0, cx, 0, fy, cy, 0, 0, 1]
@@ -232,7 +238,7 @@ class TrayDetector(Node):
         # 있었다 — 정작 봐야 할 순간이 그때다. 이제 0개도 남기되 빈도만 낮춘다.
         every = SAVE_EVERY_FOUND if found else SAVE_EVERY_EMPTY
         if markers or self.saved % every == 1:
-            path = OUT_DIR / f"{datetime.now():%H%M%S}_{self.saved:04d}.png"
+            path = self.out_dir / f"{datetime.now():%H%M%S}_{self.saved:04d}.png"
             img = result.plot()
             cv2.rectangle(img, RACK_ROI[:2], RACK_ROI[2:], (0, 255, 255), 1)   # 랙 ROI — 랙이 이 안에 있어야 한다
             for mid, cx, cy in markers:   # 마커 id 를 마커 '위'에 찍는다 (마커를 덮으면 이미지로 재분석이 안 된다)
@@ -257,11 +263,12 @@ def main(args=None):
     node = TrayDetector(weights)
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():          # Ctrl+C 면 rclpy 가 이미 컨텍스트를 닫았다
+            rclpy.shutdown()
 
 
 def demo():
