@@ -448,3 +448,31 @@ WAITING → ASSIGNED → IN_TRANSIT → ARRIVED → COMPLETED, departed_at/arriv
 - 성능 관찰(사용자: "라이다 반응이 늦다"): 실행 중 측정 라이다 6.1 Hz, 최대 공백 0.57 s, 실시간 비율 0.85, Isaac CPU 345 %,
   GPU 45 %. 설정 변경은 없다. RViz 가 켜진 것과의 관계는 다음 실행에서 RViz 끄고 비교.
 - 남은 일: 로봇 1대라 예약 정지(HOLDING)는 실기에서 아직 발동하지 않았다 — P7(2대 이상)에서 문 경합과 책상 대기를 실기로 확인.
+
+### P6b 관제 웹 — 완료 (2026-09-26)
+`origin/feature/HJ` 의 `monitoring_web/`(표준 라이브러리 HTTP + SSE, DB 드라이버 없이 컨테이너 안 `psql`)을 가져와 고쳤다.
+
+- `server.py`: 조회 SQL 을 v5 스키마로 — 작업은 `tray_ids[]`/`slot_nos[]` 를 풀어 트레이·칸·긴급도, 영문 ENUM, 트레이 목록,
+  이벤트(`STAGE`/`TASK_CREATED`/`UNLOADED`/`MISSION_RESUME`), 상태 로그. Redis 는 `redis-cli EVAL`(Lua 한 번)으로
+  `robot:*:state`·heartbeat·`route`·`fleet:zones` 를 읽어 실시간 위치·단계·통신·예약에 쓴다(Redis 가 없으면 DB 위치 이력).
+  지도는 Nav2 의 `hospital_integration_human.yaml`(원점·해상도, PNG 크기는 헤더에서). 차선 구역은 ROS 를 source 했으면
+  `lane_graph` 에서(`/api/lanes`) — 로봇이 따르는 같은 기하.
+- `static/`: 상태 한글 표기(작업 ENUM, 로봇 단계), 긴급도 3 = 긴급(빨강), 검체 패널 → 트레이 패널, 지도 SVG 층(차선, 문의 충돌
+  구역 주황 점선, 로봇별 예약 구역 굵은 선, 구간 경로), 로봇 방향 표시, 통신 끊김 회색. 라벨 오타(체취실→채취실, 검사실→분석실).
+- `simulate_realtime.py`, `seed_robotdb3_demo.sql` 은 옛 스키마·전 테이블 TRUNCATE 라 가져오지 않았다(D8).
+- `fleet_manager` 는 끝날 때 `fleet:zones` 를 지운다(웹이 지난 예약을 그리지 않게).
+
+**확인**: p6b(로봇 1대 관제 1사이클 605 s) 운송 중 같은 시각에 웹 `/api/dashboard` = Redis = DB — 단계 DELIVERING,
+위치 (−7.48, −0.70), 작업 7 IN_TRANSIT, 예약 `deliver:15–18`. 작업 표·트레이·이벤트·상태 로그가 DB 와 일치.
+
+**라이다 지연(사용자 관찰) 원인 = RViz**: 기본 RViz 설정이 3D 라이다 포인트클라우드를 두 디스플레이로 중복 구독·렌더하고
+카메라 이미지까지 켜 두었다. 운송·복귀 중 30 s 측정:
+
+| 구성 | 라이다 | p95 간격 | 최대 공백 | 실시간 비율 | 1사이클 |
+|---|---|---|---|---|---|
+| RViz 기본(p6a) | 6.1 Hz | — | 0.57 s | 0.85 | — |
+| RViz 끔(p6b) | 9.2 Hz | 0.12 s | 0.27 s | 0.92 | 605 s |
+| RViz 가볍게(p6c) | 9.7 Hz | 0.11 s | 0.43 s | 0.98 | 532 s |
+
+`carter_navigation.rviz` 에서 두 PointCloud2 와 Image 를 기본 꺼짐으로(체크박스로 다시 켤 수 있다). 지도·costmap·`/scan`·
+경로(`/plan`, `/hospital/reference_plan`)는 그대로.

@@ -204,6 +204,14 @@ class FleetManager(Node):
         except Exception as e:
             self.get_logger().warn(f"[DB] route failed: {e}")
 
+    def clear_zones(self):
+        """관제가 끝나면 예약도 끝이다 — 웹이 남은 예약을 그리지 않게 지운다."""
+        if self.db:
+            try:
+                self.db.get_redis().delete("fleet:zones")
+            except Exception as e:
+                self.get_logger().warn(f"[DB] zones clear failed: {e}")
+
     def _record_zones(self):
         if not self.db:
             return
@@ -232,6 +240,7 @@ def main(args=None):
     except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
+        node.clear_zones()
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
