@@ -96,8 +96,13 @@
 | `/robotN/task` | fleet → agent | `std_msgs/String`(JSON) | `{"task_id","origin","destination","route"}` |
 | `/robotN/agent_status` | agent → fleet | `std_msgs/String`(JSON) | 단계, 결과 |
 
-Isaac 쪽은 rclpy를 못 쓰므로 OmniGraph ROS2 Subscriber/Publisher(String)로 구현한다(기존 `/mission_state` 방식과 같다).
-커스텀 msg 패키지는 만들지 않는다(OmniGraph에서 쓰기 번거롭고 JSON으로 충분).
+**파이썬 제약 (전 단계 공통)**: Isaac Sim **5.1.0** 은 번들 **Python 3.11** 이고, 시스템 ROS 2 Jazzy 의 rclpy 는
+Python 3.12 용이라 Isaac 프로세스 안에서 쓸 수 없다. 따라서
+- Isaac 쪽 ROS 입출력은 전부 **OmniGraph ROS2 노드**(Publisher/Subscriber/CameraHelper/RtxLidarHelper 등)로 한다.
+  팔 명령/상태도 OmniGraph ROS2 Subscriber/Publisher(String)로 구현한다(기존 `/mission_state` 방식과 같다).
+- rclpy 가 필요한 코드(robot_agent, fleet_manager, tray_detector, 측정 도구)는 **별도 프로세스**(시스템 python3.12
+  또는 yolo-venv)로 둔다. Isaac 스크립트에서 rclpy 를 import 하지 않는다.
+- 커스텀 msg 패키지는 만들지 않는다(OmniGraph 제네릭 노드에서 쓰기 번거롭고 JSON String 으로 충분).
 
 ### 3.2 차선 그래프와 구역 예약
 
@@ -137,7 +142,7 @@ Isaac 쪽은 rclpy를 못 쓰므로 OmniGraph ROS2 Subscriber/Publisher(String)�
 |---|---|---|
 | PostgreSQL, Redis, fleet_manager | 관제 PC 1대 | DB 접속 주소는 환경변수(`HOSPITAL_PG_DSN`, `HOSPITAL_REDIS_URL`)로. `localhost` 하드코딩 제거 |
 | 로봇 스택(Nav2, robot_agent, tray_detector) | 로봇마다 아무 PC | `/robotN` 네임스페이스, 같은 `ROS_DOMAIN_ID` |
-| Isaac Sim | 로봇 1~3대를 한 PC 에 두거나, PC 마다 따로 | 따로 두면 서로 안 보이므로 로봇 간 안전은 §3.2 예약만으로 보장 |
+| Isaac Sim (5.1.0, py3.11) | 로봇 1~3대를 한 PC 에 두거나, PC 마다 따로 | 따로 두면 서로 안 보이므로 로봇 간 안전은 §3.2 예약만으로 보장. 한 PC 3대까지 가능(§7 P1) |
 
 - 로봇 식별자: `robot_name`(`AMR-01..03`) ↔ 네임스페이스(`robot1..3`) ↔ `robot_info.robot_id`.
 - PC 사이 대용량 토픽(라이다, 카메라)은 흘리지 않는다 — 각 로봇 스택이 자기 Isaac 과 같은 PC 에 있거나
@@ -209,7 +214,9 @@ P1 을 앞에 둔 이유: 2대 부하가 안 되면 P7 설계(카메라·라이�
 
 | # | 내용 | 대응 |
 |---|---|---|
-| R1 | Isaac 라이다 발행 약 5 MB/s 한계, 1대 약 2.6 MB/s → 2대면 한계 근접 | P1 에서 측정. 필요 시 라이다 주파수/채널 추가 경량화, 카메라 발행 주기 조정 |
+| R1 | ~~Isaac 라이다 발행 약 5 MB/s 한계~~ → P1 에서 해소 확인(3대 합계 21 MB/s). 남은 병목은 CPU(시뮬 실시간 비율 0.67) | Nav2 ×3(MPPI) 를 같은 PC 에 올렸을 때 재측정(P7). 부족하면 Nav2 를 다른 PC 로 |
+| R7 | 손목 카메라 3대 동시 발행 시 약 2 Hz, 최대 간격 2.6 s | 팔이 일하는 로봇만 켜기(P2 에서 render product 켜고 끄기 검토). P&P 는 프레임 수 기준 대기라 느려질 뿐 동작은 유지 예상 |
+| R8 | Isaac 5.1 = Python 3.11, rclpy 사용 불가 | Isaac 쪽 ROS 는 OmniGraph 만, rclpy 코드는 별도 프로세스(§3.1) |
 | R2 | P&P 좌표 상수가 옛 씬 기준 | P3 에서 도킹 자세 기준으로 재측정 |
 | R3 | 도킹 시 책상이 로봇 **우측** 0.15 m. 팔 작업 반경(0.25–1.12 m)·스캔 방향(`SCAN_ROTATE_DEG`) 적합성 미확인 | P3 첫 작업으로 확인. 안 맞으면 도킹 간격/정지 위치 조정 |
 | R4 | 정지 로봇이 분당 약 6 cm 밀림 — 적재 중(수 분) 도킹 자세 이탈 | 적재 전후 라이다 재측위(기존 `relocalize`), 적재 중 브레이크(바퀴 속도 0 유지) 확인 |
@@ -231,3 +238,40 @@ P1 을 앞에 둔 이유: 2대 부하가 안 되면 P7 설계(카메라·라이�
     dispatch 와 바이트 단위로 같다 → dispatch 에서 확인한 왕복 결과가 그대로 유효. 실기 재주행은 생략.
   - `colcon build` (carter_navigation, nav_to_goal, hospital_dynamic_layer) 성공.
   - `nav_to_goal` pytest: 57 통과, 1 건너뜀. flake8/pep257 2건 실패는 병합 전 dispatch 에도 있던 것(스타일).
+
+### P1 Isaac 다중 로봇 성능 — 완료 (2026-09-25)
+산출물: `isaacpjt/system/scene.py`(씬·사람·라이다 경량화·로봇 복제·손목 카메라 그래프),
+`isaacpjt/system/run_fleet_sim.py`(`--robots 1..3`), `isaacpjt/system/measure_topics.py`(시스템 python3, rclpy).
+
+**로봇 복제 방식**: 씬의 `/World/robot_nova` 와 ROS 그래프 `/World/nova_carter_ros` 를 세션 레이어에
+`Sdf.CopySpec` 으로 복제(`/World/robot_nova_{i}`, `/World/robot{i}_ros`)하고, 경로를 새 로봇으로 바꾸고
+모든 ROS 노드 `nodeNamespace` 를 `/robot{i}` 로 둔다. 로봇 1 도 `/robot1` 로 바꾼다. 토픽:
+`/robot{i}/cmd_vel`, `chassis/odom`, `tf`, `front_3d_lidar/lidar_points`, `wrist_camera/{color,depth}/...`.
+frame id 는 그대로(`base_link`, `odom`) — 로봇마다 tf 토픽이 다르다(Nav2 다중 로봇 표준 방식).
+
+**기능 확인**
+- `/robot2/cmd_vel` 0.3 m/s × 3 s → robot2 0.945 m 이동, robot1 0.005 m(정지 중 밀림 수준). 구동 분리 OK.
+- 복제 로봇에서 Fabric `cannot find protoPath` 오류 31건이 나오지만, robot1 라이다가 3.5–5 m 앞 robot2 를
+  정상 검출(해당 영역 점 0 → 5,032). RTX 라이다에는 영향 없음.
+- 스테이지 조명은 실행 시 Default(뷰포트 메뉴와 같은 액션)로 바꾼다. `run_hospital_sim.py` 에도 반영.
+
+**측정** (이 PC: RTX 4060 8 GB, 20코어, GUI, 사람 3명. 30 s, 벽시계 기준 Hz. 각 1회 측정이라 실행마다 ±0.1 정도 흔들림)
+
+| 구성 | 라이다 Hz / 최대 간격 | 손목 카메라 Hz | 실시간 비율 | GPU | Isaac CPU |
+|---|---|---|---|---|---|
+| 1대, 전방캠 켬 | 9.84 / 0.11 s | 3.5 | 0.98 | – | – |
+| 2대, 전방캠 켬 | 8.05 / 0.14 s | 2.0–2.9 | 0.81 | 73 % | – |
+| 2대, 전방캠 끔 | 7.19 / 0.33 s | 2.0–2.8 | 0.72 | 54 % | 4.5 코어 |
+| 3대, 전방캠 켬 | 5.96 / 0.20 s | 1.5–1.9 | 0.60 | 79 % | 4.7 코어 |
+| **3대, 전방캠 끔 (기본값)** | **6.74 / 0.32 s** | 1.8–2.4 | **0.67** | 65 % | 4.0 코어 |
+| 3대, 전방캠 끔, 헤드리스 | 6.63 / 0.33 s | 1.4–2.2 | 0.66 | 64 % | 3.9 코어 |
+| 3대, 라이다만 | 7.87 / 0.31 s | – | 0.79 | 35 % | 3.6 코어 |
+
+**결론**
+- 판정 기준(로봇별 라이다 ≥ 6 Hz, 최대 간격 < 0.5 s)을 **3대까지 통과**. 라이다 발행 5 MB/s 한계는 재현되지 않았다
+  (3대 합계 9–21 MB/s). 벽시계 Hz 가 떨어지는 것은 시뮬 자체가 느려져서이고, 시뮬 시간 기준으로는 약 10 Hz 로 스캔을 놓치지 않는다.
+- 전방 스테레오 카메라는 병원 주행에 안 쓰므로 **기본값을 끔**(`--front-cam` 으로 켬). 3대에서 실시간 비율 0.60 → 0.67.
+- 헤드리스는 이득이 없다(GUI 는 병목 아님). 남은 부하는 CPU(물리·사람·ROS 발행)와 손목 카메라 렌더.
+- 아직 **Nav2 ×3 을 같은 PC 에 올리지 않은 수치**다. MPPI 3개가 CPU 를 더 쓰므로 P7 에서 재측정하고,
+  부족하면 로봇 스택(Nav2·agent)을 다른 PC 로 분산한다(§3.4).
+- 손목 카메라는 3대 동시에 약 2 Hz(R7). P2 에서 팔이 일하는 로봇만 발행하도록 켜고 끄는 방법을 넣는다.
