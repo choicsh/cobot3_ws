@@ -21,6 +21,7 @@ setup(
         'console_scripts': [
             'robot_agent = hospital_system.robot_agent:main',
             'db_worker = hospital_system.db_worker:main',
+            'fleet_manager = hospital_system.fleet_manager:main',
         ],
     },
 )

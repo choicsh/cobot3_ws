@@ -214,6 +214,8 @@ class ArmTaskController:
         elif cmd == "load":
             self._reset_run_state()
             self.hooks.reset()
+            # 책상이 비었으면 지난 사이클에 하역한 트레이를 새 트레이로 되돌려 놓는다 (P6, 2사이클째부터)
+            self.hooks.registry.restock(self.log)
             self.cmd, self.result, self.detail = cmd, "running", text
             self.loaded = [False] * len(RACK_SLOTS)
             self.aruco = [-1] * len(RACK_SLOTS)
@@ -250,6 +252,7 @@ class ArmTaskController:
         base_pos, base_quat = self.sync_base()
         target = np.asarray(base_pos, dtype=float) + quat_to_matrix(base_quat) @ np.asarray(target_base, dtype=float)
         path, dist = self.hooks.registry.nearest(target, ())
+        self._placed_path = path
         if path is None:
             self.warnings.append(f"{where}: no tray")
             return False
@@ -491,6 +494,8 @@ class ArmTaskController:
             slot = self.unload_queue.pop(0)
             self.unloaded[slot] = self._check_placed(f"책상 {slot + 1}자리", DESK_SLOTS[slot], DESK_TRAY_Z_BASE)
             self.loaded[slot] = False
+            if self._placed_path and self._placed_path not in self.hooks.registry.delivered:
+                self.hooks.registry.delivered.append(self._placed_path)   # 다음 적재 때 재공급
             if self.unload_queue:
                 self._start_unload_slot()
             else:

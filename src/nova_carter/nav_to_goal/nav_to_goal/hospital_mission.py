@@ -488,12 +488,12 @@ def path_is_blocked(path, start_index, costmap_checker):
 
 def run_path_stage(
     navigator, tf_buffer, plan_publisher, stage_name, route, controller_id,
-    goal_checker_id, final_yaw=None, blockage_monitor=None,
+    goal_checker_id, final_yaw=None, blockage_monitor=None, zone_hold=None,
 ):
     from nav_to_goal.hospital_stage_runner import follow_stage
     return follow_stage(
         navigator, tf_buffer, plan_publisher, stage_name, route, controller_id,
-        goal_checker_id, final_yaw, blockage_monitor,
+        goal_checker_id, final_yaw, blockage_monitor, zone_hold,
     )
 
 
@@ -562,7 +562,7 @@ def resume_stages(stages, pose, max_distance=1.0, max_heading=math.radians(60.0)
     return out
 
 
-def run_mission(navigator, route_id, resume=False):
+def run_mission(navigator, route_id, resume=False, zone_hold=None):
     lane_id = ROUTES[route_id]
     route = LANES[lane_id]
     departure, transit, arrival = split_route(lane_id, route)
@@ -631,12 +631,17 @@ def run_mission(navigator, route_id, resume=False):
     for stage in stages:
         status = run_path_stage(
             navigator, tf_buffer, plan_publisher, *stage,
-            blockage_monitor=blockage_monitor,
+            blockage_monitor=blockage_monitor, zone_hold=zone_hold,
         )
         if status != MissionStatus.SUCCEEDED:
             print(f"[MISSION] {status.value}: {stage[0]}")
             return status
 
+    if zone_hold is not None and not zone_hold.dock_allowed():
+        # 앞 로봇이 아직 책상에 있다 — 관제가 도킹 구역을 줄 때까지 정류장에서 기다린다
+        print(f"[MISSION] WAIT_DOCK: {destination}", flush=True)
+        while rclpy.ok() and not zone_hold.dock_allowed():
+            rclpy.spin_once(navigator, timeout_sec=0.1)
     # robot_agent 가 이 줄을 보고 단계를 PLACE_DOCKING / PICK_DOCKING 으로 바꾼다
     print(f"[MISSION] DOCKING: {destination}", flush=True)
     docking = TableDocking(navigator, tf_buffer)
@@ -675,8 +680,14 @@ def main():
     navigator.declare_parameter("route_id", "lab_to_specimen")
     # True: 도킹 자세 출발 검사 없이 현재 위치에서 같은 경로를 이어 간다 (resume_stages)
     navigator.declare_parameter("resume", False)
+    # True: 관제 구역 예약(zone_hold 토픽)을 따른다 — 첫 메시지 전에는 출발하지 않는다 (hospital_zone_hold)
+    navigator.declare_parameter("require_zone_hold", False)
+    navigator.declare_parameter("zone_leg", "")   # 이 미션의 구간 키 (robot_agent 가 준다)
     route_id = navigator.get_parameter("route_id").value
     resume = bool(navigator.get_parameter("resume").value)
+    from nav_to_goal.hospital_zone_hold import ZoneHold
+    zone_hold = ZoneHold(navigator, bool(navigator.get_parameter("require_zone_hold").value),
+                         navigator.get_parameter("zone_leg").value)
 
     if route_id not in ROUTES:
         navigator.get_logger().error(
@@ -688,7 +699,7 @@ def main():
 
     status = MissionStatus.FAILED
     try:
-        status = run_mission(navigator, route_id, resume)
+        status = run_mission(navigator, route_id, resume, zone_hold)
     except KeyboardInterrupt:
         navigator.cancelTask()
         print(f"[MISSION] {MissionStatus.CANCELED.value}")

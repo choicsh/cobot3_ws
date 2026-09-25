@@ -20,3 +20,10 @@ def mission_route(origin, destination):
         return MISSION_ROUTE[(origin, destination)]
     except KeyError:
         raise ValueError(f"no route {origin} -> {destination}; known: {list(MISSION_ROUTE)}") from None
+
+
+# hospital_mission route_id -> 차선 그래프(lane_graph) 출발/도착 노드
+ROUTE_NODES = {
+    "lab_to_specimen": ("collection_dock", "analysis_dock"),
+    "specimen_to_lab": ("analysis_dock", "collection_dock"),
+}

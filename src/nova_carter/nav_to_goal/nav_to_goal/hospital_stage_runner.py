@@ -36,7 +36,8 @@ def drain_observations(navigator):
 
 
 def follow_stage(navigator, tf_buffer, plan_publisher, stage_name, route,
-                 controller_id, goal_checker_id, final_yaw=None, blockage_monitor=None):
+                 controller_id, goal_checker_id, final_yaw=None, blockage_monitor=None,
+                 zone_hold=None):
     # Deferred import keeps geometry reusable without ROS and avoids import cycles.
     from nav_to_goal.hospital_mission import (
         MissionStatus, STATIC_BLOCK_PERSISTENCE_S,
@@ -123,10 +124,14 @@ def follow_stage(navigator, tf_buffer, plan_publisher, stage_name, route,
             if time.monotonic() > deadline:
                 event('FAILED', 'initial_observations_unavailable')
                 return MissionStatus.FAILED
-        if not dispatch(reference):
+        if zone_hold is not None and zone_hold.held(reference_points, 0):
+            # 관제가 앞 구역을 아직 안 줬다 — 출발하지 않고 아래 루프에서 풀리면 보낸다
+            event('HOLDING', 'zone_reservation')
+        elif not dispatch(reference):
             event('FAILED', 'follow_path_rejected')
             return MissionStatus.FAILED
-        event('TRACKING', 'reference')
+        else:
+            event('TRACKING', 'reference')
 
         while rclpy.ok():
             # isTaskComplete spins callbacks only with an outstanding action.
@@ -199,6 +204,16 @@ def follow_stage(navigator, tf_buffer, plan_publisher, stage_name, route,
                 if not mppi or failure_count >= 3:
                     event('FAILED', 'controller_failure')
                     return MissionStatus.FAILED
+
+            if zone_hold is not None and zone_hold.held(reference_points, reference_index):
+                # 관제 구역 예약 끝 — 사람 양보가 아니므로 양보 예산(wait_since)에 넣지 않는다.
+                # 풀리면 아래 '능동 작업 없음' 분기가 남은 경로를 다시 보낸다.
+                if not cancel():
+                    return MissionStatus.FAILED
+                event('HOLDING', 'zone_reservation')
+                wait_since = clear_since = None
+                time.sleep(.10)
+                continue
 
             # Re-evaluate actual active path, not the original line during detour.
             # The predictive reference selector belongs to the open MPPI

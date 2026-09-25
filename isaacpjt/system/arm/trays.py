@@ -68,6 +68,10 @@ class TrayRegistry:
         # 스폰 자세(base 기준). 랙에서 '반듯한' 자세의 기준이다 — 책상 위에 반듯하게 놓여 있고
         # IK 를 안 거친 자세다. 로봇은 모두 같은 모델이고 같은 식으로 도킹하므로 한 번 재서 같이 쓴다
         self.spawn_quat_base = None
+        # 다음 사이클용 재공급 (P6): 채취실 책상 스폰 자리/자세, 하역이 끝난 트레이 (먼저 놓인 것부터)
+        self.collection_spots = []
+        self.collection_quat = None
+        self.delivered = []
 
     def spawn_copies(self, base_pos, base_quat, update):
         """원본 트레이를 TRAY_COPIES 개 복제해 한 줄로 흩뿌리고, 전부에 긴급도 마커를 붙인다.
@@ -98,6 +102,7 @@ class TrayRegistry:
               f"방위각 {tray_yaw_deg(self.spawn_quat_base):+.1f}deg")
 
         placed = [origin]
+        self.collection_quat = prim_world_quat(f"{TRAY_PRIM_PATH}/{TRAY_BODY_REL}")
         attach_aruco(TRAY_PRIM_PATH, random.choice(ARUCO_IDS))
         for i in range(1, TRAY_COPIES + 1):
             for _ in range(20):
@@ -112,7 +117,44 @@ class TrayRegistry:
             attach_aruco(path, random.choice(ARUCO_IDS))
             self.bodies.append(f"{path}/{TRAY_BODY_REL}")
         update()
+        # 재공급 자리 = 스폰 직후 각 트레이 rigid body 의 월드 위치 (부모 프림 원점과 다를 수 있다)
+        cache = UsdGeom.XformCache()
+        self.collection_spots = [
+            np.array(cache.GetLocalToWorldTransform(stage.GetPrimAtPath(b)).ExtractTranslation(), dtype=float)
+            for b in self.bodies]
         return origin
+
+    def restock(self, log=print):
+        """채취실 책상이 비었으면 하역이 끝난 트레이를 스폰 자리로 옮기고 긴급도 마커를 새로 뽑는다.
+
+        새 검체 트레이가 들어온 것으로 친다 (P6 — 한 번 스폰한 트레이로 사이클을 이어 간다).
+        반환: 옮긴 개수. 책상에 트레이가 하나라도 있으면 건드리지 않는다."""
+        if not self.collection_spots:
+            return 0
+        for path in self.bodies:
+            pos, _ = self.body(path).get_world_pose()
+            pos = np.asarray(pos, dtype=float)
+            if min(np.linalg.norm(pos[:2] - spot[:2]) for spot in self.collection_spots) < 0.4 and \
+                    abs(pos[2] - self.collection_spots[0][2]) < 0.15:
+                return 0
+        moved = 0
+        stage = omni.usd.get_context().get_stage()
+        for spot in self.collection_spots:
+            if not self.delivered:
+                break
+            path = self.delivered.pop(0)
+            body = self.body(path)
+            body.set_world_pose(position=spot + np.array([0.0, 0.0, 0.01]), orientation=self.collection_quat)
+            body.set_linear_velocity(np.zeros(3))
+            body.set_angular_velocity(np.zeros(3))
+            marker = random.choice(ARUCO_IDS)
+            tray_path = path.rsplit("/", 1)[0]
+            tex = stage.GetPrimAtPath(f"{tray_path}/{ARUCO_HANDLE_REL}/aruco/mat/tex")
+            if tex.IsValid():
+                tex.GetAttribute("inputs:file").Set(Sdf.AssetPath(f"{ARUCO_DIR}/aruco_{marker}.png"))
+            log(f"restock      {path} -> 채취실 책상 world {vec(spot)}  aruco {marker} (긴급도 {'하중상'[marker]})")
+            moved += 1
+        return moved
 
     def preload_rack(self, robot_index, base_pos, base_quat, update):
         """로봇 랙 3칸에 트레이를 실어 둔다 — 하역만 따로 시험할 때 (spawn_copies 뒤, world.reset 전).
