@@ -135,7 +135,7 @@ def test_stopped_previously_moving_track_remains_protected():
     assert len(states) == 1 and states[0][0] == identity
     assert abs(states[0][3]) < .01
     assert tracker.predictions(47*.125)
-    assert tracker.snapshots(7.) == []  # missing observations still expire
+    assert tracker.snapshots(7.2) == []  # missing observations still expire (1.2 s)
 
 
 def test_static_cluster_never_masquerades_as_person():
@@ -192,4 +192,7 @@ def test_arrival_and_collision_monitor_configuration_contract():
         assert 'ObstacleFootprint' in server[name]['critics']
         assert 'BaseObstacle' not in server[name]['critics']
     assert server['FollowPathMPPI']['wz_max'] == params['velocity_smoother']['ros__parameters']['max_velocity'][2]
-    assert params['collision_monitor']['ros__parameters']['cmd_vel_in_topic'] == 'cmd_vel_smoothed'
+    # velocity_smoother -> hospital_velocity_guard -> collision_monitor.
+    assert params['collision_monitor']['ros__parameters']['cmd_vel_in_topic'] == 'cmd_vel_human_checked'
+    launch = (root/'carter_navigation/launch/hospital_navigation.launch.py').read_text()
+    assert 'executable="hospital_velocity_guard"' in launch

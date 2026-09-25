@@ -5,12 +5,13 @@
 * specimen_to_lab: lane_upper (중앙 구조물 위쪽)
 * lab_to_specimen: lane_lower (중앙 구조물 아래쪽)
 
-양쪽 방의 Desks 테이블에 5cm 옆면 간격, yaw 180도로 도킹한다.
+양쪽 방의 Desks 테이블 긴 변을 로봇 우측에 두고 15cm 옆면 간격으로 도킹한다.
 Pick & Place는 포함하지 않으며 선택 차선이 막혀도 다른 차선으로 전환하지 않는다.
 """
 
 from enum import Enum
 import math
+import time
 
 import rclpy
 from geometry_msgs.msg import PoseStamped
@@ -40,22 +41,31 @@ STATIC_BLOCK_PERSISTENCE_S = 1.5
 STATIC_BLOCK_POSITION_TOLERANCE_M = 0.5
 STATIC_BLOCK_COST = 253
 MOVING_PREDICTION_CLEARANCE_M = 0.8
-PREDICTION_MAX_AGE_S = 0.8
+PREDICTION_MAX_AGE_S = 1.2
 LATEST_SENSOR_QOS = QoSProfile(
     depth=1, reliability=QoSReliabilityPolicy.BEST_EFFORT,
     durability=QoSDurabilityPolicy.VOLATILE)
 
-# Existing NewRooms tables, unchanged. Staging points lie south of each desk.
-LAB_STATION = (18.7, 11.612499952316282)
-SPECIMEN_STATION = (-43.4, 11.612499952316282)
-ARRIVAL_YAWS = {"specimen_to_lab": math.pi, "lab_to_specimen": math.pi}
+# Existing NewRooms desks, unchanged (1.8 m x 2.4 m, long sides north-south).
+# The robot docks beside a long side with the desk on its right, like the
+# USD spawn at the lab desk. *_DOCK must match hospital_docking.TABLES; each
+# *_STATION is the staging pose 2.5 m before the dock on the same straight.
+# The lab is entered heading north and left northward; the specimen desk is
+# entered heading south and left southward, so neither needs an undock.
+ARRIVAL_YAWS = {"specimen_to_lab": math.pi / 2, "lab_to_specimen": -math.pi / 2}
 ROUTES = {"specimen_to_lab": "lane_upper", "lab_to_specimen": "lane_lower"}
-LANE_UPPER = [('line', (-43.4, 11.612499952316282), (-43.4, 14.05)),
- ('arc', (-41.9, 14.05), 1.5, 180, 90),
- ('line', (-41.9, 15.55), (-39, 15.55)),
- ('arc', (-39, 14.025), 1.525, 90, 0),
- ('arc', (-35.95, 14.025), 1.525, 180, 270),
- ('line', (-35.95, 12.5), (-34.5, 12.5)),
+LOWER_WEST_Y = 11.612499952316282
+LAB_DOCK = (20.185, 13.8125)
+LAB_STATION = (20.185, 11.3125)
+SPECIMEN_DOCK = (-44.741, 12.9125)
+SPECIMEN_STATION = (-44.741, 15.4125)
+LANE_UPPER = [('line', SPECIMEN_DOCK, (-44.741, 10.4)),
+ ('arc', (-43.241, 10.4), 1.5, 180, 270),
+ ('line', (-43.241, 8.9), (-41.0, 8.9)),
+ ('arc', (-41.0, 10.4), 1.5, 270, 360),
+ ('line', (-39.5, 10.4), (-39.5, 11.0)),
+ ('arc', (-38.0, 11.0), 1.5, 180, 90),
+ ('line', (-38.0, 12.5), (-34.5, 12.5)),
  ('arc', (-34.5, 13.7), 1.2, 270, 360),
  ('arc', (-32.1, 13.7), 1.2, 180, 90),
  ('line', (-32.1, 14.9), (7.9, 14.9)),
@@ -64,30 +74,27 @@ LANE_UPPER = [('line', (-43.4, 11.612499952316282), (-43.4, 14.05)),
  ('line', (10.3, 12.5), (14, 12.5)),
  ('arc', (14, 11.5), 1, 90, 0),
  ('arc', (16, 11.5), 1, 180, 270),
- ('line', (16, 10.5), (18.7, 10.5)),
- ('arc', (18.7, 11.056249976158142), 0.5562499761581412, 270, 450)]
-LANE_LOWER = [('line', (18.7, 11.612499952316282), (17, 11.612499952316282)),
- ('arc', (17, 12.812499952316282), 1.2, 270, 180),
- ('arc', (14.6, 12.812499952316282), 1.2, 0, 90),
- ('line', (14.6, 14.012499952316283), (10, 14.012499952316283)),
- ('arc', (10, 11.012499952316283), 3, 90, 180),
- ('line', (7, 11.012499952316283), (7, 1.5)),
- ('arc', (4, 1.5), 3, 0, -90),
- ('line', (4, -1.5), (-28.55, -1.5)),
- ('arc', (-28.55, 1.5), 3, 270, 180),
- ('line', (-31.55, 1.5), (-31.55, 8.612499952316282)),
- ('arc', (-34.55, 8.612499952316282), 3, 0, 90),
- ('line', (-34.55, 11.612499952316282), (-43.4, 11.612499952316282))]
-INITIAL_LOWER_DEPARTURE = [('line', (20.27, 13.74534), (20.27, 16.5)),
- ('arc', (18.77, 16.5), 1.5, 0, 90),
- ('line', (18.77, 18), (16, 18)),
+ ('line', (16, 10.5), (19.3725, 10.5)),
+ ('arc', (19.3725, 11.3125), 0.8125, 270, 360)]
+LANE_LOWER = [('line', LAB_DOCK, (20.185, 16.5)),
+ ('arc', (18.685, 16.5), 1.5, 0, 90),
+ ('line', (18.685, 18), (16, 18)),
  ('arc', (16, 16.55), 1.45, 90, 180),
  ('line', (14.55, 16.55), (14.55, 13.95)),
  ('arc', (13.1, 13.95), 1.45, 0, -90),
  ('line', (13.1, 12.5), (10, 12.5)),
  ('arc', (10, 9.5), 3, 90, 180),
  ('line', (7, 9.5), (7, 1.5)),
- ('arc', (4, 1.5), 3, 0, -90)]
+ ('arc', (4, 1.5), 3, 0, -90),
+ ('line', (4, -1.5), (-28.55, -1.5)),
+ ('arc', (-28.55, 1.5), 3, 270, 180),
+ ('line', (-31.55, 1.5), (-31.55, 8.612499952316282)),
+ ('arc', (-34.55, 8.612499952316282), 3, 0, 90),
+ ('line', (-34.55, LOWER_WEST_Y), (-40.241, LOWER_WEST_Y)),
+ ('arc', (-40.241, LOWER_WEST_Y+1.5), 1.5, 270, 180),
+ ('line', (-41.741, LOWER_WEST_Y+1.5), (-41.741, 16.2)),
+ ('arc', (-43.241, 16.2), 1.5, 0, 180),
+ ('line', (-44.741, 16.2), SPECIMEN_STATION)]
 
 LANES = {
     "lane_upper": LANE_UPPER,
@@ -333,11 +340,36 @@ def build_path(navigator, route):
     return path
 
 
+def _wait_until_active(navigator, node_name):
+    """BasicNavigator._waitForNodeToActivate without its unbounded wait.
+
+    Isaac 실행 중 get_state 응답이 한 번 유실되자 미션이 goal 없이 계속 멈춰 있었다.
+    """
+    from lifecycle_msgs.srv import GetState
+
+    client = navigator.create_client(GetState, f"{node_name}/get_state")
+    try:
+        while rclpy.ok():
+            if not client.wait_for_service(timeout_sec=1.0):
+                navigator.get_logger().info(f"{node_name}/get_state 대기 중")
+                continue
+            future = client.call_async(GetState.Request())
+            rclpy.spin_until_future_complete(navigator, future, timeout_sec=2.0)
+            if not future.done():
+                navigator.get_logger().warn(f"{node_name}/get_state 응답 없음, 재요청")
+                continue
+            if future.result().current_state.label == "active":
+                return
+            time.sleep(1.0)
+    finally:
+        navigator.destroy_client(client)
+
+
 def wait_until_nav2_active(navigator):
     """controller_server와 map -> base_link TF를 기다린다."""
     from tf2_ros import Buffer, TransformListener
 
-    navigator._waitForNodeToActivate("controller_server")
+    _wait_until_active(navigator, "controller_server")
     tf_buffer = Buffer()
     navigator._hospital_tf_listener = TransformListener(tf_buffer, navigator)
     navigator.get_logger().info("map -> base_link TF 대기 중")
@@ -462,9 +494,9 @@ def split_route(lane_id, route):
     if lane_id == "lane_lower":
         # 방/벽 사이의 작은 호는 DWB로 고정하고, 중앙 하단 열린 구간만
         # MPPI에 맡긴다.
-        return route[:7], route[7:8], route[8:]
+        return route[:10], route[10:11], route[11:]
     if lane_id == "lane_upper":
-        return route[:8], route[8:9], route[9:]
+        return route[:9], route[9:10], route[10:]
     raise ValueError(f"Unknown lane: {lane_id}")
 
 
@@ -481,56 +513,32 @@ def run_mission(navigator, route_id):
     )
 
     tf_buffer = wait_until_nav2_active(navigator)
-    from nav_to_goal.hospital_docking import TableDocking, TABLES, wrap
-    from nav_to_goal.hospital_stage_runner import drain_observations
-    import time
+    from nav_to_goal.hospital_docking import TABLES, TableDocking
 
     origin = 'lab' if route_id == 'lab_to_specimen' else 'specimen'
     destination = 'specimen' if route_id == 'lab_to_specimen' else 'lab'
     current_tf = tf_buffer.lookup_transform('map', 'base_link', Time()).transform
     current = (current_tf.translation.x, current_tf.translation.y,
                _yaw_from_quaternion(current_tf.rotation))
-    origin_table = TABLES[origin]
-    dock_pose = (origin_table['dock_x'], origin_table['south']-.55)
-    if math.dist(current[:2], dock_pose) < .35:
+    # 책상 옆에서 AMCL이 수십 cm 밀리면 costmap이 차체를 책상 안에 둔다.
+    # 출발 전에 라이다로 잰 책상 기준 자세로 AMCL을 다시 맞춘다.
+    if math.dist(current[:2], TABLES[origin]['dock'][:2]) < 1.0:
         docking = TableDocking(navigator, tf_buffer)
         try:
-            if not docking.move(origin, undock=True):
-                return MissionStatus.FAILED
+            docking.relocalize(origin)
         finally:
             docking.close()
         current_tf = tf_buffer.lookup_transform('map', 'base_link', Time()).transform
         current = (current_tf.translation.x, current_tf.translation.y,
                    _yaw_from_quaternion(current_tf.rotation))
-    if (origin == 'specimen' and math.dist(current[:2], SPECIMEN_STATION) < .35 and
-            abs(wrap(current[2]-math.pi)) < .18):
-        if navigator.spin(spin_dist=-math.pi/2, time_allowance=30) is False:
-            return MissionStatus.FAILED
-        deadline = time.monotonic()+35.
-        while not navigator.isTaskComplete():
-            drain_observations(navigator)
-            if time.monotonic() > deadline:
-                navigator.cancelTask()
-                return MissionStatus.FAILED
-            time.sleep(.05)
-        if navigator.getResult() != TaskResult.SUCCEEDED:
-            return MissionStatus.FAILED
-        drain_observations(navigator)
-        current_tf = tf_buffer.lookup_transform('map', 'base_link', Time()).transform
-        current = (current_tf.translation.x, current_tf.translation.y,
-                   _yaw_from_quaternion(current_tf.rotation))
-    expected = sample_route(departure)[0]
-    initial = sample_route(INITIAL_LOWER_DEPARTURE)[0]
-    if (route_id == 'lab_to_specimen' and
-            math.dist(current[:2], initial[:2]) < .75 and
-            abs(math.atan2(math.sin(current[2]-initial[2]), math.cos(current[2]-initial[2]))) < .35):
-        departure = INITIAL_LOWER_DEPARTURE
-        print('[MISSION] using new USD spawn departure')
-    elif (math.dist(current[:2], expected[:2]) > .5 or
-          abs(math.atan2(math.sin(current[2]-expected[2]), math.cos(current[2]-expected[2]))) > .35):
+    # 출발 경로는 출발지 책상 도킹 자세(USD spawn 포함)에서 책상을 따라 직진한다.
+    # Isaac에서 정지 중인 로봇이 분당 ~6 cm 밀리므로 첫 직선 위 가장 가까운 점과 비교한다.
+    expected = min(sample_route(departure[:1]),
+                   key=lambda p: math.dist(p[:2], current[:2]))
+    if (math.dist(current[:2], expected[:2]) > .5 or
+            abs(math.atan2(math.sin(current[2]-expected[2]), math.cos(current[2]-expected[2]))) > .35):
         navigator.get_logger().error(
-            f'Unexpected start pose {current}; expected dock {expected} '
-            f'or fresh lab spawn {initial}. No goal sent.')
+            f'Unexpected start pose {current}; expected dock {expected}. No goal sent.')
         return MissionStatus.FAILED
     blockage_monitor = AheadBlockageMonitor(navigator, tf_buffer)
     plan_publisher = navigator.create_publisher(
@@ -549,27 +557,21 @@ def run_mission(navigator, route_id):
             departure,
             "FollowPath",
             "transit_goal_checker",
-            None,
         ),
         (
             lane_id,
             transit,
             "FollowPathMPPI",
             "transit_goal_checker",
-            None,
         ),
         (
             "station_arrival",
             arrival,
             "FollowPathDock",
-            # transit(0.3 m / 0.8 rad)으로 끝내면 FollowPathDock의 RotateToGoal
-            # 창(0.05 m)에 들어가기 전에 도착으로 처리되어, 최대 45.8도 틀어진
-            # 자세가 그대로 hospital_docking의 제자리 회전에 넘어간다. general은
-            # 컨트롤러의 회전 창과 같은 0.05 m/0.10 rad이라 정류장에서 수렴한다.
+            # transit(0.8 rad)은 FollowPathDock의 회전 창(0.05 m)에 들기 전에
+            # 도착 처리해서 책상 옆 직진 방향이 맞지 않는다. general은 그 창과 같다.
             "general_goal_checker",
-            # 책상은 정류장 북쪽이므로 yaw=pi에서 로봇 우측에 온다.
-            # TableDocking이 요구하는 허용치(|yaw-pi| <= 0.18)보다 좁게 맞춘다.
-            ARRIVAL_YAWS[route_id],
+            ARRIVAL_YAWS[route_id],  # 책상 긴 변이 로봇 우측에 오는 직진 방향
         ),
     ]
 
@@ -587,9 +589,10 @@ def run_mission(navigator, route_id):
         if not docking.move(destination):
             print('[MISSION] FAILED: table_docking')
             return MissionStatus.FAILED
+        docking.relocalize(destination)
     finally:
         docking.close()
-    print(f"[MISSION] {MissionStatus.SUCCEEDED.value}: table docked (target gap=0.05 m, yaw=180 deg)")
+    print(f"[MISSION] {MissionStatus.SUCCEEDED.value}: table docked (desk long side on the right)")
     return MissionStatus.SUCCEEDED
 
 

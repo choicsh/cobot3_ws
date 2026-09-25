@@ -1,6 +1,7 @@
 """Straight table-side docking through the normal smoother/Collision Monitor.
 
-The authored NewRooms tables are never moved. Map pose controls longitudinal
+The authored NewRooms tables are never moved. The robot drives straight along
+a long desk side with the desk on its right. Map pose controls longitudinal
 position; a fitted lidar table edge checks side clearance and parallelism.
 """
 import math
@@ -8,7 +9,7 @@ import time
 
 import numpy as np
 import rclpy
-from geometry_msgs.msg import Twist
+from geometry_msgs.msg import PoseWithCovarianceStamped, Twist
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import LaserScan, PointCloud2
 from sensor_msgs_py.point_cloud2 import read_points_numpy
@@ -17,14 +18,69 @@ from rclpy.time import Time
 
 from nav_to_goal.hospital_safety import yaw_of, stamp_seconds, observation_age
 
-TABLES = {
-    'lab': {'x_min': 20.835000023841857, 'x_max': 22.63499997615814,
-            'south': 12.162499952316283, 'dock_x': 21.285, 'staging_x': 18.7},
-    'specimen': {'x_min': -47.19099997615814, 'x_max': -45.391000023841855,
-                 'south': 12.162499952316283, 'dock_x': -46.741, 'staging_x': -43.4},
-}
-DOCK_GAP = .05
+DOCK_GAP = .15
 HALF_WIDTH = .5
+# base_link lies 0.45 m ahead of the chassis centre (front 0.48 m / rear 1.38 m).
+BODY_CENTER_OFFSET = .45
+STAGING_DISTANCE = 2.5
+X_TOLERANCE = .02
+GAP_TOLERANCE = .02
+ANGLE_TOLERANCE = math.radians(1.)
+
+
+def desk_side(start, end):
+    """Dock beside the desk edge start->end, driving start->end, desk on the right."""
+    length = math.dist(start, end)
+    ux, uy = (end[0]-start[0])/length, (end[1]-start[1])/length
+    lateral = HALF_WIDTH+DOCK_GAP
+    mx, my = (start[0]+end[0])/2, (start[1]+end[1])/2
+    dock = (mx-uy*lateral+ux*BODY_CENTER_OFFSET, my+ux*lateral+uy*BODY_CENTER_OFFSET,
+            math.atan2(uy, ux))
+    # At the dock the far end of the edge is this far ahead of base_link.
+    return {'edge': (start, end), 'dock': dock, 'end_ahead': length/2-BODY_CENTER_OFFSET,
+            'staging': (dock[0]-ux*STAGING_DISTANCE, dock[1]-uy*STAGING_DISTANCE)}
+
+
+# NewRooms desks are 1.8 m (x) by 2.4 m (y); both docks use a long side.
+TABLES = {
+    # West side of East_DockDesk, heading north (same side as the USD spawn).
+    'lab': desk_side((20.835000023841857, 12.162499952316283),
+                     (20.835000023841857, 14.562499952316283)),
+    # East side of West_DockDesk, heading south (the west wall is too close).
+    'specimen': desk_side((-45.391000023841855, 14.562499952316283),
+                          (-45.391000023841855, 12.162499952316283)),
+}
+
+
+def dock_errors(table, pose):
+    """Remaining distance along the dock heading and leftward offset from the dock line."""
+    x, y, yaw = table['dock']
+    c, s = math.cos(yaw), math.sin(yaw)
+    dx, dy = x-pose[0], y-pose[1]
+    return dx*c+dy*s, dx*s-dy*c
+
+
+def map_pose_from_edge(table, slope, offset, end_x):
+    """Map pose of base_link from the lidar edge y=slope*x+offset and its far end x.
+
+    The desk is fixed in the map, so this is an absolute fix beside it.
+    """
+    (x0, y0), (x1, y1) = table['edge']
+    length = math.dist((x0, y0), (x1, y1))
+    ux, uy = (x1-x0)/length, (y1-y0)/length
+    angle = math.atan(slope)  # edge direction seen from the robot
+    distance = -offset/math.hypot(1., slope)  # base_link to the edge line
+    along = length-(end_x*math.cos(angle)+(slope*end_x+offset)*math.sin(angle))
+    return (x0+ux*along-uy*distance, y0+uy*along+ux*distance,
+            wrap(math.atan2(uy, ux)-angle))
+
+
+def along_edge(table, x, y):
+    """Coordinates along the desk edge and perpendicular distance from it."""
+    (x0, y0), (x1, y1) = table['edge']
+    length = math.dist((x0, y0), (x1, y1))
+    ux, uy = (x1-x0)/length, (y1-y0)/length
+    return (x-x0)*ux+(y-y0)*uy, (x-x0)*uy-(y-y0)*ux, length
 
 
 def wrap(angle):
@@ -145,32 +201,48 @@ class TableDocking:
             x, y, z = xyz.T
             c, sn = math.cos(pose[2]), math.sin(pose[2])
             wx, wy = pose[0]+c*x-sn*y, pose[1]+sn*x+c*y
-            mask = ((wx >= table['x_min']+.06) & (wx <= table['x_max']-.06) &
-                    (np.abs(wy-table['south']) < .35) & (y < -.3) &
+            # Select the desk in the robot frame (right side). AMCL drifted
+            # 0.37 m beside the specimen desk in Isaac, so the map only gates
+            # coarsely against other objects.
+            along, across, length = along_edge(table, wx, wy)
+            mask = ((y < -.3) & (y > -1.2) & (x > -1.6) & (x < 4.) &
+                    (np.abs(across) < 1.) & (along > -1.) & (along < length+1.) &
                     (z > .15) & (z < .85))
             points = table_front_envelope(xyz[mask, :2])
-            return pose, fit_table_edge(points), self.odom.twist.twist
+            edge = fit_table_edge(points)
+            if edge is not None:
+                slope, offset, count = edge
+                inliers = points[np.abs(points[:, 1]-slope*points[:, 0]-offset) < .025]
+                edge = (slope, offset, count, float(inliers[:, 0].max()))
+            return pose, edge, self.odom.twist.twist
         except Exception:
             return None
 
-    def move(self, station, undock=False):
+    def move(self, station):
         from nav_to_goal.hospital_stage_runner import drain_observations
         table = TABLES[station]
-        target_x = table['staging_x'] if undock else table['dock_x']
-        target_y = table['south']-HALF_WIDTH-DOCK_GAP
+        target_yaw = table['dock'][2]
         deadline = time.monotonic()+90.
         settled = None
         unavailable = None
         last_log = 0.
-        self.node.get_logger().info(f'[DOCK] {station} {"undock" if undock else "dock"}: x={target_x:.3f}, gap=0.05, yaw=180 deg')
+        self.node.get_logger().info(
+            f'[DOCK] {station} dock: pose=({table["dock"][0]:.3f}, {table["dock"][1]:.3f}), '
+            f'gap={DOCK_GAP:.2f}, yaw={math.degrees(target_yaw):.0f} deg')
         try:
-            if not undock and not self.align(table):
+            if not self.align(table):
                 return False
             while rclpy.ok() and time.monotonic() < deadline:
                 drain_observations(self.node)
                 observed = self.observe(table)
                 now = time.monotonic()
-                if observed is None or (observed[1] is None and not undock):
+                overlaps_table = False
+                if observed is not None:
+                    pose, edge, velocity = observed
+                    progress, _, length = along_edge(table, pose[0], pose[1])
+                    overlaps_table = (progress-1.38-.12 < length and progress+.48+.12 > 0.)
+                # Beside the desk the side gap must come from the lidar edge.
+                if observed is None or (edge is None and overlaps_table):
                     self.publish()
                     unavailable = unavailable or now
                     if now-unavailable > 5.:
@@ -179,23 +251,20 @@ class TableDocking:
                     time.sleep(.03)
                     continue
                 unavailable = None
-                pose, edge, velocity = observed
-                dx = target_x-pose[0]
-                heading_error = wrap(math.pi-pose[2])
-                gap_error = target_y-pose[1]
+                dx, gap_error = dock_errors(table, pose)
+                map_dx = dx
+                heading_error = wrap(target_yaw-pose[2])
                 gap = None
                 if edge is not None:
-                    slope, offset, count = edge
+                    slope, offset, count, end_x = edge
+                    # Longitudinal error from the visible far end of the desk edge.
+                    dx = end_x-table['end_ahead']
                     gap = -offset-HALF_WIDTH
                     heading_error = math.atan(slope)
                     gap_error = gap-DOCK_GAP
                     # Full chassis corners, not just centerline separation.
                     corner_gap = min(-HALF_WIDTH-slope*x-offset for x in (-1.38, .48))/math.hypot(1., slope)
-                    # Before the chassis reaches the table's X interval, use
-                    # the open staging space to correct lateral/heading error.
-                    overlaps_table = (pose[0]-.6 < table['x_max'] and
-                                      pose[0]+1.5 > table['x_min'])
-                    if overlaps_table and corner_gap < .025 and not undock:
+                    if overlaps_table and corner_gap < .025:
                         if corner_gap <= 0.:
                             self.node.get_logger().error(f'[DOCK] nonpositive measured corner gap {corner_gap:.3f} m')
                             return False
@@ -206,12 +275,12 @@ class TableDocking:
                                      if abs(heading_error) > math.radians(.5) else 0.)
                         time.sleep(.04)
                         continue
-                if abs(wrap(pose[2]-math.pi)) > .18:
+                if abs(wrap(pose[2]-target_yaw)) > .18:
                     self.node.get_logger().error('[DOCK] staging heading not aligned; refusing a turn beside the table')
                     return False
-                good = (abs(dx) <= .015 and abs(heading_error) <= math.radians(.5) and
+                good = (abs(dx) <= X_TOLERANCE and abs(heading_error) <= ANGLE_TOLERANCE and
                         abs(velocity.linear.x) <= .01 and abs(velocity.angular.z) <= .01 and
-                        (undock or (gap is not None and abs(gap-DOCK_GAP) <= .01)))
+                        gap is not None and abs(gap-DOCK_GAP) <= GAP_TOLERANCE)
                 if good:
                     self.publish()
                     settled = settled or now
@@ -220,18 +289,64 @@ class TableDocking:
                         return True
                 else:
                     settled = None
-                    # Heading pi: forward moves toward smaller world X.
-                    direction = -1. if dx > 0. else 1.
+                    direction = 1. if dx > 0. else -1.
                     v, w = docking_command(dx, heading_error, gap_error, direction)
                     self.publish(v, w)
                 if now-last_log > 2.:
-                    self.node.get_logger().info(f'[DOCK] dx={dx:.3f} gap={gap} angle_deg={math.degrees(heading_error):.2f}')
+                    self.node.get_logger().info(f'[DOCK] dx={dx:.3f} map_dx={map_dx:.3f} gap={gap} angle_deg={math.degrees(heading_error):.2f}')
                     last_log = now
                 time.sleep(.04)
             self.node.get_logger().error('[DOCK] timeout; docking not successful')
             return False
         finally:
             self.publish()
+
+    def relocalize(self, station, timeout=10.):
+        """Seed AMCL from the lidar pose beside a fixed desk while stopped.
+
+        AMCL drifted 0.39 m / 8 deg into the specimen desk in Isaac, which made
+        the local costmap put the footprint inside the desk.
+        """
+        from nav_to_goal.hospital_stage_runner import drain_observations
+        table = TABLES[station]
+        deadline = time.monotonic()+timeout
+        publisher = self.node.create_publisher(PoseWithCovarianceStamped, '/initialpose', 10)
+        target = None
+        last_publish = 0.
+        try:
+            while rclpy.ok() and time.monotonic() < deadline:
+                drain_observations(self.node)
+                observed = self.observe(table)
+                if observed is not None and observed[1] is not None:
+                    pose, edge, velocity = observed
+                    if abs(velocity.linear.x) <= .01 and abs(velocity.angular.z) <= .01:
+                        target = map_pose_from_edge(table, *edge[:2], edge[3])
+                        if (math.dist(pose[:2], target[:2]) <= .03 and
+                                abs(wrap(pose[2]-target[2])) <= math.radians(1.)):
+                            self.node.get_logger().info(
+                                f'[DOCK] AMCL at lidar pose ({target[0]:.3f}, {target[1]:.3f}, '
+                                f'{math.degrees(target[2]):.1f} deg)')
+                            return True
+                        if time.monotonic()-last_publish >= 1.:
+                            msg = PoseWithCovarianceStamped()
+                            msg.header.stamp = self.node.get_clock().now().to_msg()
+                            msg.header.frame_id = 'map'
+                            msg.pose.pose.position.x, msg.pose.pose.position.y = target[:2]
+                            msg.pose.pose.orientation.z = math.sin(target[2]/2)
+                            msg.pose.pose.orientation.w = math.cos(target[2]/2)
+                            msg.pose.covariance[0] = msg.pose.covariance[7] = .02**2
+                            msg.pose.covariance[35] = math.radians(1.)**2
+                            publisher.publish(msg)
+                            last_publish = time.monotonic()
+                            self.node.get_logger().info(
+                                f'[DOCK] AMCL reset from lidar: map=({pose[0]:.3f}, {pose[1]:.3f}, '
+                                f'{math.degrees(pose[2]):.1f}) -> ({target[0]:.3f}, {target[1]:.3f}, '
+                                f'{math.degrees(target[2]):.1f})')
+                time.sleep(.05)
+            self.node.get_logger().warn(f'[DOCK] AMCL relocalization at {station} not confirmed')
+            return False
+        finally:
+            self.node.destroy_publisher(publisher)
 
     def align(self, table):
         """Turn only at the open staging point, before approaching the desk."""
@@ -247,11 +362,13 @@ class TableDocking:
                 continue
             pose, edge, velocity = observed
             # Never run a staging turn after reaching the table itself.
-            if abs(pose[0]-table['staging_x']) > .55:
+            if math.dist(pose[:2], table['staging']) > .55:
                 self.node.get_logger().error('[DOCK] alignment requires the open staging point')
                 return False
-            error = math.atan(edge[0]) if edge is not None else wrap(math.pi-pose[2])
-            if edge is not None and abs(error) <= math.radians(.5):
+            # The desk starts ahead of the staging point; use map heading until
+            # its edge is in view.
+            error = math.atan(edge[0]) if edge is not None else wrap(table['dock'][2]-pose[2])
+            if abs(error) <= ANGLE_TOLERANCE:
                 self.publish()
                 if abs(velocity.angular.z) <= .01:
                     stable = stable or time.monotonic()

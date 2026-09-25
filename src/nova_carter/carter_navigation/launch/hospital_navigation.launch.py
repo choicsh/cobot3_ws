@@ -125,5 +125,14 @@ def generate_launch_description():
                 output="screen",
                 parameters=[{"use_sim_time": use_sim_time}],
             ),
+            # cmd_vel_smoothed -> guard -> cmd_vel_human_checked -> collision_monitor.
+            # guard가 없으면 collision_monitor 입력이 끊겨 로봇이 움직이지 않는다.
+            Node(
+                package="nav_to_goal",
+                executable="hospital_velocity_guard",
+                name="hospital_velocity_guard",
+                output="screen",
+                parameters=[{"use_sim_time": use_sim_time}],
+            ),
         ]
     )

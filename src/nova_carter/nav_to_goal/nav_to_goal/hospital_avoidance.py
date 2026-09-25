@@ -23,7 +23,8 @@ class SafetySettings:
     angular_acceleration: float = 1.5
     max_speed: float = 0.6
     max_yaw_rate: float = 0.9
-    track_timeout: float = 0.6
+    # Isaac GUI lidar arrives every 0.1-1.2 s (3 Hz mean); shared stale-data limit.
+    track_timeout: float = 1.2
     uncertainty_rate: float = 0.10
     # Candidate centerlines stay inside this lane-local strip; actual body too.
     lane_half_width: float = 2.8

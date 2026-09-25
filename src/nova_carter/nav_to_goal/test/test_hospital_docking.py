@@ -1,7 +1,8 @@
 import math
 import numpy as np
 from nav_to_goal.hospital_docking import (
-    fit_table_edge, table_front_envelope, docking_command, TABLES,
+    fit_table_edge, table_front_envelope, docking_command, TABLES, DOCK_GAP,
+    dock_errors, along_edge, map_pose_from_edge,
 )
 from nav_to_goal.hospital_safety import observation_age
 
@@ -45,14 +46,54 @@ def test_forward_reverse_docking_steer_toward_table():
 def test_clock_skew_does_not_accept_stale_or_far_future_data():
     assert observation_age(10.,10.033)==0.
     assert observation_age(10.,10.05) is None
-    assert observation_age(10.,9.39) is None
-    assert math.isclose(observation_age(10.,9.5),.5)
+    assert observation_age(10.,8.79) is None
+    assert math.isclose(observation_age(10.,8.9),1.1)
 
 
-def test_dock_longitudinal_chassis_center_matches_authored_table():
+def test_dock_centres_chassis_on_long_side_with_desk_on_right():
     for table in TABLES.values():
-        center=(table['x_min']+table['x_max'])/2
-        assert abs(table['dock_x']+.45-center)<1e-6
+        (x0, y0), (x1, y1) = table['edge']
+        assert math.isclose(math.dist((x0, y0), (x1, y1)), 2.4, abs_tol=1e-6)
+        x, y, yaw = table['dock']
+        chassis = (x-.45*math.cos(yaw), y-.45*math.sin(yaw))
+        along, across, length = along_edge(table, *chassis)
+        assert math.isclose(along, length/2, abs_tol=1e-6)
+        # Robot left of the start->end edge (negative across) = desk on its right.
+        assert math.isclose(across, -(.5+DOCK_GAP), abs_tol=1e-6)
+        assert dock_errors(table, table['dock']) == (0., 0.)
+
+
+def test_desk_end_is_ahead_of_base_link_at_dock():
+    for table in TABLES.values():
+        x, y, yaw = table['dock']
+        end = table['edge'][1]
+        ahead = (end[0]-x)*math.cos(yaw)+(end[1]-y)*math.sin(yaw)
+        assert math.isclose(ahead, table['end_ahead'], abs_tol=1e-6)
+        assert math.isclose(table['end_ahead'], .75, abs_tol=1e-6)
+
+
+def test_map_pose_from_edge_round_trips_robot_pose():
+    for table in TABLES.values():
+        (x0, y0), (x1, y1) = table['edge']
+        for dx, dy, dyaw in [(0., 0., 0.), (.08, -.3, math.radians(4.)), (-.05, .4, math.radians(-7.))]:
+            x, y, yaw = table['dock'][0]+dx, table['dock'][1]+dy, table['dock'][2]+dyaw
+            c, s = math.cos(yaw), math.sin(yaw)
+            to_robot = lambda px, py: ((px-x)*c+(py-y)*s, -(px-x)*s+(py-y)*c)
+            a, b = to_robot(x0, y0), to_robot(x1, y1)
+            slope = (b[1]-a[1])/(b[0]-a[0])
+            offset = a[1]-slope*a[0]
+            got = map_pose_from_edge(table, slope, offset, b[0])
+            assert math.dist(got[:2], (x, y)) < 1e-9
+            assert abs(math.atan2(math.sin(got[2]-yaw), math.cos(got[2]-yaw))) < 1e-9
+
+
+def test_dock_errors_report_remaining_distance_and_left_offset():
+    table = TABLES['lab']  # heading north, desk east
+    x, y, yaw = table['dock']
+    along, left = dock_errors(table, (x-.1, y-1., yaw))
+    assert math.isclose(along, 1.) and math.isclose(left, .1)
+    along, left = dock_errors(TABLES['specimen'], (-44.741+.1, 12.9125+1., -math.pi/2))
+    assert math.isclose(along, 1., abs_tol=1e-6) and math.isclose(left, .1, abs_tol=1e-6)
 
 
 def test_mapped_wall_corner_is_not_a_moving_obstacle_but_open_space_is():

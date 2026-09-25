@@ -5,9 +5,10 @@ from nav2_msgs.msg import Costmap
 from nav_msgs.msg import Path
 
 from nav_to_goal.hospital_mission import (
-    ARRIVAL_YAWS, LANES, ROUTES, first_blocked_path_point,
-    sample_route, split_route,
+    ARRIVAL_YAWS, LAB_DOCK, LAB_STATION, LANES, ROUTES, SPECIMEN_DOCK,
+    SPECIMEN_STATION, first_blocked_path_point, sample_route, split_route,
 )
+from nav_to_goal.hospital_docking import TABLES
 
 
 def yaw_error(a, b):
@@ -26,17 +27,26 @@ def test_mppi_only_straight_and_all_turns_dwb():
             assert yaw_error(a[2], b[2]) < 1e-8
 
 
-def test_arrival_yaw_matches_tangent_and_staging_position():
+def test_routes_run_from_origin_dock_to_destination_staging():
+    ends = {"lab_to_specimen": ("lab", "specimen"), "specimen_to_lab": ("specimen", "lab")}
     for route_id, lane in ROUTES.items():
-        final = sample_route(LANES[lane])[-1]
-        other = "lane_lower" if lane == "lane_upper" else "lane_upper"
-        next_start = sample_route(LANES[other])[0]
-        assert math.dist(final[:2], next_start[:2]) < 1e-8
-        assert yaw_error(final[2], ARRIVAL_YAWS[route_id]) < 1e-8
-        # Specimen leaves its table by backing out, then spinning north in
-        # open space. Lab staging can directly depart west after undocking.
-        expected = math.pi/2 if lane == 'lane_lower' else math.pi
-        assert yaw_error(next_start[2], expected) < 1e-8
+        origin, destination = ends[route_id]
+        points = sample_route(LANES[lane])
+        dock = TABLES[origin]["dock"]
+        # Depart straight along the origin desk, continuing the dock heading.
+        assert math.dist(points[0][:2], dock[:2]) < 1e-6
+        assert yaw_error(points[0][2], dock[2]) < 1e-8
+        staging, final_dock = TABLES[destination]["staging"], TABLES[destination]["dock"]
+        assert math.dist(points[-1][:2], staging) < 1e-6
+        assert yaw_error(points[-1][2], ARRIVAL_YAWS[route_id]) < 1e-8
+        assert yaw_error(final_dock[2], ARRIVAL_YAWS[route_id]) < 1e-8
+
+
+def test_mission_station_constants_match_docking_tables():
+    for name, dock, staging in [("lab", LAB_DOCK, LAB_STATION),
+                                ("specimen", SPECIMEN_DOCK, SPECIMEN_STATION)]:
+        assert math.dist(dock, TABLES[name]["dock"][:2]) < 1e-6
+        assert math.dist(staging, TABLES[name]["staging"]) < 1e-6
 
 
 def test_static_blockage_scan_finds_lethal_but_ignores_unknown():

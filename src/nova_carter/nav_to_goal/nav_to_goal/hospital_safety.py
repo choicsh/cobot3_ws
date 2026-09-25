@@ -24,7 +24,7 @@ def stamp_seconds(header):
     return header.stamp.sec+header.stamp.nanosec/1e9
 
 
-def observation_age(now, stamp, maximum=.6):
+def observation_age(now, stamp, maximum=SafetySettings.track_timeout):
     """Allow one 30 Hz publication tick of cross-topic clock delivery skew."""
     age = now-stamp
     return max(0., age) if -.04 <= age <= maximum else None
@@ -100,7 +100,7 @@ class SafetyObservations:
                 vx, vy = channels['vx'][i], channels['vy'][i]
                 radius, observed_age = channels['radius'][i], channels['observation_age'][i]
                 vals = (p.x, p.y, vx, vy, radius, observed_age, channels['track_id'][i])
-                if not all(math.isfinite(v) for v in vals) or not (0 < radius <= .8 and 0 <= observed_age <= .6):
+                if not all(math.isfinite(v) for v in vals) or not (0 < radius <= .8 and 0 <= observed_age <= SafetySettings.track_timeout):
                     return None
                 position = self.transform_pose((p.x+vx*track_age, p.y+vy*track_age, 0.),
                                                self.tracks.header.frame_id, frame)

@@ -19,7 +19,7 @@ class Track:
 
 
 class Tracker:
-    def __init__(self, timeout=0.6):
+    def __init__(self, timeout=1.2):
         self.timeout = timeout
         self.tracks = []
         self.last_stamp = None

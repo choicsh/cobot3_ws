@@ -19,8 +19,8 @@ ROOT = Path(__file__).resolve().parents[2]
 def source_routes():
     source = ROOT/'nav_to_goal/nav_to_goal/hospital_mission.py'
     tree = ast.parse(source.read_text())
-    names = {'PATH_STEP', 'LAB_STATION', 'SPECIMEN_STATION', 'ARRIVAL_YAWS',
-             'ROUTES', 'LANE_UPPER', 'LANE_LOWER', 'LANES', 'INITIAL_LOWER_DEPARTURE'}
+    names = {'PATH_STEP', 'LAB_DOCK', 'LAB_STATION', 'SPECIMEN_DOCK', 'SPECIMEN_STATION',
+             'ARRIVAL_YAWS', 'ROUTES', 'LOWER_WEST_Y', 'LANE_UPPER', 'LANE_LOWER', 'LANES'}
     nodes = [n for n in tree.body if
              (isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id in names for t in n.targets))
              or (isinstance(n, ast.FunctionDef) and n.name in ('sample_route', 'route_length', 'split_route'))]
@@ -76,22 +76,21 @@ def test_shared_footprint_matches_nav2_configuration():
     assert max(abs(p[1]) for p in polygon) == settings.half_width
 
 
-def test_fresh_usd_spawn_departure_clears_pillar_and_joins_lower():
-    scope, grid = source_routes(), map_grid()
-    initial = scope['sample_route'](scope['INITIAL_LOWER_DEPARTURE'])
-    assert all(grid.body_clear(p) for p in initial)
-    assert math.dist(initial[0][:2], (20.27, 13.74534)) < 1e-6
-    assert abs(initial[0][2]-math.pi/2) < 1e-8
-    _, transit, _ = scope['split_route']('lane_lower', scope['LANE_LOWER'])
-    assert math.dist(initial[-1][:2], scope['sample_route'](transit)[0][:2]) < 1e-8
-
-
-def test_docks_have_five_cm_side_gap_and_west_facing_approach():
+def test_usd_spawn_is_within_lab_dock_departure_tolerance():
     scope = source_routes()
+    start = scope['sample_route'](scope['LANE_LOWER'])[0]
+    assert math.dist(start[:2], (20.27, 13.74534)) < .5
+    assert abs(start[2]-math.pi/2) < 1e-8
+
+
+def test_staging_to_dock_straight_clears_map_beside_long_desk_side():
+    scope, grid = source_routes(), map_grid()
     settings = SafetySettings()
-    for lane, table_south in [('lane_lower', 12.162499952316283),
-                              ('lane_upper', 12.162499952316283)]:
-        route = scope['LANES'][lane]
-        final = scope['sample_route'](route)[-1]
-        assert abs(math.atan2(math.sin(final[2]-math.pi), math.cos(final[2]-math.pi))) < 1e-8
-        assert math.isclose(table_south-(final[1]+settings.half_width), .05, abs_tol=1e-8)
+    # Desk long sides x=20.835 (lab, west side) and x=-45.391 (specimen, east side).
+    for dock, staging, yaw, desk_x in [
+            (scope['LAB_DOCK'], scope['LAB_STATION'], math.pi/2, 20.835000023841857),
+            (scope['SPECIMEN_DOCK'], scope['SPECIMEN_STATION'], -math.pi/2, -45.391000023841855)]:
+        assert math.isclose(abs(desk_x-dock[0])-settings.half_width, .15, abs_tol=1e-6)
+        straight = scope['sample_route']([('line', staging, dock)])
+        assert all(abs(p[2]-yaw) < 1e-8 for p in straight)
+        assert all(grid.body_clear(p) for p in straight)

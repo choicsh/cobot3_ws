@@ -11,8 +11,8 @@ def test_crossing_velocity_and_expiry():
     assert abs(track.vy - 1.0) < 0.05
     predictions = tracker.predictions(1.125)
     assert predictions[-1][1] > 0.8
-    assert tracker.predictions(2.0) == []
-    assert tracker.update([], 2.0) == []
+    assert tracker.predictions(2.4) == []  # last seen 1.125, timeout 1.2 s
+    assert tracker.update([], 2.4) == []
 
 
 def test_static_tracks_no_swept_corridor_and_clock_reset():
