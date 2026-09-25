@@ -20,7 +20,9 @@ def test_mppi_only_straight_and_all_turns_dwb():
         departure, transit, arrival = split_route(lane, route)
         assert len(transit) == 1 and transit[0][0] == "line"
         assert departure + transit + arrival == route
-        assert departure[-1][0] == arrival[0][0] == "arc"
+        # DWB hands over on a straight collinear with the MPPI line.
+        assert departure[-1][0] == "line" and arrival[0][0] == "arc"
+        assert math.dist(departure[-1][1], departure[-1][2]) >= 1.5
         for before, after in [(departure, transit), (transit, arrival)]:
             a, b = sample_route(before)[-1], sample_route(after)[0]
             assert math.dist(a[:2], b[:2]) < 1e-8
@@ -47,6 +49,16 @@ def test_mission_station_constants_match_docking_tables():
                                 ("specimen", SPECIMEN_DOCK, SPECIMEN_STATION)]:
         assert math.dist(dock, TABLES[name]["dock"][:2]) < 1e-6
         assert math.dist(staging, TABLES[name]["staging"]) < 1e-6
+
+
+def test_no_back_to_back_arcs_no_arc_over_90_and_straight_before_staging():
+    for lane, route in LANES.items():
+        for before, after in zip(route, route[1:]):
+            assert not (before[0] == after[0] == "arc"), (lane, before, after)
+        assert all(abs(s[4] - s[3]) <= 90 for s in route if s[0] == "arc")
+        # 정류장 직전은 직선이어야 제자리 정렬 없이 도킹 직진으로 이어진다.
+        assert route[-1][0] == "line"
+        assert math.dist(route[-1][1], route[-1][2]) >= 1.5
 
 
 def test_static_blockage_scan_finds_lethal_but_ignores_unknown():
