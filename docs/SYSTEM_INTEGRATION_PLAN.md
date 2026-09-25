@@ -215,3 +215,19 @@ P1 을 앞에 둔 이유: 2대 부하가 안 되면 P7 설계(카메라·라이�
 | R4 | 정지 로봇이 분당 약 6 cm 밀림 — 적재 중(수 분) 도킹 자세 이탈 | 적재 전후 라이다 재측위(기존 `relocalize`), 적재 중 브레이크(바퀴 속도 0 유지) 확인 |
 | R5 | Nav2 전역 토픽/TF 하드코딩 | P7 에서 ns + `tf` 리매핑. P4 에서 라이브러리화할 때 이름을 인자로 받도록 미리 정리 |
 | R6 | ROS 도메인: 비대화형 셸은 `ROS_DOMAIN_ID` 가 0 | 모든 launch/스크립트에서 `ROS_DOMAIN_ID=136` 명시 |
+
+## 7. 진행 기록
+
+### P0 브랜치 통합 — 완료 (2026-09-25)
+- `feature/note` 병합(`f7ca5a8`): 충돌은 바이너리/맵/사람 명령 파일뿐, 전부 dispatch 쪽 유지(D6, D7).
+  - `robot_nova.usd` 에서 note 쪽 차이는 `rear_RPLidar` 활성화, 미사용 `XT_33` 페이로드 비활성화,
+    그리퍼 재질 바인딩뿐이었다. 병원 주행은 둘 다 쓰지 않는다. P&P 의 후방 라이다(`/scan_rear`)는
+    필요하면 P2 에서 세션 레이어로 켠다.
+- `feature/hhj-0923` 추가 병합: note 에 없던 4커밋(랙 트레이 정렬 등). 충돌 없음.
+- 검증
+  - `pick_and_place_detection.py`, `tray_detector` = hhj-0923 과 동일. `DB_container/` = note 와 동일.
+  - 병원 주행에 쓰이는 파일 전부(nav_to_goal 병원 모듈, hospital_dynamic_layer, 파라미터, 맵, BT,
+    launch, `run_hospital_sim.py`, `robot_nova.usd`, `hospital_integration_human.usd`, `start_pose.json`)가
+    dispatch 와 바이트 단위로 같다 → dispatch 에서 확인한 왕복 결과가 그대로 유효. 실기 재주행은 생략.
+  - `colcon build` (carter_navigation, nav_to_goal, hospital_dynamic_layer) 성공.
+  - `nav_to_goal` pytest: 57 통과, 1 건너뜀. flake8/pep257 2건 실패는 병합 전 dispatch 에도 있던 것(스타일).
