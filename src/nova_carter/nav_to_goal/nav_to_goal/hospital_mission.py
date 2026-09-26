@@ -31,6 +31,7 @@ from sensor_msgs.msg import PointCloud
 
 
 PATH_STEP = 0.05
+DOCK_RETRIES = 2          # 도킹 실패 뒤 물러나서 다시 접근하는 횟수 (dock_with_retries)
 # hospital_stage_runner에서 선택 lane 안의 전방 합류를 검증한 뒤만 사용.
 DETOUR_PLANNER_ID = "GridBased"
 
@@ -534,13 +535,14 @@ def run_mission(navigator, route_id, resume=False, zone_hold=None, track=""):
     )
 
     tf_buffer = wait_until_nav2_active(navigator)
-    from nav_to_goal.hospital_docking import TABLES, TableDocking
+    from nav_to_goal.hospital_docking import TABLES, TableDocking, on_dock_line
 
     origin = 'lab' if route_id == 'lab_to_specimen' else 'specimen'
     destination = 'specimen' if route_id == 'lab_to_specimen' else 'lab'
     current_tf = tf_buffer.lookup_transform('map', 'base_link', Time()).transform
     current = (current_tf.translation.x, current_tf.translation.y,
                _yaw_from_quaternion(current_tf.rotation))
+    arrival_stage = ("station_arrival", arrival, "FollowPathDock", "general_goal_checker", ARRIVAL_YAWS[route_id])
     stages = [
         ("station_departure", departure, "FollowPath", "transit_goal_checker"),
         (lane_id, transit, "FollowPathMPPI", "transit_goal_checker"),
@@ -548,11 +550,18 @@ def run_mission(navigator, route_id, resume=False, zone_hold=None, track=""):
         # 맞지 않는다. general은 그 창과 같다. 마지막 값 = 책상 긴 변이 로봇 우측에 오는 직진 방향
         ("station_arrival", arrival, "FollowPathDock", "general_goal_checker", ARRIVAL_YAWS[route_id]),
     ]
+    back_first = False
     if resume:
-        stages = resume_stages(stages, current)
-        if stages is None:
+        resumed = resume_stages(stages, current)
+        if resumed is None and on_dock_line(TABLES[destination], current):
+            # 도킹 도중에 멈췄다 (지난 미션의 도킹 실패) — 물러나서 도착 직선부터 다시 접근한다
+            print(f"[MISSION] resume inside the {destination} dock approach at {current[0]:.2f}, {current[1]:.2f}: "
+                  f"back out and re-approach", flush=True)
+            resumed, back_first = [], True
+        if resumed is None:
             navigator.get_logger().error(f'Resume: pose {current} is not on {lane_id}. No goal sent.')
             return MissionStatus.FAILED
+        stages = resumed
         print(f"[MISSION] resume from {current[0]:.2f}, {current[1]:.2f}: "
               f"{', '.join(s[0] for s in stages)}", flush=True)
     # 책상 옆에서 AMCL이 수십 cm 밀리면 costmap이 차체를 책상 안에 둔다.
@@ -603,16 +612,59 @@ def run_mission(navigator, route_id, resume=False, zone_hold=None, track=""):
             rclpy.spin_once(navigator, timeout_sec=0.1)
     # robot_agent 가 이 줄을 보고 단계를 PLACE_DOCKING / PICK_DOCKING 으로 바꾼다
     print(f"[MISSION] DOCKING: {destination}", flush=True)
-    docking = TableDocking(navigator, tf_buffer)
-    try:
-        if not docking.move(destination):
-            print('[MISSION] FAILED: table_docking')
-            return MissionStatus.FAILED
-        docking.relocalize(destination)
-    finally:
-        docking.close()
-    print(f"[MISSION] {MissionStatus.SUCCEEDED.value}: table docked (desk long side on the right)")
-    return MissionStatus.SUCCEEDED
+    status = dock_with_retries(navigator, tf_buffer, plan_publisher, destination, arrival_stage,
+                               blockage_monitor, zone_hold, back_first)
+    if status == MissionStatus.SUCCEEDED:
+        print(f"[MISSION] {MissionStatus.SUCCEEDED.value}: table docked (desk long side on the right)")
+    return status
+
+
+def dock_with_retries(navigator, tf_buffer, plan_publisher, destination, arrival_stage,
+                      blockage_monitor, zone_hold, back_first=False):
+    """책상 옆 도킹. 실패하면(정류장 간격 어긋남, 모서리 간격, 시간 초과, 정렬) 라이다로 AMCL 을 다시 맞추고
+    도킹 직선을 따라 정류장 1.5 m 뒤까지 곧게 물러난 뒤 도착 경로 마지막 직선을 다시 달려 재시도한다.
+
+    도킹은 직진하며 조향으로만 옆 간격을 고치는데, 정류장에서 이미 옆으로 틀어져 있으면(대개 AMCL 이 책상
+    옆에서 옆으로 밀린 것) 고치려 틀 때 뒤 차체가 책상으로 돈다 — 옆 간격은 물러나서 다시 접근해야 고쳐진다."""
+    from nav_to_goal.hospital_docking import TableDocking, TABLES
+    for attempt in range(DOCK_RETRIES + 1):
+        if back_first or attempt:
+            docking = TableDocking(navigator, tf_buffer)
+            try:
+                # 책상 옆(가장자리가 다 보이는 자리)에서 라이다 기준으로 AMCL 을 다시 맞춘다 — 옆으로 밀린 위치를 고친다.
+                # 물러난 뒤(도킹 4 m 전)에는 하지 않는다: 가장자리 끝이 검출 범위(앞 4 m) 밖이라 앞뒤로 0.8 m 틀렸다
+                docking.relocalize(destination, timeout=6.)
+                if not docking.back_out(destination):
+                    print('[MISSION] FAILED: table_docking (back out)')
+                    return MissionStatus.FAILED
+            finally:
+                docking.close()
+            current_tf = tf_buffer.lookup_transform('map', 'base_link', Time()).transform
+            current = (current_tf.translation.x, current_tf.translation.y,
+                       _yaw_from_quaternion(current_tf.rotation))
+            again = resume_stages([arrival_stage], current)
+            if not again:
+                navigator.get_logger().error(f'[DOCK] {current} is not on the arrival straight after backing out')
+                print('[MISSION] FAILED: table_docking (re-approach)')
+                return MissionStatus.FAILED
+            status = run_path_stage(navigator, tf_buffer, plan_publisher, *again[0],
+                                    blockage_monitor=blockage_monitor, zone_hold=zone_hold)
+            if status != MissionStatus.SUCCEEDED:
+                print(f"[MISSION] {status.value}: {again[0][0]} (dock re-approach)")
+                return status
+            back_first = False
+        docking = TableDocking(navigator, tf_buffer)
+        try:
+            if docking.move(destination):
+                docking.relocalize(destination)
+                return MissionStatus.SUCCEEDED
+            reason = docking.failure
+        finally:
+            docking.close()
+        if attempt < DOCK_RETRIES:
+            print(f"[MISSION] DOCK_RETRY {attempt + 1}/{DOCK_RETRIES}: {reason} — back out and re-approach", flush=True)
+    print('[MISSION] FAILED: table_docking')
+    return MissionStatus.FAILED
 
 
 def _use_large_udp_buffers():

@@ -52,3 +52,29 @@ def test_resume_points_follow_route():
     out = resume_stages(stages, p)
     rest = sample_route([seg for s in out for seg in s[1]])
     assert math.dist(rest[0][:2], p[:2]) < 0.05 and math.dist(rest[-1][:2], pts[-1][:2]) < 1e-6
+
+
+def test_dock_retry_backs_out_onto_the_arrival_straight():
+    """도킹 실패 뒤 물러나는 자리(정류장 1.5 m 뒤)가 도착 경로 마지막 직선 위라, 그 직선만 다시 달려 정류장에 선다."""
+    from nav_to_goal.hospital_docking import BACK_OUT_DISTANCE, TABLES, dock_errors, on_dock_line
+    for route_id, station in (("specimen_to_lab", "lab"), ("lab_to_specimen", "specimen")):
+        stages = _stages(route_id)
+        arrival = stages[2]
+        x, y, yaw = TABLES[station]["dock"]
+        back = (x - BACK_OUT_DISTANCE * math.cos(yaw), y - BACK_OUT_DISTANCE * math.sin(yaw), yaw)
+        assert abs(dock_errors(TABLES[station], back)[0] - BACK_OUT_DISTANCE) < 1e-9
+        again = resume_stages([arrival], back)
+        assert again and again[0][0] == "station_arrival" and len(again[0][1]) == 1
+        seg = again[0][1][0]
+        assert seg[0] == "line" and math.dist(seg[2], TABLES[station]["staging"]) < 1e-6
+        assert math.dist(seg[1], back[:2]) < 0.05
+
+
+def test_pose_stopped_mid_docking_is_on_the_dock_line():
+    from nav_to_goal.hospital_docking import TABLES, on_dock_line
+    x, y, yaw = TABLES["lab"]["dock"]                       # 북쪽으로 도킹
+    assert on_dock_line(TABLES["lab"], (x + 0.22, y - 0.4, yaw - 0.1))     # 2026-09-26: 책상 쪽으로 0.22 m, 도킹 0.4 m 전
+    assert on_dock_line(TABLES["lab"], (x, y - 2.5, yaw))                  # 정류장
+    assert not on_dock_line(TABLES["lab"], (x, y - 6.0, yaw))              # 정류장보다 한참 뒤
+    assert not on_dock_line(TABLES["lab"], (x, y - 1.0, yaw + math.pi))    # 반대 방향
+    assert not on_dock_line(TABLES["lab"], (x - 1.0, y - 1.0, yaw))        # 옆으로 1 m

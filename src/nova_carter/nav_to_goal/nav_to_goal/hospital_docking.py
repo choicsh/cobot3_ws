@@ -26,6 +26,12 @@ STAGING_DISTANCE = 2.5
 X_TOLERANCE = .02
 GAP_TOLERANCE = .02
 ANGLE_TOLERANCE = math.radians(1.)
+# 정류장에서 잰 책상 간격이 이만큼 넘게 틀리면 직진하지 않는다. 직진 중에는 조향으로만 간격을 고치는데,
+# 책상에서 멀어지려고 틀면 뒤 1.38 m 가 책상 쪽으로 돌아 들어간다 (2026-09-26: AMCL 이 옆으로 0.15 m
+# 틀린 채 정류장에 서서 간격 0 에서 출발 -> 모서리 간격 -0.19 m 로 중단). 미션이 다시 접근한다.
+APPROACH_GAP_TOLERANCE = .06
+# 다시 접근할 때 도킹 직선을 따라 이만큼(도킹 자세에서) 물러난다 — 정류장 1.5 m 뒤, 도착 경로 마지막 직선 위
+BACK_OUT_DISTANCE = STAGING_DISTANCE+1.5
 
 
 def desk_side(start, end):
@@ -50,6 +56,13 @@ TABLES = {
     'specimen': desk_side((-45.391000023841855, 14.562499952316283),
                           (-45.391000023841855, 12.162499952316283)),
 }
+
+
+def on_dock_line(table, pose, max_lateral=.6, max_heading=.5):
+    """도킹 직선(정류장 1.5 m 뒤 ~ 도킹 자세 조금 앞) 위에서 도킹 방향을 보고 있다 — 도킹 도중 멈춘 자리"""
+    dx, lateral = dock_errors(table, pose)
+    return (-.3 <= dx <= BACK_OUT_DISTANCE+.2 and abs(lateral) <= max_lateral and
+            abs(wrap(table['dock'][2]-pose[2])) <= max_heading)
 
 
 def dock_errors(table, pose):
@@ -218,11 +231,60 @@ class TableDocking:
         except Exception:
             return None
 
+    def approach_gap(self, table, timeout=3.):
+        """정류장에 선 채 라이다로 잰 책상 간격 (보이지 않으면 None)"""
+        from nav_to_goal.hospital_stage_runner import drain_observations
+        deadline = time.monotonic()+timeout
+        while rclpy.ok() and time.monotonic() < deadline:
+            drain_observations(self.node)
+            observed = self.observe(table)
+            if observed is not None and observed[1] is not None:
+                return -observed[1][1]-HALF_WIDTH
+            time.sleep(.05)
+        return None
+
+    def back_out(self, station, distance=BACK_OUT_DISTANCE, timeout=80.):
+        """지금 방향 그대로 곧게 후진해 도킹 자세에서 distance 만큼 물러난다.
+
+        책상 옆에서는 돌지 않는다 — 책상 쪽으로 틀어진 채 방향을 고치려고 돌면 뒤 차체(1.38 m)가 책상으로 돌아
+        충돌 감시가 멈춰 세웠다(2026-09-26 시험, 5.7도). 곧게 물러나면 앞 모서리가 책상에서 멀어진다.
+        방향은 물러난 뒤 도착 직선을 다시 달리며 고친다. 느린 것은 충돌 감시(FootprintApproach)가 줄인 속도다."""
+        table = TABLES[station]
+        deadline = time.monotonic()+timeout
+        last_log = 0.
+        try:
+            while rclpy.ok() and time.monotonic() < deadline:
+                rclpy.spin_once(self.node, timeout_sec=.02)
+                try:
+                    t = self.buffer.lookup_transform('map', 'base_link', Time()).transform
+                except Exception:
+                    self.publish()
+                    time.sleep(.05)
+                    continue
+                pose = (t.translation.x, t.translation.y, yaw_of(t.rotation))
+                dx, _ = dock_errors(table, pose)
+                if dx >= distance:
+                    self.node.get_logger().info(f'[DOCK] backed out to {dx:.2f} m before the dock')
+                    return True
+                self.publish(-min(.15, max(.05, .5*(distance-dx))), 0.)
+                if time.monotonic()-last_log > 3.:
+                    self.node.get_logger().info(f'[DOCK] backing out: {dx:.2f} / {distance:.2f} m before the dock')
+                    last_log = time.monotonic()
+                time.sleep(.05)
+            self.node.get_logger().error('[DOCK] back out timed out')
+            return False
+        finally:
+            self.publish()
+
     def move(self, station):
+        """책상 옆 도킹. 실패하면 False 이고 self.failure 에 이유가 남는다 (misaligned / corner_gap / timeout / ...)."""
         from nav_to_goal.hospital_stage_runner import drain_observations
         table = TABLES[station]
+        self.failure = None
         target_yaw = table['dock'][2]
-        deadline = time.monotonic()+90.
+        # 책상에 붙은 쪽(간격 0.10 m)에서 시작하면 충돌 감시가 속도를 줄여 1.2 m 에 85 s 걸린 적이 있다 —
+        # 정상 접근이 시간 초과로 끊기지 않게 넉넉히 (실패는 모서리 간격·간격 어긋남 검사가 따로 잡는다)
+        deadline = time.monotonic()+150.
         settled = None
         unavailable = None
         last_log = 0.
@@ -236,6 +298,13 @@ class TableDocking:
             f'gap={DOCK_GAP:.2f}, yaw={math.degrees(target_yaw):.0f} deg')
         try:
             if not self.align(table):
+                self.failure = 'staging_alignment'
+                return False
+            gap = self.approach_gap(table)
+            if gap is not None and abs(gap-DOCK_GAP) > APPROACH_GAP_TOLERANCE:
+                self.node.get_logger().warn(
+                    f'[DOCK] side gap at staging {gap:.3f} m (target {DOCK_GAP:.2f}) — not approaching')
+                self.failure = 'misaligned'
                 return False
             while rclpy.ok() and time.monotonic() < deadline:
                 drain_observations(self.node)
@@ -260,6 +329,7 @@ class TableDocking:
                     unavailable = unavailable or now
                     if now-unavailable > 5.:
                         self.node.get_logger().error('[DOCK] fresh odom/TF/table-edge scan unavailable')
+                        self.failure = 'unavailable'
                         return False
                     time.sleep(.03)
                     continue
@@ -284,6 +354,7 @@ class TableDocking:
                             overlap_since = overlap_since or now
                             if now-overlap_since >= .5:
                                 self.node.get_logger().error(f'[DOCK] nonpositive measured corner gap {corner_gap:.3f} m')
+                                self.failure = 'corner_gap'
                                 return False
                             self.publish()
                             time.sleep(.04)
@@ -297,6 +368,7 @@ class TableDocking:
                         continue
                 if abs(wrap(pose[2]-target_yaw)) > .18:
                     self.node.get_logger().error('[DOCK] staging heading not aligned; refusing a turn beside the table')
+                    self.failure = 'heading'
                     return False
                 good = (abs(dx) <= X_TOLERANCE and abs(heading_error) <= ANGLE_TOLERANCE and
                         abs(velocity.linear.x) <= .01 and abs(velocity.angular.z) <= .01 and
@@ -317,6 +389,7 @@ class TableDocking:
                     last_log = now
                 time.sleep(.04)
             self.node.get_logger().error('[DOCK] timeout; docking not successful')
+            self.failure = 'timeout'
             return False
         finally:
             self.publish()
