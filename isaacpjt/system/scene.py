@@ -214,6 +214,12 @@ def _disconnect(stage, attribute_path):
     stage.GetAttributeAtPath(attribute_path).SetConnections([])
 
 
+def _instance_paths(stage, root):
+    """root 아래 instanceable 프림(중첩 포함)의 root 기준 상대 경로."""
+    prims = Usd.PrimRange(stage.GetPrimAtPath(root), Usd.TraverseInstanceProxies())
+    return [str(p.GetPath())[len(root):] for p in prims if p.IsInstance()]
+
+
 def add_robots(stage, poses, front_camera=True, global_nav_robot1=False):
     """poses[i-1] = (x, y, yaw_deg) 인 로봇 i 를 만들고 ROS 그래프를 네임스페이스로 복제한다.
 
@@ -225,12 +231,19 @@ def add_robots(stage, poses, front_camera=True, global_nav_robot1=False):
     root = stage.GetRootLayer()
     session = stage.GetSessionLayer()
     Sdf.CreatePrimInLayer(session, "/World")
+    # 복제 로봇은 인스턴싱을 끈다. 씬이 열린 뒤 인스턴스가 늘면 프로토타입이 다시 배정되는데,
+    # Fabric 렌더 델리게이트가 그걸 못 따라가 한 대의 메시가 통째로 안 그려졌다
+    # ("Instance /World/robot_nova_3/... cannot find protoPath", 로봇이 투명하게 보임).
+    instances = _instance_paths(stage, SOURCE_ROBOT)
     for index, pose in enumerate(poses, start=1):
         x, y, yaw_deg = pose if pose is not None else (0.0, 0.0, 0.0)
         prim, graph = robot_prim(index), robot_graph(index)
         if index > 1:
-            if not Sdf.CopySpec(root, SOURCE_ROBOT, session, prim):
-                raise RuntimeError(f"robot copy failed: {prim}")
+            with Sdf.ChangeBlock():
+                if not Sdf.CopySpec(root, SOURCE_ROBOT, session, prim):
+                    raise RuntimeError(f"robot copy failed: {prim}")
+                for rel in instances:
+                    Sdf.CreatePrimInLayer(session, prim + rel).instanceable = False
             if not Sdf.CopySpec(root, SOURCE_GRAPH, session, graph):
                 raise RuntimeError(f"graph copy failed: {graph}")
             _remap_layer_paths(session, graph, SOURCE_GRAPH + "/", graph + "/")

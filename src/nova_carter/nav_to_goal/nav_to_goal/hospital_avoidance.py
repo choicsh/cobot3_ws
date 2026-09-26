@@ -287,6 +287,37 @@ def detour_clear_after(blocked_s, person_near, settings=SafetySettings()):
     return blocked_s+settings.rear+(settings.preferred_gap+.5 if person_near else .5)
 
 
+def backoff_path(pose, distance, step=.05):
+    """Straight reverse poses (heading kept) from pose back by distance."""
+    c, s = math.cos(pose[2]), math.sin(pose[2])
+    n = max(1, math.ceil(distance/step))
+    return [(pose[0]-c*distance*i/n, pose[1]-s*distance*i/n, pose[2]) for i in range(n+1)]
+
+
+def backoff_distance(pose, lane, tracks, static_clear, settings=SafetySettings(),
+                     distances=(1.5, 1.0)):
+    """Longest straight back-off that stays on the lane strip, clear of the costmap and people.
+
+    The tail (1.38 m) is in the lidar's blind spot, so only the stretch the robot has
+    just driven along the lane is allowed: heading within 20 deg of the lane, and every
+    tracked person keeps preferred_gap from the whole swept body. The stage start is not
+    a limit: a resumed mission starts its stage at the robot, which is where it got stuck.
+    """
+    _, _, angle = lane.local(pose)
+    if abs(angle) > math.radians(20):
+        return 0.
+    for distance in distances:
+        path = backoff_path(pose, distance)
+        if any(abs(lane.local(p)[1])+settings.half_width > settings.lane_half_width for p in path):
+            continue
+        if min((predicted_gap(p, tracks, 0., settings) for p in path[::4]),
+               default=math.inf) < settings.preferred_gap:
+            continue
+        if static_clear(path):
+            return distance
+    return 0.
+
+
 def offset_candidates(lane, pose, settings=SafetySettings(), preferred_side=0, clear_after_s=None):
     """Forward S paths; no nearest-XY rejoin and no NavFn U-turn shortcuts."""
     start_s, d, angle = lane.local(pose)

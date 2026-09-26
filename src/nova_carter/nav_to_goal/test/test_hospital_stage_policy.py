@@ -32,8 +32,9 @@ def pose_message(nav, x, y, yaw):
         x=0., y=0., z=math.sin(yaw/2), w=math.cos(yaw/2))))
 
 
-def stage_harness(monkeypatch, mode):
+def stage_harness(monkeypatch, mode, block_x=4.):
     clock = NS(t=1.)
+    robot = NS(x=0.)
 
     def step(*args, **kwargs):
         clock.t += .05
@@ -66,11 +67,14 @@ def stage_harness(monkeypatch, mode):
     monkeypatch.setitem(sys.modules, 'nav_to_goal.hospital_mission', helper)
 
     class Publisher:
-        def __init__(self):
+        def __init__(self, moves=False):
             self.messages = []
+            self.moves = moves
 
         def publish(self, message):
             self.messages.append(message)
+            if self.moves:
+                robot.x += message.linear.x*.05
 
     class Navigator:
         def __init__(self):
@@ -101,7 +105,7 @@ def stage_harness(monkeypatch, mode):
             return NS(info=self.events.append)
 
         def create_publisher(self, typ, name, qos):
-            self.publishers[name] = Publisher()
+            self.publishers[name] = Publisher(moves=name == 'cmd_vel_nav')
             return self.publishers[name]
 
         def destroy_subscription(self, sub):
@@ -129,46 +133,52 @@ def stage_harness(monkeypatch, mode):
                 tracks = [geometry.MovingBody(1, 6.8, 0, -1.1, 0, .4)]
             elif mode == 'stopped_person':
                 tracks = [geometry.MovingBody(1, 4, 0, 0, 0, .4)]
-            return (0, 0, 0), (.6, 0), tracks
+            elif mode == 'escape_person_behind':
+                tracks = [geometry.MovingBody(1, -3.2, 0, 0, 0, .4)]
+            return (robot.x, 0, 0), (.6, 0), tracks
 
         def path_clear(self, *args):
             return True
 
     namespace = {name: getattr(geometry, name) for name in (
-        'SafetySettings', 'choose_candidate', 'densify_planner_path', 'detour_clear_after',
-        'forward_path_valid', 'lane_for_path',
-        'offset_candidates', 'path_clearance', 'path_escapes', 'rejoin_clear', 'wrap')}
+        'SafetySettings', 'backoff_distance', 'choose_candidate', 'densify_planner_path',
+        'detour_clear_after', 'forward_path_valid', 'lane_for_path',
+        'offset_candidates', 'path_clearance', 'path_escapes', 'predicted_gap', 'rejoin_clear', 'wrap')}
     namespace.update(math=math, SafetyObservations=Observations, Path=PathMessage,
         yaw_of=lambda q: 2*math.atan2(q.z, q.w),
         rclpy=NS(ok=lambda: True, spin_once=step),
         time=NS(monotonic=lambda: clock.t, sleep=step),
         QoSProfile=lambda **kw: None, QoSDurabilityPolicy=NS(TRANSIENT_LOCAL=1),
-        String=lambda **kwargs: NS(**kwargs))
-    if mode in ('static', 'stopped_person'):
+        String=lambda **kwargs: NS(**kwargs),
+        Twist=lambda: NS(linear=NS(x=0.), angular=NS(z=0.)))
+    static_modes = ('static', 'stopped_person', 'escape', 'escape_person_behind')
+    if mode in static_modes:
         namespace['choose_candidate'] = lambda *args, **kwargs: None
     source = FilePath(__file__).parents[1]/'nav_to_goal/hospital_stage_runner.py'
     tree = ast.parse(source.read_text())
-    functions = ast.Module(body=[n for n in tree.body if isinstance(n, ast.FunctionDef)], type_ignores=[])
+    # Functions plus module constants (ESCAPE_*); imports come from the namespace above.
+    functions = ast.Module(body=[n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.Assign))],
+                           type_ignores=[])
     exec(compile(functions, str(source), 'exec'), namespace)
     nav = Navigator()
     plan_pub = Publisher()
-    monitor = (NS(observe=lambda *args: {'map_xy': (4., 0.),
+    monitor = (NS(observe=lambda *args: {'map_xy': (block_x, 0.),
                                         'dynamic': mode == 'stopped_person'})
-               if mode in ('static', 'stopped_person') else None)
+               if mode in static_modes else None)
     result = namespace['follow_stage'](nav, None, plan_pub, 'lane_upper', None,
                                       'FollowPathMPPI', 'transit_goal_checker',
                                       blockage_monitor=monitor)
-    return result, nav, plan_pub, planner_calls
+    return result, nav, plan_pub, planner_calls, robot
 
 
 def test_clear_stage_has_no_unnecessary_offset_or_planner(monkeypatch):
-    result, nav, _, planner = stage_harness(monkeypatch, 'clear')
+    result, nav, _, planner, _ = stage_harness(monkeypatch, 'clear')
     assert result == Status.SUCCEEDED and len(nav.goals) == 1 and not planner
     assert len(nav.destroyed) == 6
 
 
 def test_avoidance_preempts_once_and_displays_executed_path(monkeypatch):
-    result, nav, plan, planner = stage_harness(monkeypatch, 'avoid')
+    result, nav, plan, planner, _ = stage_harness(monkeypatch, 'avoid')
     assert result == Status.SUCCEEDED
     assert len(nav.goals) == 2 and not planner
     assert any('state=AVOIDING' in line for line in nav.events)
@@ -176,21 +186,43 @@ def test_avoidance_preempts_once_and_displays_executed_path(monkeypatch):
 
 
 def test_person_yield_does_not_trigger_six_second_planner(monkeypatch):
-    result, nav, _, planner = stage_harness(monkeypatch, 'yield')
+    result, nav, _, planner, _ = stage_harness(monkeypatch, 'yield')
     assert result == Status.FAILED and not planner
     assert len(nav.goals) == 1
     assert any('yield_budget_exceeded_not_proof_of_lane_blockage' in line for line in nav.events)
 
 
 def test_missing_observations_prevent_initial_goal(monkeypatch):
-    result, nav, _, planner = stage_harness(monkeypatch, 'missing')
+    result, nav, _, planner, _ = stage_harness(monkeypatch, 'missing')
     assert result == Status.FAILED and not nav.goals and not planner
 
 
 @pytest.mark.parametrize('mode', ['static', 'stopped_person'])
 def test_persistent_obstruction_uses_validated_planner_path(monkeypatch, mode):
-    result, nav, _, planner = stage_harness(monkeypatch, mode)
+    result, nav, _, planner, _ = stage_harness(monkeypatch, mode)
     assert result == Status.SUCCEEDED
     assert len(planner) == 1 and len(nav.goals) == 2
     assert any('validated_static_planner' in line for line in nav.events)
     assert max(p.pose.position.y for p in nav.goals[-1].poses) >= 1.5
+
+
+def test_static_blockage_right_ahead_backs_off_then_reassesses(monkeypatch):
+    # 2026-09-26 upper_reserve: stopped ~1 m before a static blockage, no side candidate
+    # and no NavFn detour -> yield budget -> resume at the same spot, forever.
+    result, nav, _, planner, robot = stage_harness(monkeypatch, 'escape', block_x=1.2)
+    escapes = [line for line in nav.events if line.startswith('[ESCAPE]')]
+    assert len(escapes) == 2 and '/1.5 m' in escapes[0]
+    assert robot.x == pytest.approx(-3.0, abs=.15)
+    backs = nav.publishers['cmd_vel_nav'].messages
+    assert min(m.linear.x for m in backs) >= -.12 and backs[-1].linear.x == 0.
+    # each back-off re-runs NavFn from the new spot and resets the yield budget
+    assert len(planner) == 3
+    assert result == Status.FAILED
+    assert any('yield_budget_exceeded_not_proof_of_lane_blockage' in line for line in nav.events)
+
+
+def test_no_back_off_toward_a_person_behind(monkeypatch):
+    result, nav, _, _, robot = stage_harness(monkeypatch, 'escape_person_behind', block_x=1.2)
+    assert not any(line.startswith('[ESCAPE]') for line in nav.events)
+    assert robot.x == 0. and 'cmd_vel_nav' not in nav.publishers
+    assert result == Status.FAILED

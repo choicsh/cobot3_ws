@@ -1,21 +1,34 @@
 """FollowPath stage supervision: lateral path choice, yield and forward rejoin.
 
-No robot commands are sent directly here. Path selection uses a short-horizon
-kinematic approximation; Collision Monitor checks the smoothed commands.
+Path selection uses a short-horizon kinematic approximation; Collision Monitor
+checks the smoothed commands. The only direct command is the short straight
+back-off (cmd_vel_nav, through the output guard and Collision Monitor) when a
+static blockage right ahead leaves no forward candidate.
 """
 import math
 import time
 
 import rclpy
+from geometry_msgs.msg import Twist
 from nav_msgs.msg import Path
 from rclpy.qos import QoSProfile, QoSDurabilityPolicy
 from std_msgs.msg import String
 
 from nav_to_goal.hospital_avoidance import (
-    SafetySettings, choose_candidate, densify_planner_path, detour_clear_after, forward_path_valid,
-    lane_for_path, offset_candidates, path_clearance, path_escapes, rejoin_clear, wrap,
+    SafetySettings, backoff_distance, choose_candidate, densify_planner_path, detour_clear_after,
+    forward_path_valid, lane_for_path, offset_candidates, path_clearance, path_escapes,
+    predicted_gap, rejoin_clear, wrap,
 )
 from nav_to_goal.hospital_safety import SafetyObservations, yaw_of
+
+# 정적 장애물 바로 앞에서 멈추면 옆으로 비킬 후보(S자 3~5 m)도, NavFn 우회(급회전)도 나오지 않아
+# 양보 예산만 다 쓰고 실패 -> 같은 자리에서 재개 -> 또 실패를 되풀이했다 (2026-09-26 upper_reserve, x=-7.1).
+# 정적 막힘이 ESCAPE_NEAR_M 안에서 ESCAPE_AFTER_S 넘게 이어지면 방금 지나온 차선을 따라 곧게 조금 물러나
+# 후보를 다시 찾는다. 구간(stage)마다 ESCAPE_LIMIT 번까지.
+ESCAPE_AFTER_S = 4.0
+ESCAPE_NEAR_M = 5.0
+ESCAPE_LIMIT = 2
+ESCAPE_SPEED = .12
 
 
 def path_points(path):
@@ -74,6 +87,8 @@ def follow_stage(navigator, tf_buffer, plan_publisher, stage_name, route,
     planner_last_s = -math.inf
     failure_count = 0
     previous_now = None
+    escapes = 0
+    escape_pub = None
 
     def event(new_state, reason):
         nonlocal state
@@ -114,6 +129,36 @@ def follow_stage(navigator, tf_buffer, plan_publisher, stage_name, route,
                 time.sleep(.02)
             active_task = False
         return True
+
+    def back_off(distance):
+        """Straight reverse by distance; stops early if a person comes near. Returns metres moved."""
+        nonlocal escape_pub
+        if escape_pub is None:
+            escape_pub = navigator.create_publisher(Twist, 'cmd_vel_nav', 10)
+        start = observations.snapshot()
+        if start is None:
+            return 0.
+        moved = 0.
+        deadline = time.monotonic()+distance/.05+10.
+        try:
+            while rclpy.ok() and time.monotonic() < deadline:
+                rclpy.spin_once(navigator, timeout_sec=.02)
+                drain_observations(navigator)
+                sample = observations.snapshot()
+                if sample is None:
+                    escape_pub.publish(Twist())
+                    time.sleep(.05)
+                    continue
+                moved = math.dist(sample[0][:2], start[0][:2])
+                if moved >= distance or predicted_gap(sample[0], sample[2], 0., settings) < settings.minimum_gap:
+                    break
+                command = Twist()
+                command.linear.x = -min(ESCAPE_SPEED, max(.05, .5*(distance-moved)))
+                escape_pub.publish(command)
+                time.sleep(.05)
+        finally:
+            escape_pub.publish(Twist())
+        return moved
 
     try:
         # Do not send a moving goal before the new guard's observations exist.
@@ -350,6 +395,23 @@ def follow_stage(navigator, tf_buffer, plan_publisher, stage_name, route,
                 event('YIELDING', 'no_admissible_forward_candidate')
                 clear_since = None
                 wait_since = now if wait_since is None else wait_since
+                ahead = (lane.local((*blockage['map_xy'], 0.))[0]-lane.local(pose)[0]
+                         if blockage is not None else math.inf)
+                if (static_ready and escapes < ESCAPE_LIMIT and now-wait_since >= ESCAPE_AFTER_S and
+                        ahead <= ESCAPE_NEAR_M):
+                    distance = backoff_distance(pose, lane, tracks,
+                                                lambda p: observations.path_clear(p, settings), settings)
+                    if distance > 0.:
+                        escapes += 1
+                        event('ESCAPING', f'static_blockage_{ahead:.1f}m_ahead')
+                        moved = back_off(distance)
+                        navigator.get_logger().info(
+                            f'[ESCAPE] {escapes}/{ESCAPE_LIMIT} backed off {moved:.2f}/{distance:.1f} m '
+                            f'from static blockage at ({blockage["map_xy"][0]:.2f}, {blockage["map_xy"][1]:.2f})')
+                        # 물러난 자리에서 옆 후보와 NavFn 을 곧바로 다시 본다. 양보 예산도 새로.
+                        last_replan = planner_last_s = -math.inf
+                        wait_since = None
+                        event('YIELDING', 'reassess_after_escape')
             elif not active_task:
                 # Retain the active detour after a yield; do not jump sideways
                 # onto a geometrically nearest point on the reference.
@@ -383,4 +445,6 @@ def follow_stage(navigator, tf_buffer, plan_publisher, stage_name, route,
             navigator.destroy_subscription(sub)
         navigator.destroy_publisher(reference_pub)
         navigator.destroy_publisher(state_pub)
+        if escape_pub is not None:
+            navigator.destroy_publisher(escape_pub)
     return MissionStatus.CANCELED
