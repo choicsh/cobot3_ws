@@ -135,7 +135,7 @@ def stage_harness(monkeypatch, mode):
             return True
 
     namespace = {name: getattr(geometry, name) for name in (
-        'SafetySettings', 'choose_candidate', 'densify_planner_path',
+        'SafetySettings', 'choose_candidate', 'densify_planner_path', 'detour_clear_after',
         'forward_path_valid', 'lane_for_path',
         'offset_candidates', 'path_clearance', 'path_escapes', 'rejoin_clear', 'wrap')}
     namespace.update(math=math, SafetyObservations=Observations, Path=PathMessage,

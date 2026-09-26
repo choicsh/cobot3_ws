@@ -10,7 +10,12 @@ import math
 # yield budget failed the mission (2026-09-25, cones at x=-10 on lane_upper).
 # A person who stands still longer than this is passed with costmap clearance
 # instead of the 1 m person margin (accepted trade-off, 2026-09-25).
+# The same holds for a person who walked and then stopped (2026-09-26, P7 p7e:
+# a pedestrian stopped head-on in the lane and the robot yielded until it failed).
+# Moving again (>= MOVING_SPEED) makes it a person immediately.
 STANDING_STATIC_S = 8.0
+STOPPED_SPEED = 0.2
+MOVING_SPEED = 0.25
 
 
 @dataclass
@@ -26,6 +31,7 @@ class Track:
     track_id: int = 0
     was_moving: bool = False
     first_stamp: float = None
+    stopped_since: float = None      # a moving track below STOPPED_SPEED since then
 
 
 class Tracker:
@@ -71,11 +77,17 @@ class Tracker:
                     track.vx = track.vy = 0.0
             track.x, track.y, track.stamp = x, y, stamp
             track.hits += 1
-            if track.hits >= 3 and math.hypot(track.vx, track.vy) >= 0.25:
+            speed = math.hypot(track.vx, track.vy)
+            if track.hits >= 3 and speed >= MOVING_SPEED:
                 track.was_moving = True
-            # A previously moving object remains protected while observed, even
-            # after it stops. Expiry still handles missing observations.
-            if track.was_moving:
+            if speed >= STOPPED_SPEED:
+                track.stopped_since = None
+            elif track.stopped_since is None:
+                track.stopped_since = stamp
+            # A previously moving object remains protected while observed after
+            # it stops, until it has stood still for STANDING_STATIC_S. Expiry
+            # still handles missing observations.
+            if track.was_moving and not self.settled(track, stamp):
                 track.motion_until = stamp + 2.0
         for j, (x, y) in enumerate(detections):
             if j not in used_detections:
@@ -86,6 +98,11 @@ class Tracker:
                 self.tracks.append(track)
         return self.tracks
 
+    @staticmethod
+    def settled(track, stamp, standing_static_s=STANDING_STATIC_S):
+        """A walked-then-stopped track that has stood still long enough to be static."""
+        return track.stopped_since is not None and stamp-track.stopped_since >= standing_static_s
+
     def snapshots(self, stamp, radius=0.4, standing_ok=None, standing_hits=5,
                   standing_static_s=STANDING_STATIC_S):
         """Current positions + velocity + observation age, not collapsed futures.
@@ -95,12 +112,13 @@ class Tracker:
         a person standing beside the lane was otherwise invisible until it
         started walking, by which time the robot had already passed it.
         They drop out again once they have stood still for `standing_static_s`
-        since first seen (STANDING_STATIC_S).
+        since first seen (STANDING_STATIC_S). A track that walked and then stopped
+        drops out after standing still for the same time.
         """
         return [(t.track_id, t.x+t.vx*(stamp-t.stamp), t.y+t.vy*(stamp-t.stamp),
                  t.vx, t.vy, radius, stamp-t.stamp)
                 for t in self.tracks if 0 <= stamp-t.stamp <= self.timeout and (
-                    (t.was_moving and t.hits >= 3) or
+                    (t.was_moving and t.hits >= 3 and not self.settled(t, stamp, standing_static_s)) or
                     (standing_ok is not None and t.hits >= standing_hits and
                      stamp-t.first_stamp < standing_static_s and
                      standing_ok(t.x, t.y)))]
@@ -109,7 +127,8 @@ class Tracker:
         result = []
         for track in self.tracks:
             age = stamp - track.stamp
-            if track.hits < 3 or track.motion_until < stamp or not 0 <= age <= self.timeout:
+            if (track.hits < 3 or track.motion_until < stamp or not 0 <= age <= self.timeout or
+                    self.settled(track, stamp)):
                 continue
             moving = track.hits >= 3 and math.hypot(track.vx, track.vy) >= 0.2
             count = int(horizon / step) + 1 if moving else 1

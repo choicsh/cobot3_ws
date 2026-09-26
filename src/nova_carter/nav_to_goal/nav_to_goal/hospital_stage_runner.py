@@ -12,7 +12,7 @@ from rclpy.qos import QoSProfile, QoSDurabilityPolicy
 from std_msgs.msg import String
 
 from nav_to_goal.hospital_avoidance import (
-    SafetySettings, choose_candidate, densify_planner_path, forward_path_valid,
+    SafetySettings, choose_candidate, densify_planner_path, detour_clear_after, forward_path_valid,
     lane_for_path, offset_candidates, path_clearance, path_escapes, rejoin_clear, wrap,
 )
 from nav_to_goal.hospital_safety import SafetyObservations, yaw_of
@@ -263,7 +263,7 @@ def follow_stage(navigator, tf_buffer, plan_publisher, stage_name, route,
                 clear_after = None
                 if blockage is not None:
                     blocked_s = lane.local((*blockage['map_xy'], 0.))[0]
-                    clear_after = blocked_s+settings.rear+settings.preferred_gap+.5
+                    clear_after = detour_clear_after(blocked_s, bool(near), settings)
                 selection_started = time.monotonic()
                 selected = choose_candidate(offset_candidates(lane, pose, settings, side, clear_after),
                     pose, velocity, tracks, lambda p: observations.path_clear(p, settings),

@@ -69,13 +69,27 @@ def test_never_moved_object_becomes_static_after_standing_static_s():
     assert seen[round(STANDING_STATIC_S + 0.2, 1)] == 0         # still for > 8 s: static
 
 
-def test_moving_person_stays_tracked_after_standing_static_s():
+def test_walked_then_stopped_person_becomes_static_and_moving_again_is_a_person():
+    """P7 p7e: a pedestrian stopped head-on in the lane stayed a 'person' and the robot yielded
+    until the mission failed. Stopped for STANDING_STATIC_S -> static like a cone; walks again -> person."""
+    from nav_to_goal.obstacle_tracking import STANDING_STATIC_S
     tracker = Tracker()
+    accept = lambda x, y: True
     t = 0.0
     for i in range(8):                                          # walks 1 m/s, then stops
         tracker.update([(3.0, i*0.125)], t)
         t += 0.125
-    for _ in range(100):                                        # stands for ~12 s
+    stop = t
+    seen = {}
+    while t < stop + STANDING_STATIC_S + 2.0:                   # stands still
         tracker.update([(3.0, 7*0.125)], t)
+        seen[round(t - stop, 3)] = (len(tracker.snapshots(t, standing_ok=accept)), bool(tracker.predictions(t)))
         t += 0.125
-    assert len(tracker.snapshots(t - 0.125, standing_ok=lambda x, y: True)) == 1
+    assert seen[round(STANDING_STATIC_S - 1.0, 3)] == (1, True)    # still protected as a person
+    assert seen[round(STANDING_STATIC_S + 1.5, 3)] == (0, False)   # static: costmap + detour handle it
+    y = 7*0.125
+    for _ in range(6):                                          # walks away again
+        y += 0.125
+        tracker.update([(3.0, y)], t)
+        t += 0.125
+    assert len(tracker.snapshots(t - 0.125, standing_ok=accept)) == 1

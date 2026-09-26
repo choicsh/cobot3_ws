@@ -10,7 +10,7 @@ import yaml
 
 from nav_to_goal.hospital_avoidance import (
     LaneFrame, MovingBody, SafetySettings, body_gap, choose_candidate,
-    command_clearance, forward_path_valid, limited_command, offset_candidates,
+    command_clearance, detour_clear_after, forward_path_valid, limited_command, offset_candidates,
     path_clearance,
     rejoin_clear,
 )
@@ -119,6 +119,24 @@ def test_hold_extends_until_static_obstacle_is_behind_tail():
     for side, path in candidates:
         # Four metre return must not start before s=9.
         assert lane.local(path[-1])[0]-4 >= 9.-1e-6
+
+
+def test_static_blockage_near_stage_end_still_has_a_detour():
+    """P7 p7e: lane_upper ends at x=7.9; an object stood at (1.52, 15.55), 0.65 m left of the
+    lane, 11 m from its end. With the person margin the return ran past the stage -> no candidate,
+    the robot yielded until the mission failed. As a static blockage it has a detour to the right."""
+    lane = LaneFrame(-31.5, 14.9, 0, 39.4)
+    pose = (-3.56, 14.89, .06)
+    obstacle = (1.52, 15.55)
+    blocked_s = lane.local((obstacle[0]-.3, 14.9, 0.))[0]     # first blocked reference point, 0.3 m before it
+    assert offset_candidates(lane, pose, clear_after_s=detour_clear_after(blocked_s, True)) == []
+    clear_after = detour_clear_after(blocked_s, False)
+    candidates = offset_candidates(lane, pose, clear_after_s=clear_after)
+    right = [path for side, path in candidates if side == -1]
+    assert right
+    for path in right:
+        assert lane.local(path[-1])[0]-4 >= clear_after-1e-6          # returns only after passing
+        assert min(body_gap(p, *obstacle, .3) for p in path) >= .5      # body clears the object
 
 
 def _rejoin_path(x0, y0, length=4.0, tail=12.0, step=.05):

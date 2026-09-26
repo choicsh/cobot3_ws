@@ -275,6 +275,18 @@ def _transition(lane, start_s, length, d0, d1, slope0=0., step=.05):
     return points
 
 
+def detour_clear_after(blocked_s, person_near, settings=SafetySettings()):
+    """Lane s the whole body must pass before a detour starts its return to the lane.
+
+    blocked_s = first blocked reference point. A person keeps the person gap; a
+    static blockage (cone, or a person who has stood still long enough) is checked
+    against the costmap along the candidate instead. With the person gap an
+    obstacle within ~7 m of a stage end left no candidate at all: the return
+    would run past the stage (2026-09-26, P7 p7e, x=1.5 on lane_upper ending x=7.9).
+    """
+    return blocked_s+settings.rear+(settings.preferred_gap+.5 if person_near else .5)
+
+
 def offset_candidates(lane, pose, settings=SafetySettings(), preferred_side=0, clear_after_s=None):
     """Forward S paths; no nearest-XY rejoin and no NavFn U-turn shortcuts."""
     start_s, d, angle = lane.local(pose)
