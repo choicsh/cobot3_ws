@@ -1,6 +1,7 @@
 # 병원 검체 운송 통합 시스템 — 코드 구성 계획
 
 작성 2026-09-25, 브랜치 `feature/system-integration` (기준: `feature/hospital-dispatch` `d3e481d`).
+실행 방법: [SYSTEM_RUN_GUIDE.md](SYSTEM_RUN_GUIDE.md).
 현황은 세 브랜치의 코드를 직접 읽고 확인했다.
 
 ## 1. 목표
