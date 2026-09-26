@@ -32,6 +32,10 @@ class Recorder:
         self.robot_id = row["robot_id"] if row else db.robot_info_insert(robot_name, model, container_slots)
         db.robot_info_update(self.robot_id, is_active=True)
         self.task_id = None
+        # 지난 실행이 작업 도중 죽었으면(kill, 전원) 그 작업은 이 로봇에 열린 채 남는다 — 이어 받을 방법이 없으니 취소
+        for stale in db.transport_task_open_ids(self.robot_id):
+            db.transport_task_cancel(stale, "robot_agent restarted before the task finished")
+            self.log.warn(f"[DB] task {stale} was left open by a previous run — CANCELLED")
         self.log.info(f"[DB] {robot_name} robot_id={self.robot_id} active "
                       f"(postgres {db.PG_DSN.split('@')[-1]}, redis {db.REDIS_URL.split('@')[-1]})")
 
@@ -77,6 +81,14 @@ class Recorder:
             return
         times = {k: self.db.NOW for k, v in times.items() if v}
         self._safe(f"task {status}", self.db.transport_task_update, self.task_id, status=status, **times)
+
+    def cancel_task(self, reason):
+        """에이전트가 작업 도중에 끝난다 (Ctrl-C 등) — 트레이는 랙에 실린 채다"""
+        if self.task_id is None:
+            return
+        self._safe("task cancel", self.db.transport_task_cancel, self.task_id, reason)
+        self.log.warn(f"[DB] task {self.task_id} CANCELLED: {reason}")
+        self.task_id = None
 
     def finish_task(self):
         self.task_id = None

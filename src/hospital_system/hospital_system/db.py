@@ -300,6 +300,21 @@ def task_status_log_insert(task_id, from_status, to_status, changed_at=None, con
     return _run(query, [task_id, from_status, to_status] + ts_param, "one", conn)["log_id"]
 
 
+OPEN_TASK_STATUSES = ("WAITING", "ASSIGNED", "PICKING_UP", "IN_TRANSIT", "ARRIVED")
+
+
+def transport_task_open_ids(robot_id, conn=None):
+    """이 로봇에 배정돼 아직 끝나지 않은(완료·실패·취소 아님) 작업 번호들"""
+    rows = _run("SELECT task_id FROM transport_task WHERE robot_id = %s AND status::text = ANY(%s) ORDER BY task_id",
+                (robot_id, list(OPEN_TASK_STATUSES)), "all", conn)
+    return [r["task_id"] for r in rows]
+
+
+def transport_task_cancel(task_id, reason, conn=None):
+    """작업 취소 — status CANCELLED, cancelled_at = now(), 사유. 상태 이력도 같이 남는다"""
+    return transport_task_update(task_id, status="CANCELLED", cancelled_at=NOW, cancel_reason=reason[:200], conn=conn)
+
+
 def transport_task_get(task_id, with_log=False, conn=None):
     """작업 1건(dict). with_log=True 면 'status_log' 키에 상태 이력 포함"""
     row = _run("SELECT * FROM transport_task WHERE task_id = %s", (task_id,), "one", conn)

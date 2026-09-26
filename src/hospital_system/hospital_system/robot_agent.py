@@ -391,6 +391,7 @@ def main(args=None):
         ok = False
     finally:
         if node.rec:
+            node.rec.cancel_task(f"robot_agent stopped at {node.stage}")
             node.rec.close()
         node.destroy_node()
         node._tf_node.destroy_node()
