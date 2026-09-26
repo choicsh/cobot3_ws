@@ -104,7 +104,8 @@ class Sim:
 def test_conflict_zones_are_the_two_doors(graph):
     shared = {z for z, c in graph.conflicts.items() if c}
     xs = sorted({round(graph.zones[z].points[len(graph.zones[z].points) // 2][0]) for z in shared})
-    assert shared and all(8 <= x <= 15 or -42 <= x <= -33 for x in xs), xs
+    # 서쪽은 입구 한 줄(y=12.5) + 방 안 분기(x=-39.5) + 복도 쪽 갈림(x≈-31.5, 2026-09-26 경로 변경)
+    assert shared and all(8 <= x <= 15 or -41 <= x <= -31 for x in xs), xs
 
 
 def test_three_robots_cycle_without_collision_or_deadlock(graph):

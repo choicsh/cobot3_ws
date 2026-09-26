@@ -20,7 +20,7 @@ def source_routes():
     source = ROOT/'nav_to_goal/nav_to_goal/hospital_mission.py'
     tree = ast.parse(source.read_text())
     names = {'PATH_STEP', 'LAB_DOCK', 'LAB_STATION', 'SPECIMEN_DOCK', 'SPECIMEN_STATION',
-             'ARRIVAL_YAWS', 'ROUTES', 'LOWER_WEST_Y', 'LANE_UPPER', 'LANE_LOWER', 'LANES'}
+             'ARRIVAL_YAWS', 'ROUTES', 'WEST_DOOR_Y', 'WEST_LOOP_X', 'LANE_UPPER', 'LANE_LOWER', 'LANES'}
     nodes = [n for n in tree.body if
              (isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id in names for t in n.targets))
              or (isinstance(n, ast.FunctionDef) and n.name in ('sample_route', 'route_length', 'split_route'))]
