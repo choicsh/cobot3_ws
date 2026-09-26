@@ -34,6 +34,25 @@ colcon build --packages-select carter_navigation nav_to_goal hospital_dynamic_la
 - 검출기 파이썬: `python3 -m venv ~/yolo-venv && ~/yolo-venv/bin/pip install ultralytics` (`admin_ws/README.md`).
   가중치는 저장소의 `runs/detect/isaacpjt/sdg/runs/tray-2/weights/best.pt`.
 
+## 한 번에 실행 — `scripts/run_system.sh`
+
+§3 의 순서를 스크립트 하나로 돌린다. 로그는 `~/cobot3_logs/<시각>/` (Isaac, 검출기·Nav2·에이전트 로봇별, 관제, DB 워커).
+
+```bash
+scripts/run_system.sh                              # 로봇 2대, 2사이클
+ROBOTS=3 CYCLES=1 RVIZ_MAX=1 scripts/run_system.sh # 3대, RViz 는 robot1 만
+ROBOTS=3 CYCLES=0 WEB=1 scripts/run_system.sh      # 계속 운용 + 관제 웹 — Ctrl-C 로 끝
+```
+
+- 시작 전에 이전 실행이 남아 있는지 확인하고, 남아 있으면 시작하지 않는다(§6).
+- 로봇별 단계 변화를 한 줄씩 찍는다. 사이클을 다 돌면(마지막 로봇은 채취실 앞 줄에서 대기) 또는 Ctrl-C 면 역순으로 모두 멈추고
+  이번 실행의 DB 작업과 관제의 복도 배정을 요약한다.
+- 옵션(환경 변수): `ROBOTS` 1..3, `CYCLES`(0 = 계속), `RVIZ`/`RVIZ_MAX`, `WEB`, `BAG`(rosbag), `POSE1..3`/`START1..3`(§4),
+  `SIM_EXTRA`(예: `--no-people`), `LOG_DIR`, `DB_PYTHON`(psycopg2/redis 가 든 파이썬, 기본 `python3`), `ISAAC`, `YOLO_PY`,
+  `ROS_DOMAIN_ID`(기본 136). 자세한 설명은 스크립트 머리말.
+
+아래는 같은 일을 터미널마다 손으로 하는 방법이다.
+
 ## 2. 매 터미널 공통
 
 ```bash
