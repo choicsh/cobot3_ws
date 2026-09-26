@@ -22,8 +22,8 @@ def mission_route(origin, destination):
         raise ValueError(f"no route {origin} -> {destination}; known: {list(MISSION_ROUTE)}") from None
 
 
-# hospital_mission route_id -> 차선 그래프(lane_graph) 출발/도착 노드
-ROUTE_NODES = {
-    "lab_to_specimen": ("collection_dock", "analysis_dock"),
-    "specimen_to_lab": ("analysis_dock", "collection_dock"),
+# hospital_mission route_id -> 구간 방향 (lane_graph.LEG_NODES, 복도를 동->서 / 서->동)
+ROUTE_LEG = {
+    "lab_to_specimen": "to_analysis",
+    "specimen_to_lab": "to_collection",
 }

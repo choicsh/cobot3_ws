@@ -6,8 +6,11 @@
     받음  agent_status  단계, 구간 키(leg), 실은 트레이(cargo), 끝낸 작업 번호(task_seq)
           fleet_pose    map 기준 위치 (5 Hz)
     보냄  task          {"seq": n, "cmd": "cycle"}           — 채취실에서 IDLE 이면 다음 사이클
-          zone_hold     {"leg", "stop": [x,y,yaw]|null, "dock", "seq", "zones"}  — hospital_mission 이 따른다
-구간 키가 바뀌면(DELIVERING/RETURNING 시작) 그 구간 경로(lane_graph.route)로 예약을 새로 시작한다.
+          route         {"leg", "track", "version"}           — 이 구간에 쓸 가운데 복도 (latched)
+          zone_hold     {"leg": "<leg>#<version>", "stop": [x,y,yaw]|null, "dock", "seq", "zones"}
+구간 키가 바뀌면(DELIVERING/RETURNING 시작) lane_graph.choose_route 로 복도를 고른다: 짧은 순으로, 같은 복도에
+반대 방향 로봇이 없는 것. 반대 방향 로봇이 모두 긴급도가 낮고 아직 복도에 안 들어갔으면 그 복도를 가져가고
+그 로봇들에게 다음 경로를 준다(route version 을 올린다 — 에이전트가 주행을 현재 위치에서 새 경로로 다시 시작).
 우선순위는 실은 트레이 긴급도(priority.loaded_score), 빈 로봇은 (0,0,0).
 Redis(use_db): robot:{id}:route = 지금 구간 경로(1 m 간격), fleet:zones = 구역 -> 로봇 이름.
 """
@@ -22,9 +25,10 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import String
 
-from hospital_system.lane_graph import LaneGraph, Reservations, RobotPlan, hospital_edges
+from hospital_system.lane_graph import (LEG_NODES, LaneGraph, Reservations, RobotPlan, assign_route,
+                                        hospital_edges)
 from hospital_system.priority import loaded_score
-from hospital_system.stations import ROUTE_NODES
+from hospital_system.stations import ROUTE_LEG
 
 POSE_TIMEOUT_S = 3.0     # 위치가 이만큼 끊기면 경고 (예약은 풀지 않는다 — 어디 있는지 모른다)
 
@@ -35,7 +39,8 @@ class Robot:
         self.status = {}
         self.pose = None
         self.pose_time = 0.0
-        self.leg = None           # 예약을 잡고 있는 구간 키
+        self.leg = None           # 예약을 잡고 있는 구간 키 (에이전트의 "<cycle>:<route_id>")
+        self.version = 0          # 경로 번호 — 바꿀 때마다 올린다
         self.sent_seq = 0         # 보낸 작업 번호
         self.hold_sent = None
         self.hold_time = 0.0
@@ -60,7 +65,8 @@ class FleetManager(Node):
             self.create_subscription(String, f"/{name}/agent_status", lambda m, r=r: self._on_status(r, m), 10)
             self.create_subscription(PoseStamped, f"/{name}/fleet_pose", lambda m, r=r: self._on_pose(r, m), 10)
             self.pubs[name] = (self.create_publisher(String, f"/{name}/task", latched),
-                               self.create_publisher(String, f"/{name}/zone_hold", latched))
+                               self.create_publisher(String, f"/{name}/zone_hold", latched),
+                               self.create_publisher(String, f"/{name}/route", latched))
         self.db = None
         if self.get_parameter("use_db").value:
             from hospital_system import db
@@ -87,45 +93,65 @@ class FleetManager(Node):
         r.pose_time = time.monotonic()
 
     # ── 계획 ─────────────────────────────────────────────────────
-    def _leg_zones(self, leg):
-        route = leg.split(":", 1)[1]
-        return self.graph.route_zones(self.graph.route(*ROUTE_NODES[route]))
+    def _publish_route(self, r):
+        track, _ = self.graph.track_of(self.res.robots[r.name].edges)
+        self.pubs[r.name][2].publish(String(data=json.dumps({"leg": r.leg, "track": track, "version": r.version})))
+        r.hold_sent = None                     # 새 구간 키로 zone_hold 를 바로 보낸다
 
     def _initial_plan(self, r):
-        """처음 본 로봇: 두 구간 경로 중 위치가 올라가는 쪽 (보통 채취실 도킹 = 복귀 구간 끝)."""
+        """처음 본 로봇: 가능한 모든 경로 중 위치가 올라가는 것 (보통 채취실 도킹 = 운송 경로 시작)."""
         best = None
-        for route in ROUTE_NODES:
-            zones = self._leg_zones(f"0:{route}")
-            s, d = self.graph.project(zones, *r.pose)
-            if s is not None and (best is None or d < best[0]):
-                best = (d, route, zones, s)
+        for route_id, leg in ROUTE_LEG.items():
+            for _, edges in self.graph.routes(*LEG_NODES[leg]):
+                zones = self.graph.route_zones(edges)
+                s, d = self.graph.project(zones, *r.pose)
+                if s is not None and (best is None or d < best[0]):
+                    best = (d, route_id, edges, zones, s)
         if best is None or best[0] > 1.5:
             self.get_logger().warn(f"[FLEET] {r.name} at {r.pose} is not on a lane")
             return False
-        _, route, zones, s = best
+        _, route_id, edges, zones, s = best
         first = self.graph.zones[zones[0]].edge
+        prefix = 0
         if s < 2.0:
             # 구간 시작(도킹 자세)에 서 있다 — 뒤 차체가 걸친 앞 간선 마지막 구역도 잡아야 한다
-            prev = [e for e in self.graph.edges.values() if e.end == self.graph.edges[first].start]
+            prev = [e for e in self.graph.edges.values() if e.end == self.graph.edges[first].start and not e.track]
             if prev:
                 z = self.graph.edge_zones[prev[0].name][-1]
-                zones, s = [z] + zones, s + self.graph.zones[z].length
-        r.leg = f"0:{route}"
-        self.res.set_plan(RobotPlan(r.name, zones, s))
-        self.get_logger().info(f"[FLEET] {r.name} starts on {route} s={s:.1f}/{sum(self.graph.zones[z].length for z in zones):.1f}")
+                zones, s, prefix = [z] + zones, s + self.graph.zones[z].length, 1
+        r.leg, r.version = f"0:{route_id}", 1
+        self.res.set_plan(RobotPlan(r.name, zones, s, leg=ROUTE_LEG[route_id], edges=edges, prefix=prefix))
+        self._publish_route(r)
+        self.get_logger().info(f"[FLEET] {r.name} starts on {route_id} via {self.graph.track_of(edges)[0]} "
+                               f"s={s:.1f}/{sum(self.graph.zones[z].length for z in zones):.1f}")
         return True
+
+    def _score(self, r):
+        cargo = r.status.get("cargo") or {}
+        return loaded_score(cargo.get("loaded", []), cargo.get("urgency", [])) if cargo else (0, 0, 0)
+
+    def _new_leg(self, r, leg):
+        score = self._score(r)
+        r.leg = leg
+        changed = assign_route(self.graph, self.res, r.name, ROUTE_LEG[leg.split(":", 1)[1]], score)
+        for name, edges in changed.items():
+            other = self.robots[name]
+            plan = self.res.robots[name]
+            other.version += 1
+            track = self.graph.track_of(edges)[0]
+            if name == r.name:
+                self.get_logger().info(f"[FLEET] {name} leg {leg} score {score} via {track} v{other.version} "
+                                       f"({len(plan.zones)} zones, kept {plan.zones[:plan.prefix]})")
+            else:
+                self.get_logger().info(f"[FLEET] {name} (score {plan.score}) yields its corridor to {r.name} "
+                                       f"(score {score}) -> {track} v{other.version}")
+            self._publish_route(other)
+            self._record_route(other, plan)
 
     def _update_plan(self, r):
         leg = r.status.get("leg") or ""
         if leg and leg != r.leg:
-            cargo = r.status.get("cargo") or {}
-            score = loaded_score(cargo.get("loaded", []), cargo.get("urgency", [])) if cargo else (0, 0, 0)
-            r.leg = leg
-            self.res.set_plan(RobotPlan(r.name, self._leg_zones(leg), 0.0, score))
-            plan = self.res.robots[r.name]
-            self.get_logger().info(f"[FLEET] {r.name} leg {leg} score {score} "
-                                   f"({len(plan.zones)} zones, kept {plan.zones[:1]})")
-            self._record_route(r, plan)
+            self._new_leg(r, leg)
         plan = self.res.robots[r.name]
         s, d = self.graph.project(plan.zones, *r.pose, near=plan.s)
         if s is None:                          # 추적을 놓쳤다 (재시작 등) — 경로 전체에서 방향이 맞는 점
@@ -167,7 +193,7 @@ class FleetManager(Node):
             r = self.robots[name]
             plan = self.res.robots[name]
             point = None if stop is None else [round(v, 3) for v in self.graph.point_at(plan.zones, max(stop, 0.0))]
-            hold = {"leg": r.leg, "stop": point, "dock": stop is None, "zones": zones[-3:]}
+            hold = {"leg": f"{r.leg}#{r.version}", "stop": point, "dock": stop is None, "zones": zones[-3:]}
             if hold != r.hold_sent or now - r.hold_time > 1.0:
                 if hold != r.hold_sent:
                     self.get_logger().info(

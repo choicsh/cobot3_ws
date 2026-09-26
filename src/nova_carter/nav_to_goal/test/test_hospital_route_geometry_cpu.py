@@ -17,16 +17,18 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def source_routes():
-    source = ROOT/'nav_to_goal/nav_to_goal/hospital_mission.py'
-    tree = ast.parse(source.read_text())
-    names = {'PATH_STEP', 'LAB_DOCK', 'LAB_STATION', 'SPECIMEN_DOCK', 'SPECIMEN_STATION',
-             'ARRIVAL_YAWS', 'ROUTES', 'WEST_DOOR_Y', 'WEST_LOOP_X', 'LANE_UPPER', 'LANE_LOWER', 'LANES'}
-    nodes = [n for n in tree.body if
-             (isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id in names for t in n.targets))
-             or (isinstance(n, ast.FunctionDef) and n.name in ('sample_route', 'route_length', 'split_route'))]
-    scope = {'math': math}
-    exec(compile(ast.Module(body=nodes, type_ignores=[]), str(source), 'exec'), scope)
+    """차선 기하(hospital_lanes, ROS 없음) + 경로 샘플링(hospital_mission)"""
+    from nav_to_goal import hospital_lanes as lanes
+    from nav_to_goal.hospital_mission import (
+        ARRIVAL_YAWS, LANE_LOWER, LANE_UPPER, LANES, ROUTES, sample_route, split_route)
+    scope = {name: getattr(lanes, name) for name in dir(lanes) if not name.startswith('_')}
+    scope.update(ARRIVAL_YAWS=ARRIVAL_YAWS, LANES=LANES, ROUTES=ROUTES, LANE_UPPER=LANE_UPPER,
+                 LANE_LOWER=LANE_LOWER, sample_route=sample_route, split_route=split_route)
     return scope
+
+
+ALL_ROUTES = [(d, t) for d in ('to_analysis', 'to_collection')
+              for t in ('upper', 'upper_reserve', 'lower', 'lower_reserve')]
 
 
 def map_grid():
@@ -43,24 +45,45 @@ def map_grid():
     return Grid(message)
 
 
-@pytest.mark.parametrize('name', ['lane_upper', 'lane_lower'])
-def test_actual_reference_footprint_and_joins(name):
+@pytest.mark.parametrize('direction,track', ALL_ROUTES)
+def test_actual_reference_footprint_and_joins(direction, track):
+    """방향 2 x 복도 4 = 8 경로: 지도상 차체 여유, 원소 이음(위치·방향) 연속, 분할(출발/MPPI 직선/도착)"""
     scope, grid = source_routes(), map_grid()
-    route = scope['LANES'][name]
-    assert all(grid.body_clear(p) for p in scope['sample_route'](route))
+    route, split = scope['compose'](direction, track)
+    assert all(grid.body_clear(p) for p in scope['sample_route'](route)), (direction, track)
     for a, b in zip(route, route[1:]):
         end, start = scope['sample_route']([a])[-1], scope['sample_route']([b])[0]
-        assert math.dist(end[:2], start[:2]) < 1e-8
-        assert abs(math.atan2(math.sin(end[2]-start[2]), math.cos(end[2]-start[2]))) < 1e-8
-    departure, transit, arrival = scope['split_route'](name, route)
+        assert math.dist(end[:2], start[:2]) < 1e-8, (a, b)
+        assert abs(math.atan2(math.sin(end[2]-start[2]), math.cos(end[2]-start[2]))) < 1e-8, (a, b)
+        assert not (a[0] == b[0] == 'arc'), (a, b)
+    assert all(abs(s[4] - s[3]) <= 90 for s in route if s[0] == 'arc')
+    departure, transit, arrival = scope['split_route'](track, route, split)
     assert len(transit) == 1 and transit[0][0] == 'line'
+    assert departure[-1][0] == 'line' and math.dist(departure[-1][1], departure[-1][2]) >= 1.5
+    assert arrival[0][0] == 'arc'
+    assert route[-1][0] == 'line' and math.dist(route[-1][1], route[-1][2]) >= 1.5
     assert departure+transit+arrival == route
 
 
-@pytest.mark.parametrize('name', ['lane_upper', 'lane_lower'])
-def test_visible_forward_offsets_fit_actual_map_in_middle_of_lane(name):
+def test_default_lanes_keep_the_previous_routes():
+    """관제 없이 도는 기본 경로 = 운송 아래 복도, 복귀 위 복도 (예전 lane_lower / lane_upper)"""
+    scope = source_routes()
+    assert scope['LANES']['lane_lower'] == scope['compose']('to_analysis', 'lower')[0]
+    assert scope['LANES']['lane_upper'] == scope['compose']('to_collection', 'upper')[0]
+
+
+def test_reserve_tracks_are_two_metres_off_their_main_track():
+    scope = source_routes()
+    for main, reserve in (('upper', 'upper_reserve'), ('lower', 'lower_reserve')):
+        a, b = scope['TRACKS'][main]['straight'], scope['TRACKS'][reserve]['straight']
+        assert all(abs(abs(p[1] - q[1]) - 2.0) < 1e-9 for p, q in zip(a, b))     # 긴 직선이 2 m 나란히
+
+
+@pytest.mark.parametrize('direction,track', ALL_ROUTES)
+def test_visible_forward_offsets_fit_actual_map_in_middle_of_lane(direction, track):
     scope, grid = source_routes(), map_grid()
-    _, transit, _ = scope['split_route'](name, scope['LANES'][name])
+    route, split = scope['compose'](direction, track)
+    _, transit, _ = scope['split_route'](track, route, split)
     a, b = transit[0][1:]
     lane = LaneFrame(a[0], a[1], math.atan2(b[1]-a[1], b[0]-a[0]), math.dist(a, b))
     candidates = offset_candidates(lane, lane.world(5, 0))

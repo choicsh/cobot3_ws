@@ -7,7 +7,8 @@ import random
 
 import pytest
 
-from hospital_system.lane_graph import FRONT_M, REAR_M, LaneGraph, Reservations, RobotPlan, hospital_edges
+from hospital_system.lane_graph import (FRONT_M, REAR_M, LaneGraph, Reservations, RobotPlan, assign_route,
+                                        choose_route, hospital_edges)
 from hospital_system.priority import score
 
 DT = 0.5
@@ -42,19 +43,20 @@ class Sim:
     def __init__(self, g, seed=0):
         self.g, self.rng = g, random.Random(seed)
         self.res = Reservations(g)
-        self.legs = {"deliver": g.route("collection_dock", "analysis_dock"),
-                     "return": g.route("analysis_dock", "collection_dock")}
         self.state = {}
+        self.tracks = []             # (로봇, 구간, 복도) — 배정 기록
+        self.reroutes = 0
         self.t = 0.0
         self.min_gap = math.inf
         self.log = []
 
     def add(self, name, leg, s, docked_before=None):
-        zones = self.g.route_zones(self.legs[leg])
+        edges, _ = choose_route(self.g, self.res, name, leg, (0, 0, 0))
+        zones = self.g.route_zones(edges)
         if docked_before:                      # 도킹 자세에서 시작: 뒤 차체가 걸친 도킹 구역을 앞에 붙인다
             zones = [docked_before] + zones
             s += self.g.zones[docked_before].length
-        self.res.set_plan(RobotPlan(name, zones, s))
+        self.res.set_plan(RobotPlan(name, zones, s, leg=leg, edges=edges, prefix=1 if docked_before else 0))
         self.state[name] = {"leg": leg, "dwell": 0.0, "pause": 0.0, "cycles": 0, "moved": 0.0}
 
     def step(self):
@@ -91,28 +93,31 @@ class Sim:
 
     def _next_leg(self, name):
         st = self.state[name]
-        st["leg"] = "return" if st["leg"] == "deliver" else "deliver"
-        if st["leg"] == "deliver":
+        st["leg"] = "to_collection" if st["leg"] == "to_analysis" else "to_analysis"
+        if st["leg"] == "to_analysis":
             st["cycles"] += 1
             urg = [self.rng.choice([1, 2, 3]) for _ in range(3)]
             sc = score(urg)
         else:
             sc = (0, 0, 0)
-        self.res.set_plan(RobotPlan(name, self.g.route_zones(self.legs[st["leg"]]), 0.0, sc))
+        changed = assign_route(self.g, self.res, name, st["leg"], sc)
+        self.reroutes += len(changed) - 1
+        for n, edges in changed.items():
+            self.tracks.append((n, self.res.robots[n].leg, self.g.track_of(edges)[0]))
 
 
 def test_conflict_zones_are_the_two_doors(graph):
     shared = {z for z, c in graph.conflicts.items() if c}
-    xs = sorted({round(graph.zones[z].points[len(graph.zones[z].points) // 2][0]) for z in shared})
-    # 서쪽은 입구 한 줄(y=12.5) + 방 안 분기(x=-39.5) + 복도 쪽 갈림(x≈-31.5, 2026-09-26 경로 변경)
-    assert shared and all(8 <= x <= 15 or -41 <= x <= -31 for x in xs), xs
+    xs = sorted({round(graph.phys_zones[z].points[len(graph.phys_zones[z].points) // 2][0]) for z in shared})
+    # 두 문: 입구 한 줄(y=12.5) + 방 안 분기 + 문 바깥 분기점에서 갈라지는 복도 4개의 첫 구역
+    assert shared and all(7 <= x <= 15 or -41 <= x <= -31 for x in xs), xs
 
 
 def test_three_robots_cycle_without_collision_or_deadlock(graph):
     sim = Sim(graph, seed=1)
-    sim.add("robot1", "deliver", 0.0, docked_before="collection_dock_in:0")
-    sim.add("robot2", "deliver", 45.0)
-    sim.add("robot3", "return", 30.0)
+    sim.add("robot1", "to_analysis", 0.0, docked_before="collection_dock_in:0")
+    sim.add("robot2", "to_analysis", 45.0)
+    sim.add("robot3", "to_collection", 30.0)
     for _ in range(4000):                      # 2000 s — 로봇마다 3바퀴쯤
         sim.step()
         for name, st in sim.state.items():
@@ -125,49 +130,90 @@ def test_three_robots_cycle_without_collision_or_deadlock(graph):
 @pytest.mark.parametrize("seed", range(5))
 def test_random_seeds(graph, seed):
     sim = Sim(graph, seed=seed + 10)
-    sim.add("robot1", "deliver", 0.0, docked_before="collection_dock_in:0")
-    sim.add("robot2", "deliver", 20.0 + seed * 7)
-    sim.add("robot3", "return", 10.0 + seed * 9)
+    sim.add("robot1", "to_analysis", 0.0, docked_before="collection_dock_in:0")
+    sim.add("robot2", "to_analysis", 20.0 + seed * 7)
+    sim.add("robot3", "to_collection", 10.0 + seed * 9)
     for _ in range(3000):
         sim.step()
     assert all(st["cycles"] >= 1 for st in sim.state.values()), sim.state
 
 
-def test_loaded_robot_takes_the_door_first(graph):
-    """동쪽 문에 운송(적재) 로봇과 복귀(빈) 로봇이 같이 오면 실은 로봇이 먼저 지난다."""
-    res = Reservations(graph)
-    deliver = graph.route_zones(graph.route("collection_dock", "analysis_dock"))
-    ret = graph.route_zones(graph.route("analysis_dock", "collection_dock"))
-    run_d = deliver.index("deliver:4")
-    run_r = ret.index("return:21")
-    s_d = sum(graph.zones[z].length for z in deliver[:run_d]) - 3.0
-    s_r = sum(graph.zones[z].length for z in ret[:run_r]) - 3.0
-    res.set_plan(RobotPlan("empty", ret, s_r, (0, 0, 0)))
-    res.set_plan(RobotPlan("loaded", deliver, s_d, score([1, 1, 1])))
-    res.tick(1.0)
-    assert res.owner.get("deliver:5") == "loaded"
-    assert res.owner.get("return:22") is None
-    # 빈 로봇은 문 앞에 선다
-    stop, _ = res.tick(2.0)["empty"]
-    assert stop is not None and stop < s_r + 3.0
+def _plan(graph, name, edges, before, score_=(0, 0, 0), leg=""):
+    """edges 경로에서 첫 충돌 구역 before m 앞에 선 로봇"""
+    zones = graph.route_zones(edges)
+    first = next(i for i, z in enumerate(zones) if graph.zones[z].shared and i > 0)
+    s = sum(graph.zones[z].length for z in zones[:first]) - before
+    return RobotPlan(name, zones, s, score_, leg=leg, edges=edges), zones[first]
 
 
-def test_higher_urgency_wins_between_loaded_robots(graph):
+def test_loaded_robot_takes_the_east_junction_first(graph):
+    """동쪽 분기점에 운송(적재, 채취실에서 나옴) 로봇과 복귀(빈, 복도에서 옴) 로봇이 같이 오면 실은 로봇이 먼저."""
     res = Reservations(graph)
-    deliver = graph.route_zones(graph.route("collection_dock", "analysis_dock"))
-    ret = graph.route_zones(graph.route("analysis_dock", "collection_dock"))
-    s_d = sum(graph.zones[z].length for z in deliver[:deliver.index("deliver:4")]) - 3.0
-    s_r = sum(graph.zones[z].length for z in ret[:ret.index("return:21")]) - 3.0
-    res.set_plan(RobotPlan("low", deliver, s_d, score([2, 2, 2])))
-    res.set_plan(RobotPlan("high", ret, s_r, score([3, 1, 1])))   # 가정: 실은 채 복귀 차선
+    empty, e_zone = _plan(graph, "empty", ["analysis_out", "lower>E", "collection_in", "collection_dock_in"], 60.0)
+    # 빈 로봇은 아래 복도 끝(동쪽 분기점 앞)까지 와 있다
+    empty.s = sum(graph.zones[z].length for z in empty.zones[:empty.zones.index("lower>E:21")]) - 2.0
+    loaded, l_zone = _plan(graph, "loaded", ["collection_out", "upper>W", "analysis_in", "analysis_dock_in"], 2.0,
+                           score([1, 1, 1]))
+    res.set_plan(empty)
+    res.set_plan(loaded)
     res.tick(1.0)
-    assert res.owner.get("return:22") == "high"
-    assert res.owner.get("deliver:5") is None
+    assert res.owner.get(graph.phys(l_zone)) == "loaded"
+    assert res.owner.get("collection_in:0") is None and res.owner.get("lower:21") is None
+    stop, _ = res.tick(2.0)["empty"]                      # 빈 로봇은 분기점 앞에 선다
+    assert stop is not None and stop < empty.s + 3.0
+
+
+def test_opposite_robot_gets_the_reserve_track_and_same_direction_follows(graph):
+    res = Reservations(graph)
+    a = assign_route(graph, res, "a", "to_analysis", score([1, 1, 1]))["a"]
+    assert graph.track_of(a) == ("upper", "W")
+    b = assign_route(graph, res, "b", "to_collection", (0, 0, 0))["b"]
+    assert graph.track_of(b) == ("upper_reserve", "E")           # 반대 방향 -> 예비선
+    c = assign_route(graph, res, "c", "to_analysis", (0, 0, 0))["c"]
+    assert graph.track_of(c) == ("upper", "W")                   # 같은 방향 -> 본선 뒤따르기
+
+
+def test_urgent_robot_takes_the_short_track_from_a_waiting_low_robot(graph):
+    """빈 로봇이 위 본선을 받았지만 아직 복도에 안 들어갔다 -> 실은 로봇이 가져가고 빈 로봇은 예비선."""
+    res = Reservations(graph)
+    assign_route(graph, res, "empty", "to_collection", (0, 0, 0))
+    assert graph.track_of(res.robots["empty"].edges)[0] == "upper"
+    res.tick(0.0)
+    changed = assign_route(graph, res, "loaded", "to_analysis", score([3, 1, 1]))
+    assert graph.track_of(changed["loaded"]) == ("upper", "W")
+    assert graph.track_of(changed["empty"]) == ("upper_reserve", "E")
+    assert graph.track_of(res.robots["empty"].edges)[0] == "upper_reserve"
+
+
+def test_robot_already_in_the_corridor_keeps_it(graph):
+    res = Reservations(graph)
+    assign_route(graph, res, "empty", "to_collection", (0, 0, 0))
+    plan = res.robots["empty"]
+    k = next(i for i, z in enumerate(plan.zones) if graph.zones[z].track)   # 복도 첫 구역
+    plan.s = sum(graph.zones[z].length for z in plan.zones[:k + 3])
+    res.tick(0.0)
+    assert res.entered("empty", "upper")
+    changed = assign_route(graph, res, "loaded", "to_analysis", score([3, 3, 3]))
+    assert list(changed) == ["loaded"] and graph.track_of(changed["loaded"])[0] == "upper_reserve"
+
+
+def test_direction_lock_never_grants_a_track_to_opposite_robots(graph):
+    """배정을 거치지 않고 억지로 반대 방향 두 로봇을 같은 복도에 넣어도 둘째는 복도 구역을 못 받는다."""
+    res = Reservations(graph)
+    w, _ = _plan(graph, "w", ["collection_out", "upper>W", "analysis_in", "analysis_dock_in"], 1.0)
+    e, _ = _plan(graph, "e", ["analysis_out", "upper>E", "collection_in", "collection_dock_in"], 1.0)
+    res.set_plan(w)
+    res.tick(0.0)
+    res.set_plan(e)
+    for t in range(5):
+        res.tick(t)
+    held = {r: {z for z, o in res.owner.items() if o == r and z.startswith("upper:")} for r in ("w", "e")}
+    assert held["w"] and not held["e"]
 
 
 def test_queue_behind_docked_robot_keeps_a_zone_gap(graph):
     res = Reservations(graph)
-    ret = graph.route_zones(graph.route("analysis_dock", "collection_dock"))
+    ret = graph.route_zones(graph.routes("analysis_dock", "collection_dock")[0][1])
     end = sum(graph.zones[z].length for z in ret)
     res.set_plan(RobotPlan("docked", ret, end))          # 채취실 책상에 도킹해 있다
     res.set_plan(RobotPlan("next", ret, end - 12.0))

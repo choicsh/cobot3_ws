@@ -48,69 +48,19 @@ LATEST_SENSOR_QOS = QoSProfile(
     depth=1, reliability=QoSReliabilityPolicy.BEST_EFFORT,
     durability=QoSDurabilityPolicy.VOLATILE)
 
-# Existing NewRooms desks, unchanged (1.8 m x 2.4 m, long sides north-south).
-# The robot docks beside a long side with the desk on its right, like the
-# USD spawn at the lab desk. *_DOCK must match hospital_docking.TABLES; each
-# *_STATION is the staging pose 2.5 m before the dock on the same straight.
-# The lab is entered heading north and left northward; the specimen desk is
-# entered heading south and left southward, so neither needs an undock.
+from nav_to_goal.hospital_lanes import (  # noqa: E402 — 차선 기하는 한 곳(hospital_lanes)에
+    DEFAULT_TRACK, LAB_DOCK, LAB_STATION, SPECIMEN_DOCK, SPECIMEN_STATION, TO_ANALYSIS,
+    TO_COLLECTION, TRACKS, WEST_DOOR_Y, WEST_LOOP_X, compose)
+
 ARRIVAL_YAWS = {"specimen_to_lab": math.pi / 2, "lab_to_specimen": -math.pi / 2}
 ROUTES = {"specimen_to_lab": "lane_upper", "lab_to_specimen": "lane_lower"}
-# 서쪽 문(x≈-35.9)은 동쪽 문(y=12.5)처럼 두 차선이 한 줄로 지난다. 방 안은 사각형 한 바퀴
-# (도킹 줄 x=-44.741 남행 → 아래 y=8.9 동행 → x=-39.5 북행 → 위 y=18.0125 서행), 분기점은 (-38.0, 12.5).
-# 동쪽 방(도킹 줄 x=20.185, 분기점 (13.5, 12.5))을 180도 돌린 모양이다 (2026-09-26 사용자 요청).
-WEST_DOOR_Y = 12.5
-WEST_LOOP_X = -39.5
-LAB_DOCK = (20.185, 13.8125)
-LAB_STATION = (20.185, 11.3125)
-SPECIMEN_DOCK = (-44.741, 12.9125)
-SPECIMEN_STATION = (-44.741, 15.4125)
-# 아크끼리 바로 잇지 않고(아크-직선-아크) 한 아크는 90도 이하로 둔다. 도착 경로는
-# 정류장 앞 1.6 m 직진으로 끝나 제자리 정렬 없이 TableDocking 직진으로 이어진다.
-LANE_UPPER = [('line', SPECIMEN_DOCK, (-44.741, 10.4)),
- ('arc', (-43.241, 10.4), 1.5, 180, 270),
- ('line', (-43.241, 8.9), (-41.0, 8.9)),
- ('arc', (-41.0, 10.4), 1.5, 270, 360),
- ('line', (WEST_LOOP_X, 10.4), (WEST_LOOP_X, 11.0)),
- ('arc', (-38.0, 11.0), 1.5, 180, 90),
- ('line', (-38.0, WEST_DOOR_Y), (-34.8, WEST_DOOR_Y)),
- ('arc', (-34.8, 13.4), 0.9, 270, 360),
- ('line', (-33.9, 13.4), (-33.9, 14.0)),
- ('arc', (-33.0, 14.0), 0.9, 180, 90),
- ('line', (-33.0, 14.9), (-31.5, 14.9)),
- ('line', (-31.5, 14.9), (7.9, 14.9)),
- ('arc', (7.9, 14.0), 0.9, 90, 0),
- ('line', (8.8, 14.0), (8.8, 13.4)),
- ('arc', (9.7, 13.4), 0.9, 180, 270),
- ('line', (9.7, 12.5), (13.5, 12.5)),
- ('arc', (13.5, 11.5), 1.0, 90, 0),
- ('line', (14.5, 11.5), (14.5, 9.8)),
- ('arc', (15.5, 9.8), 1.0, 180, 270),
- ('line', (15.5, 8.8), (19.285, 8.8)),
- ('arc', (19.285, 9.7), 0.9, 270, 360),
- ('line', (20.185, 9.7), LAB_STATION)]
-LANE_LOWER = [('line', LAB_DOCK, (20.185, 16.5)),
- ('arc', (18.685, 16.5), 1.5, 0, 90),
- ('line', (18.685, 18), (16, 18)),
- ('arc', (16, 16.55), 1.45, 90, 180),
- ('line', (14.55, 16.55), (14.55, 13.95)),
- ('arc', (13.1, 13.95), 1.45, 0, -90),
- ('line', (13.1, 12.5), (10, 12.5)),
- ('arc', (10, 9.5), 3, 90, 180),
- ('line', (7, 9.5), (7, 1.5)),
- ('arc', (4, 1.5), 3, 0, -90),
- ('line', (4, -1.5), (2.5, -1.5)),
- ('line', (2.5, -1.5), (-28.55, -1.5)),
- ('arc', (-28.55, 1.5), 3, 270, 180),
- ('line', (-31.55, 1.5), (-31.55, WEST_DOOR_Y - 3)),
- ('arc', (-34.55, WEST_DOOR_Y - 3), 3, 0, 90),
- ('line', (-34.55, WEST_DOOR_Y), (-38.0, WEST_DOOR_Y)),
- ('arc', (-38.0, WEST_DOOR_Y + 1.5), 1.5, 270, 180),
- ('line', (WEST_LOOP_X, WEST_DOOR_Y + 1.5), (WEST_LOOP_X, 16.5125)),
- ('arc', (WEST_LOOP_X - 1.5, 16.5125), 1.5, 0, 90),
- ('line', (WEST_LOOP_X - 1.5, 18.0125), (-43.741, 18.0125)),
- ('arc', (-43.741, 17.0125), 1.0, 90, 180),
- ('line', (-44.741, 17.0125), SPECIMEN_STATION)]
+# route_id -> 방향 (복도를 서->동 / 동->서)
+DIRECTIONS = {"specimen_to_lab": TO_COLLECTION, "lab_to_specimen": TO_ANALYSIS}
+# 관제 없이 돌 때의 두 경로 (예전 lane_upper = 복귀 + 위 복도, lane_lower = 운송 + 아래 복도)
+_DEFAULT = {lane: compose(DIRECTIONS[route_id], DEFAULT_TRACK[DIRECTIONS[route_id]])
+            for route_id, lane in ROUTES.items()}
+LANE_UPPER = _DEFAULT["lane_upper"][0]
+LANE_LOWER = _DEFAULT["lane_lower"][0]
 
 LANES = {
     "lane_upper": LANE_UPPER,
@@ -501,20 +451,20 @@ def run_path_stage(
     )
 
 
-def split_route(lane_id, route):
+def split_route(lane_id, route, split=None):
     """정류장 진출/중앙 이동/정류장 진입으로 나눈다.
 
     모든 원호는 DWB로 실행한다. MPPI의 기준 경로는 복도 직선뿐이며,
     사람을 피할 때의 국소적인 측면 이탈은 허용한다. 출발 구간은 1.5 m 직선으로
     끝나 DWB가 방향을 맞춘 뒤 MPPI에 넘긴다(아크 끝에서 넘기면 22도 제자리 회전).
+    split = hospital_lanes.compose 의 (MPPI 시작, 끝) — 없으면 기본 두 경로의 것.
     """
-    if lane_id == "lane_lower":
-        # 방/벽 사이의 작은 호는 DWB로 고정하고, 중앙 하단 열린 구간만
-        # MPPI에 맡긴다.
-        return route[:11], route[11:12], route[12:]
-    if lane_id == "lane_upper":
-        return route[:11], route[11:12], route[12:]
-    raise ValueError(f"Unknown lane: {lane_id}")
+    if split is None:
+        if lane_id not in _DEFAULT:
+            raise ValueError(f"Unknown lane: {lane_id}")
+        split = _DEFAULT[lane_id][1]
+    i, j = split
+    return route[:i], route[i:j], route[j:]
 
 
 def _project_segment(segment, x, y):
@@ -566,10 +516,15 @@ def resume_stages(stages, pose, max_distance=1.0, max_heading=math.radians(60.0)
     return out
 
 
-def run_mission(navigator, route_id, resume=False, zone_hold=None):
-    lane_id = ROUTES[route_id]
-    route = LANES[lane_id]
-    departure, transit, arrival = split_route(lane_id, route)
+def run_mission(navigator, route_id, resume=False, zone_hold=None, track=""):
+    """track = 가운데 복도 (hospital_lanes.TRACKS, 관제가 준다). 비우면 예전 고정 경로(lane_upper/lane_lower)."""
+    if track:
+        lane_id = track
+        route, split = compose(DIRECTIONS[route_id], track)
+    else:
+        lane_id = ROUTES[route_id]
+        route, split = LANES[lane_id], None
+    departure, transit, arrival = split_route(lane_id, route, split)
 
     print(
         f"[MISSION] {route_id} -> {lane_id}, 총 {route_length(route):.1f} m"
@@ -687,15 +642,18 @@ def main():
     # True: 관제 구역 예약(zone_hold 토픽)을 따른다 — 첫 메시지 전에는 출발하지 않는다 (hospital_zone_hold)
     navigator.declare_parameter("require_zone_hold", False)
     navigator.declare_parameter("zone_leg", "")   # 이 미션의 구간 키 (robot_agent 가 준다)
+    # 가운데 복도 (upper, upper_reserve, lower, lower_reserve — 관제가 고른다). 비우면 예전 고정 경로
+    navigator.declare_parameter("route_track", "")
     route_id = navigator.get_parameter("route_id").value
+    track = navigator.get_parameter("route_track").value
     resume = bool(navigator.get_parameter("resume").value)
     from nav_to_goal.hospital_zone_hold import ZoneHold
     zone_hold = ZoneHold(navigator, bool(navigator.get_parameter("require_zone_hold").value),
                          navigator.get_parameter("zone_leg").value)
 
-    if route_id not in ROUTES:
+    if route_id not in ROUTES or (track and track not in TRACKS):
         navigator.get_logger().error(
-            f"잘못된 route_id={route_id!r}; 사용 가능: {list(ROUTES)}"
+            f"잘못된 route_id={route_id!r} / route_track={track!r}; 사용 가능: {list(ROUTES)} / {list(TRACKS)}"
         )
         navigator.destroy_node()
         rclpy.shutdown()
@@ -703,7 +661,7 @@ def main():
 
     status = MissionStatus.FAILED
     try:
-        status = run_mission(navigator, route_id, resume, zone_hold)
+        status = run_mission(navigator, route_id, resume, zone_hold, track)
     except KeyboardInterrupt:
         navigator.cancelTask()
         print(f"[MISSION] {MissionStatus.CANCELED.value}")

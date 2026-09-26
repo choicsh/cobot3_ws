@@ -166,11 +166,12 @@ def load_lanes() -> dict | None:
         print(f"차선 구역 표시 끔 (hospital_system 을 import 하지 못함: {exc})")
         return None
     graph = LaneGraph(hospital_edges())
+    # 물리 구역 기준 — 양방향 복도는 두 방향 간선이 같은 구역을 쓰고, 관제 예약(fleet:zones)도 이 id 로 적는다
     return {
         "zones": {
-            zid: {"edge": z.edge, "shared": z.shared,
+            pid: {"edge": z.track or z.edge, "shared": z.shared,
                   "points": [[round(p[0], 2), round(p[1], 2)] for p in z.points]}
-            for zid, z in graph.zones.items()
+            for pid, z in graph.phys_zones.items()
         },
     }
 

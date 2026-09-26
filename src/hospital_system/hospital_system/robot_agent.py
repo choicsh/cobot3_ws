@@ -28,6 +28,10 @@ zone_hold 토픽을 이 네임스페이스의 것으로 잇는다. 위치(TF map
 프로세스를 같은 네임스페이스로 띄우고 /tf 를 <ns>/tf 로 잇는다. 전역 이름 Nav2(로봇 1대 시험)면 -p global_nav:=true.
 시작 위치: -p start:=collection(기본, 채취실 도킹) 또는 start:=return — 복귀 차선 위(빈 랙)에서 시작해
 먼저 채취실로 간다(이어 가기 주행, 구간 키 "0:specimen_to_lab").
+
+경로(관제 모드): 구간을 시작하면 관제가 route 토픽({"leg", "track", "version"})으로 가운데 복도를 준다.
+주행에 -p route_track 으로 넘기고 zone_leg 는 "<leg>#<version>". 주행 중에 같은 구간의 새 version 이 오면
+(긴급도 높은 로봇에게 복도를 양보) 주행을 멈추고 현재 위치에서 새 경로로 이어 간다.
 """
 import json
 import math
@@ -52,6 +56,7 @@ from hospital_system.records import Recorder, trays_from_load
 from hospital_system.stations import ANALYSIS, COLLECTION, mission_route
 
 FINAL_ARM_RESULTS = ("done", "failed", "stopped")
+REROUTED = 3            # _run_mission: 관제가 경로를 바꿨다 (주행 실패 아님)
 
 
 class RobotAgent(Node):
@@ -87,6 +92,8 @@ class RobotAgent(Node):
         self.task_seq = 0            # 끝낸 관제 작업 번호
         self._task = None
         self.pose = None             # (x, y, yaw) map 기준
+        self._route = None           # 관제가 준 마지막 route 메시지
+        self.route = None            # 지금 주행에 쓰는 {"leg", "track", "version"}
 
         self.global_nav = bool(self.get_parameter("global_nav").value)
         self.tf_buffer = Buffer()
@@ -99,6 +106,7 @@ class RobotAgent(Node):
         latched = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
                              durability=DurabilityPolicy.TRANSIENT_LOCAL)
         self.create_subscription(String, "task", self._on_task, latched)
+        self.create_subscription(String, "route", self._on_route, latched)
 
         self.rec = None
         if self.get_parameter("use_db").value:
@@ -148,6 +156,31 @@ class RobotAgent(Node):
             return
         if int(task.get("seq", 0)) > self.task_seq:
             self._task = task
+
+    def _on_route(self, msg):
+        try:
+            self._route = json.loads(msg.data)
+        except ValueError:
+            self.get_logger().warn(f"route is not JSON: {msg.data[:80]}")
+
+    def wait_route(self, timeout=30.0):
+        """이 구간(leg)의 경로를 관제에게서 받는다. 관제 모드가 아니면 None(주행 기본 경로)."""
+        if not self.fleet:
+            return None
+        end = time.monotonic() + timeout
+        while rclpy.ok() and time.monotonic() < end:
+            r = self._route
+            if r and r.get("leg") == self.leg:
+                self.route = dict(r)
+                self.get_logger().info(f"route {self.leg}: {r['track']} v{r['version']}")
+                return self.route
+            self.spin_for(0.2)
+        raise RuntimeError(f"no route from fleet for {self.leg} in {timeout:.0f} s")
+
+    def _route_changed(self):
+        r = self._route
+        return (self.route is not None and r is not None and r.get("leg") == self.leg and
+                r.get("version") != self.route.get("version"))
 
     def set_stage(self, stage, detail=""):
         self.stage, self.detail = stage, detail
@@ -213,6 +246,22 @@ class RobotAgent(Node):
         self.set_stage(stage, f"{origin} -> {destination}")
 
     def drive(self, origin, destination, resume=False):
+        """관제가 경로를 바꾸면(REROUTED) 현재 위치에서 새 경로로 다시 — 실패 재시도 횟수와 따로 센다."""
+        try:
+            self.wait_route()
+        except RuntimeError as e:
+            self.get_logger().error(str(e))
+            return -1
+        code = self._drive(origin, destination, resume)
+        while code == REROUTED:
+            self.route = dict(self._route)
+            self.set_stage(self.stage, f"{origin} -> {destination}: rerouted to {self.route['track']} "
+                                       f"v{self.route['version']}")
+            self.event("REROUTED", track=self.route["track"], version=self.route["version"])
+            code = self._drive(origin, destination, True)
+        return code
+
+    def _drive(self, origin, destination, resume=False):
         """hospital_mission 을 돌린다. 도중 실패(종료 1)면 resume 으로 현재 위치에서 이어 간다.
 
         hospital_mission 은 사람 앞에서 15 s 넘게 양보하면 '차선이 막혔다는 증거는 아님' 으로 실패한다.
@@ -233,13 +282,16 @@ class RobotAgent(Node):
         route = mission_route(origin, destination)
         cmd = shlex.split(self.get_parameter("mission_command").value) + [
             "--ros-args", "-p", f"route_id:={route}", "-p", f"resume:={str(resume).lower()}"]
+        if self.route:
+            cmd += ["-p", f"route_track:={self.route['track']}"]
         ns = self.get_namespace().rstrip("/")
         if not self.global_nav and ns:
             # Nav2 (follow_path, map, scan ...) 가 이 로봇 네임스페이스에 있다
             cmd += ["-r", f"__ns:={ns}", "-r", "/tf:=tf", "-r", "/tf_static:=tf_static"]
         if self.fleet:
             # 관제 구역 예약: 이 로봇의 zone_hold 를 따르고, 이 구간(leg) 메시지만 쓴다
-            cmd += ["-p", "require_zone_hold:=true", "-p", f"zone_leg:={self.leg}",
+            leg = f"{self.leg}#{self.route['version']}" if self.route else self.leg
+            cmd += ["-p", "require_zone_hold:=true", "-p", f"zone_leg:={leg}",
                     "-r", f"zone_hold:={ns}/zone_hold"]
         self.get_logger().info(f"mission: {' '.join(cmd)}")
         # 파이프로 읽으면 하위 파이썬이 출력을 모아 두므로 버퍼를 끈다 (도킹 시작 줄을 바로 봐야 한다)
@@ -261,6 +313,10 @@ class RobotAgent(Node):
                 if not rclpy.ok() or time.monotonic() > end:
                     self.get_logger().error(f"mission {route} timed out — stopping it")
                     return -1
+                if self._route_changed():
+                    self.get_logger().info(f"fleet rerouted {self.leg}: {self.route['track']} -> "
+                                           f"{self._route['track']} — restarting the mission")
+                    return REROUTED
                 if self._docking:
                     self._docking = False
                     self.set_stage("PLACE_DOCKING" if destination == ANALYSIS else "PICK_DOCKING",
