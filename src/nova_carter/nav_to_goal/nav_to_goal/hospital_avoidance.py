@@ -32,7 +32,8 @@ class SafetySettings:
     track_timeout: float = 1.2
     uncertainty_rate: float = 0.10
     # Candidate centerlines stay inside this lane-local strip; actual body too.
-    lane_half_width: float = 2.8
+    # 3.3 fits the 2.45 m offset while its rear corner swings out on the turns.
+    lane_half_width: float = 3.3
     minimum_radius: float = 1.2
     reaction_time: float = 0.2
 
@@ -327,9 +328,10 @@ def offset_candidates(lane, pose, settings=SafetySettings(), preferred_side=0, c
     sides = (preferred_side, -preferred_side) if preferred_side else (1, -1)
     # A latched side may still be abandoned if every candidate on it is unsafe.
     for side in sides:
-        for offset in (1.5, 1.8, 2.0):
+        # 2.45 clears a 2.8 m wide obstacle on the lane; its return needs 5 m for the 1.2 m radius.
+        for offset in (1.5, 1.8, 2.45):
             for shift in (3., 4., 5.):
-                hold, rejoin = 2.5, 4.
+                hold, rejoin = 2.5, (5. if offset > 2. else 4.)
                 if clear_after_s is not None:
                     hold = max(hold, clear_after_s-start_s-shift)
                 end_s = start_s+shift+hold+rejoin

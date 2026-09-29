@@ -139,6 +139,22 @@ def test_static_blockage_near_stage_end_still_has_a_detour():
         assert min(body_gap(p, *obstacle, .3) for p in path) >= .5      # body clears the object
 
 
+def test_detour_clears_a_wide_obstacle_on_the_lane():
+    """A 2.8 m wide object across the lane, 6 m ahead, as the local costmap sees it
+    (lethal + inscribed 0.49 m). Only the 2.45 m offset passes it."""
+    lane = LaneFrame(0, 0, 0, 40)
+    a, half, inscribed, r = 6., 1.4, .49, .05
+    X, Y = np.meshgrid(-6+(np.arange(800)+.5)*r, -10+(np.arange(400)+.5)*r)
+    grid = Grid.__new__(Grid)
+    grid.resolution, grid.width, grid.height, grid.frame = r, 800, 400, 'map'
+    grid.origin = NS(position=NS(x=-6., y=-10.), orientation=NS(x=0, y=0, z=0, w=1))
+    grid.blocked = np.hypot(np.maximum(np.maximum(a-X, X-(a+.3)), 0), np.maximum(np.abs(Y)-half, 0)) <= inscribed
+    candidates = offset_candidates(lane, (0, 0, 0), clear_after_s=detour_clear_after(a-inscribed, False))
+    clear = [path for side, path in candidates if all(grid.body_clear(p, require_inside=False) for p in path)]
+    assert clear
+    assert all(max(abs(p[1]) for p in path) == pytest.approx(2.45) for path in clear)
+
+
 def _rejoin_path(x0, y0, length=4.0, tail=12.0, step=.05):
     """Detour at y0 bending back to the lane (y=0) over `length`, then straight."""
     pts = []

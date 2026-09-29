@@ -21,17 +21,54 @@
 
 ## 1. 처음 한 번
 
+### 1.1 워크스페이스
+
 ```bash
-# ROS 2 Jazzy, Isaac Sim 5.1 (~/isaacsim), Docker 가 설치돼 있다고 가정
+# ROS 2 Jazzy, Isaac Sim 5.1 (~/isaacsim), Docker 가 설치돼 있다고 가정 (DB_container/1_docker desktop 설치.txt)
 cd ~/cobot3_ws
 sudo apt install python3-psycopg2 python3-redis          # 관제·에이전트의 DB 드라이버 (시스템 파이썬)
 source /opt/ros/jazzy/setup.bash
 colcon build --packages-select carter_navigation nav_to_goal hospital_dynamic_layer hospital_system
 ```
 
-- DB 컨테이너 만들기와 스키마 적용: `DB_container/2_DB 컨테이너 구축.txt`
-  (`docker exec -i robotdb3_sql psql -U rokey -d robotdb3_sql < DB_container/hospital_amr_db_v5_schema.sql`).
-- 검출기 파이썬: `python3 -m venv ~/yolo-venv && ~/yolo-venv/bin/pip install ultralytics` (`admin_ws/README.md`).
+### 1.2 DB 컨테이너 만들기 — 새 PC 에서 한 번
+
+`DB_container/2_DB 컨테이너 구축.txt` 와 같은 내용이다. 볼륨에 데이터가 남으니 컨테이너를 지우지 않는 한 다시 할 일은 없다.
+
+```bash
+# 이 셸의 docker 가 어느 데몬을 보는지 먼저 확인한다 (* 가 활성 컨텍스트)
+docker context ls
+docker ps -a                                   # 컨테이너 목록이 보여야 한다 (권한 오류면 §9)
+
+# PostgreSQL 16 — 작업·트레이·이력
+docker pull postgres:16
+docker volume create robotdata3_sql
+docker run -d --name robotdb3_sql \
+  -e POSTGRES_DB=robotdb3_sql -e POSTGRES_USER=rokey -e POSTGRES_PASSWORD=rokey \
+  -p 5432:5432 -v robotdata3_sql:/var/lib/postgresql/data postgres:16
+
+# Redis 8.8 — 실시간 상태·heartbeat·이벤트 스트림·구역 예약
+docker pull redis:8.8
+docker volume create robotdata3_nosql
+docker run -d --name robotdb3_nosql \
+  -p 6379:6379 -v robotdata3_nosql:/data \
+  redis:8.8 redis-server --appendonly yes --user rokey on '>rokey' '~*' +@all
+
+# 스키마(DB v5) 적용 — 테이블이 없으면 에이전트가 시작하자마자 죽는다
+docker exec -i robotdb3_sql psql -U rokey -d robotdb3_sql < DB_container/hospital_amr_db_v5_schema.sql
+docker exec robotdb3_sql psql -U rokey -d robotdb3_sql -c '\dt'      # robot_info, tray, transport_task ... 확인
+```
+
+- 접속 정보는 코드 기본값과 맞춰야 한다 (`hospital_system/db.py`): `postgresql://rokey:rokey@localhost:5432/robotdb3_sql`,
+  `redis://rokey:rokey@localhost:6379/0`. 이름·비밀번호를 바꾸려면 `HOSPITAL_PG_DSN` / `HOSPITAL_REDIS_URL` 로 넘긴다(§8).
+- 관제 웹은 드라이버 없이 **`docker exec` 로 psql / redis-cli 를 호출**한다 — 컨테이너 이름이 위와 달라지면
+  `ROBOT_DB_CONTAINER` / `ROBOT_REDIS_CONTAINER` 를 함께 바꾼다(`monitoring_web/server.py`).
+- 다시 깔끔하게 만들 때: `docker rm -f robotdb3_sql robotdb3_nosql` (볼륨까지 지우려면 `docker volume rm robotdata3_sql
+  robotdata3_nosql` — 지난 작업 기록이 전부 사라진다).
+
+### 1.3 검출기 파이썬
+
+- `python3 -m venv ~/yolo-venv && ~/yolo-venv/bin/pip install ultralytics` (`admin_ws/README.md`).
   가중치는 저장소의 `runs/detect/isaacpjt/sdg/runs/tray-2/weights/best.pt`.
 
 ## 한 번에 실행 — `scripts/run_system.sh`
@@ -72,6 +109,11 @@ export ROS_DOMAIN_ID=136
 docker start robotdb3_sql robotdb3_nosql
 docker exec robotdb3_nosql redis-cli --user rokey --pass rokey --no-auth-warning del fleet:zones   # 지난 예약 표시 지우기
 ```
+
+- `No such container` 면 이 PC 에 아직 컨테이너가 없다 — §1.2 로 만든다. Docker Desktop 을 쓰면 데스크톱 앱이
+  떠 있어야 소켓이 열린다(`docker context ls` 의 `desktop-linux`).
+- 상태 확인: `docker ps --filter name=robotdb3 --format '{{.Names}} {{.Status}} {{.Ports}}'`
+  (둘 다 `Up`, 5432·6379 가 열려 있어야 한다).
 
 ### 3.2 Isaac Sim
 
@@ -207,6 +249,9 @@ ros2 run hospital_system robot_agent --ros-args -r __ns:=/robot1 -p run_cycles:=
 | 증상 | 원인 / 조치 |
 |---|---|
 | 에이전트가 `postgres off` / `redis off` 로 바로 끝남 | DB 컨테이너가 꺼져 있다 — §3.1 |
+| `docker start` 가 `No such container` | 이 PC 에 컨테이너를 아직 안 만들었다 — §1.2 |
+| `permission denied ... /var/run/docker.sock` | 활성 컨텍스트가 시스템 데몬이다 — `sudo usermod -aG docker $USER` 후 로그아웃·로그인, 또는 `docker context use desktop-linux` |
+| `relation "robot_info" does not exist` | 스키마를 적용하지 않았다 — §1.2 의 `psql < hospital_amr_db_v5_schema.sql` |
 | `No module named 'psycopg2'` | `sudo apt install python3-psycopg2 python3-redis` |
 | Nav2 가 `map -> base_link TF 대기 중` 에서 멈춤 | Isaac 재생 전에 띄웠거나 도메인이 다르다. `start_pose_path` 확인 |
 | RViz 하나가 시작하자마자 죽음 | 두 RViz 를 같은 순간에 띄움 — §3.4 처럼 간격을 둔다 |

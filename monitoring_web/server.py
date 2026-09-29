@@ -240,8 +240,9 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         super().__init__(*args, directory=str(STATIC_DIR), **kwargs)
 
     def log_message(self, format: str, *args) -> None:
-        if "/api/stream" not in (args[0] if args else ""):
-            print(f"[{self.log_date_time_string()}] {format % args}")
+        message = format % args
+        if "/api/stream" not in message:
+            print(f"[{self.log_date_time_string()}] {message}")
 
     def send_json(self, payload, status: int = HTTPStatus.OK) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
