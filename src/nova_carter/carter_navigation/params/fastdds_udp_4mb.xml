@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Isaac 3D 라이다 PointCloud2 는 약 800 KB 인데 리눅스 기본 UDP 수신 버퍼(rmem_default)는 208 KB 다.
+  Nav2 실행 중 커널이 조각을 버려(RcvbufErrors) Best-Effort 라이다 메시지 전체가 유실됐다
+  (/scan 3.1 Hz, 최대 간격 2.9 s). 수신 버퍼를 커널 상한 rmem_max(4 MB) 까지 올리면
+  RcvbufErrors 0, /scan 6.1~6.4 Hz, 최대 간격 0.8 s (2026-09-25 실측). 같은 호스트 ROS 노드끼리는 SHM 유지.
+-->
+<profiles xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">
+  <transport_descriptors>
+    <transport_descriptor>
+      <transport_id>udp_4mb</transport_id>
+      <type>UDPv4</type>
+      <receiveBufferSize>4194304</receiveBufferSize>
+      <sendBufferSize>4194304</sendBufferSize>
+    </transport_descriptor>
+    <transport_descriptor>
+      <transport_id>shm</transport_id>
+      <type>SHM</type>
+    </transport_descriptor>
+  </transport_descriptors>
+  <participant profile_name="default_participant" is_default_profile="true">
+    <rtps>
+      <userTransports>
+        <transport_id>udp_4mb</transport_id>
+        <transport_id>shm</transport_id>
+      </userTransports>
+      <useBuiltinTransports>false</useBuiltinTransports>
+    </rtps>
+  </participant>
+</profiles>

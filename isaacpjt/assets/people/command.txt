@@ -1,42 +1,113 @@
-Character LookAround 2.24
-Character GoTo 9.24 6.19 0.0 _
-Character Idle 2.97
-Character GoTo 7.35 5.9 0.0 _
-Character Idle 2.05
-Character LookAround 2.03
-Character GoTo 5.96 8.45 0.0 _
-Character LookAround 2.36
-Character Idle 3.54
-Character GoTo 8.5 7.99 0.0 _
-Character LookAround 2.31
-Character GoTo 6.38 6.32 0.0 _
-Character LookAround 2.64
-Character Idle 5.48
-Character GoTo 4.96 8.55 0.0 _
-Character Idle 3.33
-Character LookAround 2.72
-Character GoTo 9.35 9.24 0.0 _
-Character LookAround 3.16
-Character GoTo 5.8 10.32 0.0 _
-Character LookAround 2.02
-Character GoTo 6.56 9.51 0.0 _
-Character LookAround 3.59
-Character_01 LookAround 3.45
-Character_01 GoTo 6.9 9.88 0.0 _
-Character_01 Idle 4.21
-Character_01 GoTo 8.54 8.99 0.0 _
-Character_01 LookAround 2.09
-Character_01 GoTo 8.86 11.62 0.0 _
-Character_01 LookAround 2.51
-Character_01 Idle 4.67
-Character_01 GoTo 5.44 8.88 0.0 _
-Character_01 Idle 2.85
-Character_01 GoTo 8.2 10.41 0.0 _
-Character_01 LookAround 2.58
-Character_01 GoTo 9.35 9.71 0.0 _
-Character_01 Idle 4.64
-Character_01 GoTo 6.83 8.83 0.0 _
-Character_01 LookAround 2.58
-Character_01 GoTo 9.35 10.74 0.0 _
-Character_01 Idle 2.59
-Character_01 GoTo 9.35 7.51 0.0 _
+Upper_West Idle 1.5
+Upper_West GoTo -12.21 15.88 0.0 _
+Upper_West Idle 3.8
+Upper_West GoTo -24.69 17.82 0.0 _
+Upper_West LookAround 1.7
+Upper_West GoTo -32.82 11.1 0.0 _
+Upper_West LookAround 1.9
+Upper_West GoTo -18.17 14.65 0.0 _
+Upper_West LookAround 2.1
+Upper_West GoTo -31.5 16.35 0.0 _
+Upper_West Idle 1.1
+Upper_West GoTo -19.08 15.86 0.0 _
+Upper_West LookAround 2.7
+Upper_West GoTo -13.39 16.0 0.0 _
+Upper_West Idle 3.9
+Upper_West GoTo -30.52 15.85 0.0 _
+Upper_West LookAround 3.2
+Upper_West GoTo -28.29 11.87 0.0 _
+Upper_West LookAround 3.1
+Upper_West GoTo -11.43 18.11 0.0 _
+Upper_West LookAround 1.9
+Upper_East Idle 2.0
+Upper_East GoTo 1.9 12.13 0.0 _
+Upper_East LookAround 3.4
+Upper_East GoTo -13.49 15.61 0.0 _
+Upper_East LookAround 3.4
+Upper_East GoTo -6.28 11.19 0.0 _
+Upper_East Idle 3.1
+Upper_East GoTo -6.66 15.6 0.0 _
+Upper_East Idle 1.3
+Upper_East GoTo -11.37 17.5 0.0 _
+Upper_East LookAround 2.9
+Upper_East GoTo -1.54 13.13 0.0 _
+Upper_East Idle 1.8
+Upper_East GoTo 6.97 17.5 0.0 _
+Upper_East LookAround 2.2
+Upper_East GoTo -11.07 16.69 0.0 _
+Upper_East Idle 3.0
+Upper_East GoTo 6.95 12.19 0.0 _
+Upper_East Idle 1.1
+Upper_East GoTo -6.0 14.75 0.0 _
+Lower_Cross_1 Idle 3.7
+Lower_Cross_1 GoTo -30.05 -5.01 0.0 _
+Lower_Cross_1 LookAround 3.1
+Lower_Cross_1 GoTo -29.23 1.07 0.0 _
+Lower_Cross_1 Idle 1.7
+Lower_Cross_1 GoTo -23.1 -5.23 0.0 _
+Lower_Cross_1 Idle 1.1
+Lower_Cross_1 GoTo -29.12 1.39 0.0 _
+Lower_Cross_1 LookAround 2.1
+Lower_Cross_1 GoTo -25.09 1.7 0.0 _
+Lower_Cross_1 LookAround 3.1
+Lower_Cross_1 GoTo -14.92 1.8 0.0 _
+Lower_Cross_1 Idle 3.7
+Lower_Cross_1 GoTo -23.35 -0.68 0.0 _
+Lower_Cross_1 GoTo -26.1 -6.31 0.0 _
+Lower_Cross_1 LookAround 2.5
+Lower_Cross_1 GoTo -14.31 2.64 0.0 _
+Lower_Cross_1 Idle 3.3
+Lower_Cross_1 GoTo -27.12 -4.68 0.0 _
+Lower_Cross_2 Idle 1.7
+Lower_Cross_2 GoTo -8.9 -3.42 0.0 _
+Lower_Cross_2 GoTo -13.72 -1.38 0.0 _
+Lower_Cross_2 Idle 2.2
+Lower_Cross_2 GoTo -9.22 -3.01 0.0 _
+Lower_Cross_2 GoTo -12.14 3.18 0.0 _
+Lower_Cross_2 LookAround 1.9
+Lower_Cross_2 GoTo -15.8 -0.54 0.0 _
+Lower_Cross_2 Idle 2.6
+Lower_Cross_2 GoTo -7.44 -1.27 0.0 _
+Lower_Cross_2 Idle 1.6
+Lower_Cross_2 GoTo -15.06 2.57 0.0 _
+Lower_Cross_2 Idle 3.3
+Lower_Cross_2 GoTo -4.79 -2.8 0.0 _
+Lower_Cross_2 Idle 3.7
+Lower_Cross_2 GoTo -7.78 1.27 0.0 _
+Lower_Cross_2 Idle 2.8
+Lower_Cross_2 GoTo -12.04 -4.72 0.0 _
+Lower_Cross_2 LookAround 2.1
+Lower_Cross_3 Idle 4.5
+Lower_Cross_3 GoTo 1.98 -3.16 0.0 _
+Lower_Cross_3 GoTo -13.5 3.37 0.0 _
+Lower_Cross_3 GoTo 0.39 0.43 0.0 _
+Lower_Cross_3 GoTo -5.43 -2.84 0.0 _
+Lower_Cross_3 Idle 2.4
+Lower_Cross_3 GoTo -9.62 2.59 0.0 _
+Lower_Cross_3 GoTo -4.59 -3.54 0.0 _
+Lower_Cross_3 Idle 3.4
+Lower_Cross_3 GoTo -0.34 -1.64 0.0 _
+Lower_Cross_3 Idle 2.9
+Lower_Cross_3 GoTo -13.28 -5.16 0.0 _
+Lower_Cross_3 LookAround 3.2
+Lower_Cross_3 GoTo 1.16 -4.29 0.0 _
+Lower_Cross_3 LookAround 2.9
+Lower_Cross_3 GoTo -9.99 -4.41 0.0 _
+Lower_Cross_3 Idle 2.9
+Lower_Cross_4 Idle 3.5
+Lower_Cross_4 GoTo 6.98 -6.48 0.0 _
+Lower_Cross_4 GoTo -3.35 -3.66 0.0 _
+Lower_Cross_4 LookAround 3.3
+Lower_Cross_4 GoTo 3.57 -0.18 0.0 _
+Lower_Cross_4 GoTo -4.61 -1.11 0.0 _
+Lower_Cross_4 LookAround 3.3
+Lower_Cross_4 GoTo 4.58 -0.7 0.0 _
+Lower_Cross_4 LookAround 2.2
+Lower_Cross_4 GoTo 5.08 -5.08 0.0 _
+Lower_Cross_4 GoTo 3.28 0.2 0.0 _
+Lower_Cross_4 GoTo -0.88 -3.53 0.0 _
+Lower_Cross_4 Idle 2.6
+Lower_Cross_4 GoTo 6.56 3.07 0.0 _
+Lower_Cross_4 Idle 1.1
+Lower_Cross_4 GoTo -2.6 1.98 0.0 _
+Lower_Cross_4 LookAround 2.8

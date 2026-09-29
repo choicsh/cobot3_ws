@@ -29,8 +29,14 @@ amcl:
     robot_model_type: "nav2_amcl::DifferentialMotionModel"
     save_pose_rate: 0.5
     sigma_hit: 0.2
-    tf_broadcast: true
-    transform_tolerance: 1.0
+    # AMCL 은 띄워두되 결과(map->odom TF)는 쓰지 않는다. 위치는 launch 의 ground_truth_localization 이
+    # Isaac 실제 자세로 잡는다 (시뮬 odom 은 drift 가 없어서 보정할 것이 없다).
+    # AMCL 로 되돌리려면: tf_broadcast: true, set_initial_pose: true + initial_pose 기입(또는 RViz 2D Pose Estimate),
+    # 그리고 launch 에서 ground_truth_localization 노드를 뺀다.
+    tf_broadcast: false
+    # map->odom 을 마지막 스캔 처리 후 이 시간만큼 유효하게 유지한다. Isaac Sim 라이다가 1.2초까지 끊기는데
+    # 1.0 이면 그 사이 TF 가 만료되어 controller_server 가 "Transform data too old" 로 주행을 abort 한다.
+    transform_tolerance: 3.0
     update_min_a: 0.2
     update_min_d: 0.2   # 자주·조금씩 보정 → map->odom 점프 완화
     z_hit: 0.5
@@ -39,14 +45,9 @@ amcl:
     z_short: 0.05
     scan_topic: scan
     map_topic: map
-    set_initial_pose: true
+    set_initial_pose: false
     always_reset_initial_pose: false
     first_map_only: false
-    initial_pose:
-      x: 1.233      # 씬의 chassis_link(=base_link) 실측 위치
-      y: 3.363
-      z: 0.0
-      yaw: 3.14159  # 180도
 
 amcl_map_client:
   ros__parameters:
@@ -144,19 +145,18 @@ velocity_smoother:
     smoothing_frequency: 20.0 
     scale_velocities: false 
     feedback: "OPEN_LOOP"   # CLOSED_LOOP 는 램프가 이론값(0.60s)의 3.3배(2.00s) 로 늘어져 최종 회전이 좌우로 헌팅함 (실측)
-    max_velocity: [0.5, 0.0, 0.5] 
-    min_velocity: [-0.3, 0.0, -0.5] 
+    max_velocity: [0.8, 0.0, 0.9]    # 전체 상한 (DWB/MPPI 모두 0.8). 각속도 0.9: R=0.6 U턴을 0.5 m/s 로 돌 수 있게 (v=R*w)
+    min_velocity: [-0.3, 0.0, -0.9] 
     # deadband_velocity: [0.0, 0.0, 0.0] 
     velocity_timeout: 1.0 
-    max_accel: [0.5, 0.0, 1.0]     # 기본값(2.5/3.2)은 390kg 로봇에 공격적
-    max_decel: [-0.5, 0.0, -1.0] 
+    max_accel: [0.5, 0.0, 1.5]     # 기본값(2.5/3.2)은 390kg 로봇에 공격적. 직진 가속은 유지, 각가속만 상향
+    max_decel: [-0.6, 0.0, -1.5] 
     odom_topic: "chassis/odom" 
     odom_duration: 0.1
 
 controller_server:
   ros__parameters:
     use_sim_time: True
-    odom_topic: /chassis/odom   # 기본값 /odom 은 이 씬에 없음. StoppedGoalChecker 정지 판정과 DWB 현재 속도가 이 토픽에서 온다
     controller_frequency: 20.0
     costmap_update_timeout: 0.30
     min_x_velocity_threshold: 0.001
@@ -164,15 +164,21 @@ controller_server:
     min_theta_velocity_threshold: 0.001
     failure_tolerance: 0.3
     progress_checker_plugins: ["progress_checker"]
-    goal_checker_plugins: ["general_goal_checker"] # "precise_goal_checker"
-    controller_plugins: ["FollowPath"]
+    # goal checker 는 두 개: 구간 경계(방->복도, 복도->방)는 transit, 도킹 끝만 general(정밀).
+    # 컨트롤러도 두 개: 방 안은 DWB(FollowPath), 복도는 MPPI(FollowPathMPPI). move_test 가 구간마다 골라 보낸다.
+    goal_checker_plugins: ["general_goal_checker", "transit_goal_checker"]
+    controller_plugins: ["FollowPath", "FollowPathDock", "FollowPathMPPI"]
     use_realtime_priority: false
 
     # Progress checker parameters
     progress_checker:
-      plugin: "nav2_controller::SimpleProgressChecker"
+      # PoseProgressChecker는 목표점에서의 제자리 회전도 정상 진행으로 인정한다.
+      plugin: "nav2_controller::PoseProgressChecker"
       required_movement_radius: 0.25   # 목표 근처 미세 정렬 구간이 실패로 잡히지 않게
-      movement_time_allowance: 30.0   # 제자리 정렬 중엔 병진이 0 이라 progress_checker 가 무조건 실패로 집계. 회전 추종률 실측 0.5x 라 정렬에 2배 소요
+      required_movement_angle: 0.10    # 약 5.7도 회전하면 진행 타이머를 갱신
+      # 보행자가 차선을 횡단하는 동안 정지해도 즉시 실패하지 않고 MPPI가
+      # 회피하거나 통과 후 원 경로로 복귀할 시간을 준다.
+      movement_time_allowance: 45.0
     # Goal checker parameters
     #precise_goal_checker:
     #  plugin: "nav2_controller::SimpleGoalChecker"
@@ -181,34 +187,35 @@ controller_server:
     #  stateful: True
     general_goal_checker:
       stateful: True
-      # StoppedGoalChecker 는 SimpleGoalChecker 상속 + "정지했는가" 조건 추가.
-      # Simple 은 움직이는 중에도 SUCCEEDED 를 내서, 그 뒤 감속 구간(390kg 관성)이 제어 밖에서 밀렸다.
-      plugin: "nav2_controller::StoppedGoalChecker"
-      xy_goal_tolerance: 0.1     # 차동구동 한계상 실질 하한 0.05
-      yaw_goal_tolerance: 0.05   # 2.9도. AMCL 각도 추정 오차가 하한(~0.03)
-      trans_stopped_velocity: 0.03   # 3cm/s 이하여야 도착 인정 (시뮬 속도 잡음 고려해 0.02 대신)
-      rot_stopped_velocity: 0.03     # 1.7도/s 이하여야 도착 인정. 미세 떨림으로 늦어지면 0.05 로 완화
+      plugin: "nav2_controller::SimpleGoalChecker"
+      # 도킹 정밀도. 경로 전체를 FollowPath 로 보내므로 이 값은 경로 끝(도킹 지점)에만 적용된다.
+      # DWB 로 실질적으로 맞출 수 있는 하한 (xy 0.05 / yaw 0.03). 더 줄이려면 도킹 구간 컨트롤러를 바꿔야 한다.
+      xy_goal_tolerance: 0.05
+      yaw_goal_tolerance: 0.03   # 1.7도
+    transit_goal_checker:
+      # 구간 경계용. 여기서 정밀 정렬을 하면 복도 입구에서 도킹하듯 멈춰 서므로 느슨하게 두고 바로 다음 구간으로 넘긴다.
+      stateful: False
+      plugin: "nav2_controller::SimpleGoalChecker"
+      xy_goal_tolerance: 0.3
+      yaw_goal_tolerance: 0.3
   # DWB parameters
     FollowPath:
       plugin: "dwb_core::DWBLocalPlanner"
       debug_trajectory_details: True
       min_vel_x: 0.0   # NavFn 은 후진 경로를 만들지 않음
       min_vel_y: 0.0
-      max_vel_x: 0.5   # 사람이 있는 공간 주행 속도
+      max_vel_x: 0.8   # 0.5 -> 0.8. 도킹은 GoalDist 가 sim_time(1.7 s)*v 앞에서 자연 감속시키므로 그대로 두되, 5 cm 를 놓치면 0.6 으로 되돌릴 것
       max_vel_y: 0.0
-      max_vel_theta: 0.5
+      max_vel_theta: 0.9   # R=0.6 U턴에서 속도가 0.3 으로 떨어지지 않게 (0.5/0.6=0.83 필요). 직진 0.5 는 도킹 정밀도 때문에 유지
       min_speed_xy: 0.0
-      max_speed_xy: 0.5   # max_vel_x 와 정합
+      max_speed_xy: 0.8   # max_vel_x 와 정합
       min_speed_theta: 0.0
-      # 아래 4개는 velocity_smoother 의 max_accel/max_decel 과 반드시 같아야 한다.
-      # 달랐을 때: DWB 는 0.5m/s 를 8cm 만에 세울 수 있다고 계산하지만 smoother 가 0.5m/s^2 로 묶어
-      # 실제로는 25cm 를 더 밀려간다 (min_vel_x=0.0 이라 후진 복귀도 불가) -> 도킹 지점 오버슈트.
-      acc_lim_x: 0.5   # = velocity_smoother max_accel[0]
+      acc_lim_x: 1.0   # 급출발 억제
       acc_lim_y: 0.0
-      acc_lim_theta: 1.0   # = velocity_smoother max_accel[2]
-      decel_lim_x: -0.5   # = velocity_smoother max_decel[0]
+      acc_lim_theta: 1.5
+      decel_lim_x: -1.5   # 감속은 상대적으로 강하게 (안전)
       decel_lim_y: 0.0
-      decel_lim_theta: -1.0   # = velocity_smoother max_decel[2]
+      decel_lim_theta: -3.5
       vx_samples: 20
       vy_samples: 5
       vtheta_samples: 20
@@ -216,28 +223,152 @@ controller_server:
       linear_granularity: 0.1
       angular_granularity: 0.025
       transform_tolerance: 0.2
-      xy_goal_tolerance: 0.1
+      # RotateToGoal 이 '제자리 회전 모드'로 바뀌는 창. goal checker 의 xy_goal_tolerance 보다 크면
+      # 그 창에 들어오자마자 전진을 멈춰서 checker 허용치까지 못 다가가므로 반드시 같거나 작게 둔다.
+      xy_goal_tolerance: 0.05
       trans_stopped_velocity: 0.05   # 5cm/s 이하여야 최종 회전 시작 (사람 공간 주행 고려)
       short_circuit_trajectory_evaluation: True
       stateful: True
-      critics: ["RotateToGoal", "Oscillation", "ObstacleFootprint", "GoalAlign", "PathAlign", "PathDist", "GoalDist"]
-      ObstacleFootprint.scale: 0.2   # 0.5 일 때 하늘색(253) 감점 6.3 이 GoalAlign(2.0) 보다 커서 회전을 체계적으로 억제했다.
-      # 하늘색은 내접반경 0.48m 띠일 뿐 실제 충돌이 아니다. 치명(254) 거부는 scale 과 무관하게 유지된다.
-      # (libdwb_critics.so 확인: pointCost 는 0xfe/0xff 만 비교, 0xfd(253) 비교 없음)
-      Oscillation.oscillation_reset_time: 5.0   # 기본 -1.0 은 시간 해제 끔. 막혀서 못 움직이면 해제조건(5cm/11.5도)을
-      # 영영 못 채워 잠금이 영구화되고 419개 전부 불법이 됐다 (실측 불법판정 89,000건)
-      # 내접 반경 0.48 m (footprint 앞변 거리) 안에 들어가면 실제 충돌 여부와 무관하게 제자리 회전까지 막혔다.
-      # 차체 실측 1.80 x 0.988 m 로 footprint(1.86 x 1.0) 여유가 전후 3cm/좌우 6mm 뿐이라 footprint 축소는 불가.
+      critics: ["RotateToGoal", "Oscillation", "BaseObstacle", "GoalAlign", "PathAlign", "PathDist", "GoalDist"]
+      BaseObstacle.scale: 0.5   # 사람 공간: 장애물에서 떨어지려는 성향 부여
       PathAlign.scale: 8.0   # 직선 구간 미세 조향 추가 완화 (32 -> 16 -> 8)
       PathAlign.forward_point_distance: 0.8   # 로봇 길이 1.86m 기준 (기존 0.1 은 1배 카터용)
-      GoalAlign.scale: 3.0   # 목표 0.09m 앞에서 GoalAlign 기여 8.1 이 RotateToGoal 0.8 을 압도해 좌우 반전 진동 유발 (측정). 최종 정렬은 RotateToGoal 담당
+      GoalAlign.scale: 12.0   # PathAlign(8.0) 과 균형
       GoalAlign.forward_point_distance: 0.8   # 〃
       PathDist.scale: 32.0
       GoalDist.scale: 24.0
       RotateToGoal.scale: 32.0
       RotateToGoal.slowing_factor: 5.0
       RotateToGoal.lookahead_time: -1.0
-        
+
+    # 도킹 구간(③) 전용 DWB. FollowPath 와 같은 critic/파라미터, 속도만 0.5 (도킹 정밀도 5 cm 확보)
+    FollowPathDock:
+      plugin: "dwb_core::DWBLocalPlanner"
+      debug_trajectory_details: True
+      min_vel_x: 0.0   # NavFn 은 후진 경로를 만들지 않음
+      min_vel_y: 0.0
+      max_vel_x: 0.5   # 도킹 구간 전용. 0.8 로 진입하면 제동 관성으로 목표를 5~6 cm 지나친다 (실측)
+      max_vel_y: 0.0
+      max_vel_theta: 0.9   # R=0.6 U턴에서 속도가 0.3 으로 떨어지지 않게 (0.5/0.6=0.83 필요). 직진 0.5 는 도킹 정밀도 때문에 유지
+      min_speed_xy: 0.0
+      max_speed_xy: 0.5
+      min_speed_theta: 0.0
+      acc_lim_x: 1.0   # 급출발 억제
+      acc_lim_y: 0.0
+      acc_lim_theta: 1.5
+      decel_lim_x: -1.5   # 감속은 상대적으로 강하게 (안전)
+      decel_lim_y: 0.0
+      decel_lim_theta: -3.5
+      vx_samples: 20
+      vy_samples: 5
+      vtheta_samples: 20
+      sim_time: 1.7
+      linear_granularity: 0.1
+      angular_granularity: 0.025
+      transform_tolerance: 0.2
+      # RotateToGoal 이 '제자리 회전 모드'로 바뀌는 창. goal checker 의 xy_goal_tolerance 보다 크면
+      # 그 창에 들어오자마자 전진을 멈춰서 checker 허용치까지 못 다가가므로 반드시 같거나 작게 둔다.
+      xy_goal_tolerance: 0.05
+      trans_stopped_velocity: 0.05   # 5cm/s 이하여야 최종 회전 시작 (사람 공간 주행 고려)
+      short_circuit_trajectory_evaluation: True
+      stateful: True
+      critics: ["RotateToGoal", "Oscillation", "BaseObstacle", "GoalAlign", "PathAlign", "PathDist", "GoalDist"]
+      BaseObstacle.scale: 0.5   # 사람 공간: 장애물에서 떨어지려는 성향 부여
+      PathAlign.scale: 8.0   # 직선 구간 미세 조향 추가 완화 (32 -> 16 -> 8)
+      PathAlign.forward_point_distance: 0.8   # 로봇 길이 1.86m 기준 (기존 0.1 은 1배 카터용)
+      GoalAlign.scale: 12.0   # PathAlign(8.0) 과 균형
+      GoalAlign.forward_point_distance: 0.8   # 〃
+      PathDist.scale: 32.0
+      GoalDist.scale: 24.0
+      RotateToGoal.scale: 32.0
+      RotateToGoal.slowing_factor: 5.0
+      RotateToGoal.lookahead_time: -1.0
+
+  # MPPI parameters (복도 전용). 정적/동적 장애물이 있을 때 경로 주변으로 부드럽게 우회했다가 돌아오게 한다.
+  # 경로는 복도 동쪽(x=8.0)에 치우쳐 그려서 서쪽 4 m 가 회피 공간이 된다.
+    FollowPathMPPI:
+      plugin: "nav2_mppi_controller::MPPIController"
+      # 예측 horizon = time_steps * model_dt. 고정 경로(FollowPath) 위의 장애물을 MPPI 혼자 비켜 가려면
+      # "옆으로 빠졌다가 지나가는" 궤적 전체가 horizon 안에 들어와야 한다. 2.8 s 로는 콘 앞 0.6 m 에서야 알아채고
+      # 제자리에 서 버렸다(실측) -> 4.5 s. 연산량이 비례해서 늘므로 controller 20 Hz 를 놓치면(로그 'missed its desired rate') 줄인다.
+      time_steps: 90
+      model_dt: 0.05          # 90 * 0.05 = 4.5 s 앞을 본다 (0.5 m/s 면 2.25 m)
+      batch_size: 1000
+      # ax/az 는 "샘플의 첫 제어값을 측정 속도 ± a*dt 로 묶는" 클램프다 (실제 로봇 가감속 제한이 아니다 —
+      # 그건 velocity_smoother 의 max_accel 0.5/1.0 이 한다).
+      #  - 1.0 으로 줄이면 샘플 1000개가 로봇 주변 0.2 m 에 뭉쳐 정지 (실측)
+      #  - 기본값 3.0 이면 첫 명령이 "측정 속도 ± 0.15" 안에 묶이는데, 우리 로봇은 smoother 가 0.5 m/s² 로 느리게
+      #    가속하고 Isaac odom 이 명령 속도를 그대로 되돌려 줘서 "명령 = 측정" 고정점이 생겨 0.14~0.3 어디든 멈춰 있었다
+      #    (실측: 최적 궤적은 0.48 m/s 인데 출력은 항상 odom 과 소수 셋째 자리까지 일치, critic 을 뭘 바꿔도 불변).
+      #  - 크게 풀어서 첫 제어값이 측정 속도가 아니라 최적화된 계획값을 따르게 한다. 가속은 smoother 가 제한한다.
+      ax_max: 30.0
+      ax_min: -30.0
+      ay_max: 0.0
+      ay_min: 0.0
+      az_max: 20.0
+      vx_std: 0.2
+      vy_std: 0.0
+      wz_std: 0.2             # 기본 0.4. 회전 노이즈가 크면 (1) 출력 wz 가 흔들려 좌우 1~2 cm 요동, (2) 빠른 샘플일수록
+                              # 옆으로 새서 PathAlign 벌점이 커져 속도가 0.2 m/s 근처에 묶인다 (실측 0.17)
+      vx_max: 0.8             # 복도 전용. 방 안(DWB) 은 0.5
+      vx_min: 0.0             # 후진 금지. 꼬리 1.38 m 가 라이다 사각에서 벽/사람에 닿는다
+      vy_max: 0.0
+      wz_max: 0.9
+      iteration_count: 1
+      prune_distance: 5.0     # critic 에 주는 경로 길이 (horizon 4.5 s * 0.8 = 3.6 m 보다 길게). horizon 거리보다 길어야 장애물 너머의 경로점이 보여 PathFollow 가 그쪽으로 당긴다
+      transform_tolerance: 0.2
+      temperature: 0.3
+      gamma: 0.015
+      motion_model: "DiffDrive"
+      visualize: true         # RViz 에서 후보 궤적 확인 (/trajectories)
+      regenerate_noises: true
+      TrajectoryVisualizer:
+        trajectory_step: 5
+        time_step: 3
+      critics: ["ConstraintCritic", "CostCritic", "GoalCritic", "GoalAngleCritic", "PathAlignCritic", "PathFollowCritic", "PathAngleCritic", "PreferForwardCritic"]
+      ConstraintCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 5.0
+        threshold_to_consider: 0.5
+      CostCritic:
+        # 장애물 회피의 핵심. 로봇이 길어 내접원(0.48) 대신 footprint 전체로 충돌 검사한다.
+        enabled: true
+        cost_power: 1
+        cost_weight: 3.81
+        critical_cost: 300.0
+        consider_footprint: true
+        collision_cost: 1000000.0
+        near_goal_distance: 1.0
+        trajectory_point_step: 2
+      PathAlignCritic:
+        # 경로 위 점의 5% 이상이 장애물에 가려지면 자동으로 꺼져서(max_path_occupancy_ratio) 우회를 허용한다.
+        # 가중치는 기본 14 -> 8. 이 critic 은 후보 궤적이 1 m(offset_from_furthest 20 포즈) 이상 뻗을 때만 켜져서
+        # 빠른 샘플에만 벌점을 주므로, PathFollow 보다 세면 속도 상한처럼 작용한다.
+        enabled: true
+        cost_power: 1
+        cost_weight: 8.0
+        max_path_occupancy_ratio: 0.05
+        trajectory_point_step: 4
+        threshold_to_consider: 0.5
+        offset_from_furthest: 20
+        use_path_orientations: false
+      PathFollowCritic:
+        # 전진 속도를 만드는 유일한 critic (궤적 끝이 경로 앞쪽 목표점에 가까울수록 보상). 기본 5 -> 8.
+        enabled: true
+        cost_power: 1
+        cost_weight: 8.0
+        offset_from_furthest: 12   # 권장치 = horizon 거리의 30% / 경로 간격 = 4.5*0.5/0.05/3 ≈ 15
+        threshold_to_consider: 1.4
+      PathAngleCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 2.0
+        offset_from_furthest: 4
+        threshold_to_consider: 0.5
+        max_angle_to_furthest: 1.0
+        mode: 0
+
 
 local_costmap:
   local_costmap:
@@ -255,8 +386,15 @@ local_costmap:
       transform_tolerance: 0.3
       footprint: "[ [0.48, 0.5], [0.48, -0.5], [-1.38, -0.5], [-1.38, 0.5] ]"
       mark_threshold: 2
-      always_send_full_costmap: False   # 240x240=57,600 셀 전체 대신 증분 발행. RViz 표시는 동일
-      plugins: ["static_map_layer", "front_3d_lidar_layer", "inflation_layer"]   # StaticLayer 가 뒤에 오면 updateWithTrueOverwrite 로 팽창을 통째로 덮어씀 (실측: 팽창 cost 0개)
+      always_send_full_costmap: True
+      # 순서가 곧 덮어쓰기 순서다 (static 먼저, inflation 마지막). 원본은 static 이 맨 뒤여서 라이다 마크가 전부 지워졌었다.
+      # 동적 장애물 레이어는 2D ObstacleLayer(/scan) 하나만 쓴다:
+      #  - 3D VoxelLayer(포인트클라우드) 는 레이캐스트가 3D 라, 라이다(0.9 m) 보다 높은 사람 상체 복셀(1.0~1.8 m) 을
+      #    지우려면 먼 벽으로 가는 광선이 그 칸을 정확히 지나야 해서 잘 안 지워진다 -> 사람이 지나간 자리에 잔상이 남아
+      #    MPPI 가 "Optimizer fail" / "Failed to make progress" 로 멈췄다 (실측 2회).
+      #  - /scan 은 pointcloud_to_laserscan 이 z 0.1~3.9 m 를 한 줄로 눌러 만든 LaserScan 이라 빔마다 맞은 점까지의 칸을
+      #    통째로 지운다 (높이 개념이 없어 잔상이 안 남는다). 글로벌 costmap 이 이 방식이고 사람이 깨끗하게 지워지는 걸 확인했다.
+      plugins: ["static_map_layer", "scan_layer", "inflation_layer"]
       static_map_layer:
         plugin: "nav2_costmap_2d::StaticLayer"
         map_subscribe_transient_local: True
@@ -265,37 +403,30 @@ local_costmap:
         plugin: "nav2_costmap_2d::InflationLayer"
         enabled: True
         cost_scaling_factor: 3.0   # 거리에 따라 빠르게 감쇠 (붉은 띠 좁아짐)
+        # 0.6 고정. 책상 옆 경로는 로봇 중심~책상 0.62 m 라, 반경을 0.62 보다 키우면 그 자리에 비용 165 + "책상에서 멀어질수록
+        # 낮아지는 기울기" 가 생겨 DWB(BaseObstacle) 가 로봇을 책상 반대쪽으로 민다 -> 출발 덜컹, 턴 이탈, 도킹 진행 실패 (실측 1.0 에서).
+        # 사람에게 줄 여유는 여기서가 아니라 글로벌 costmap(플래너 전용, 1.0) 의 우회 경로로 확보한다.
         inflation_radius: 0.6      # 내접 반경 0.48 + 여유 0.12
-        
-      # 주의: 아래 이름들은 nav2_costmap_2d::VoxelLayer 가 선언하는 이름과 정확히 일치해야 한다.
-      # ros2 param list /local_costmap/local_costmap 로 확인 가능. 이름이 틀리면 조용히 무시된다.
-      front_3d_lidar_layer:
-        plugin: "nav2_costmap_2d::VoxelLayer"
-        enabled: true
-        # voxel_decay / decay_model / filter / clear_after_reading / track_unknown_space 는
-        # SpatioTemporalVoxelLayer 파라미터라 이 플러그인에서는 선언되지 않는다 (무시됨). 제거함.
-        mark_threshold: 2            # 장애물로 칠 최소 복셀 수
+
+      scan_layer:
+        plugin: "nav2_costmap_2d::ObstacleLayer"
+        enabled: True
         footprint_clearing_enabled: true
-        combination_method: 1        # 1=max
-        origin_z: 0.0
-        z_resolution: 0.2            # 이전 voxel_size 는 오인식 이름이었음 (기본 0.2 가 적용 중이었다)
-        z_voxels: 10
-        publish_voxel_map: false   # 복셀 그리드 디버그 발행 제거
-        observation_sources: hesai_mark
-        hesai_mark:
-          data_type: PointCloud2
-          topic: /front_3d_lidar/lidar_points
-          marking: true
-          clearing: true             # false 였음. 마킹만 하고 해제를 안 해 롤링 윈도우에 누적됐다
-          obstacle_max_range: 6.0    # 이전 obstacle_range 는 오인식 이름이었음 (기본 2.5 가 적용 중이었다)
+        observation_sources: scan
+        scan:
+          topic: /scan                 # launch 의 pointcloud_to_laserscan (3D 라이다 -> 360deg LaserScan, z 0.1~3.9 m)
+          data_type: "LaserScan"
+          marking: True
+          clearing: True
+          obstacle_max_range: 6.0      # 6 m 앞부터 찍는다 (MPPI 가 감속/우회할 시간)
           obstacle_min_range: 0.0
-          raytrace_max_range: 6.0    # 해제 범위는 마킹 범위 이상이어야 마크가 지워진다
+          raytrace_max_range: 8.0      # 지우는 거리는 찍는 거리보다 커야 3~6 m 잔상이 안 남는다
           raytrace_min_range: 0.0
-          min_obstacle_height: -0.8
-          max_obstacle_height: 3.0
+          inf_is_valid: True           # 맞은 게 없는 빔(inf) 도 그 방향을 raytrace_max_range 까지 지운다
+          max_obstacle_height: 4.0
+          min_obstacle_height: 0.0
           expected_update_rate: 0.0
           observation_persistence: 0.0
-          inf_is_valid: false
 
 global_costmap:
   global_costmap:
@@ -334,8 +465,8 @@ global_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 3.0   # 0.15 는 감쇠가 거의 없어 맵 전체가 고비용이었다
-        inflation_radius: 0.6
-      always_send_full_costmap: False   # 1001x1001=100만 셀을 매초 직렬화하던 것을 증분으로. RViz 표시는 동일
+        inflation_radius: 1.0      # 플래너(우회 경로) 전용. 사람에서 1 m 떨어진 우회선이 나오게. 도킹은 로컬 costmap/DWB 라 무관
+      always_send_full_costmap: True
   global_costmap_client:
     ros__parameters:
       use_sim_time: True
@@ -352,7 +483,8 @@ collision_monitor:
     cmd_vel_out_topic: "cmd_vel"
     state_topic: "collision_monitor_state"
     transform_tolerance: 0.2
-    source_timeout: 1.0
+    # Isaac Sim 라이다(/scan ~4.5Hz)가 주기적으로 1.0~1.2초씩 끊긴다. 1.0 이면 그때마다 로봇을 세운다.
+    source_timeout: 2.5
     base_shift_correction: True
     stop_pub_timeout: 2.0
     # Polygons represent zone around the robot for "stop", "slowdown" and "limit" action types,
@@ -397,7 +529,7 @@ planner_server:
       # 차동구동이라 제자리 회전이 가능한데, Smac Hybrid 는 곡률 제약(최소 회전반경) 때문에
       # 항상 큰 호로 돌고 가까운 목표에서 고리를 그리다 실패했다 -> 격자 A* 인 NavFn 으로 복귀.
       plugin: "nav2_navfn_planner::NavfnPlanner"
-      tolerance: 0.10   # goal checker 의 xy_goal_tolerance(0.10) 와 일치. 0.25 면 NavFn 이 목표에서 25cm 못 미쳐 끝내도 되는데 성공 판정은 10cm 라 영원히 도달 불가
+      tolerance: 0.25
       use_astar: false
       allow_unknown: true
 
@@ -434,9 +566,9 @@ behavior_server:
     robot_base_frame: base_link
     transform_tolerance: 0.2
     simulate_ahead_time: 2.0
-    max_rotational_vel: 0.5   # 주행 max_vel_theta 와 일치 (복구가 더 거칠면 안 됨)
+    max_rotational_vel: 0.9   # 주행 max_vel_theta 와 일치 (복구가 더 거칠면 안 됨)
     min_rotational_vel: 0.2
-    rotational_acc_lim: 1.0   # 주행 acc_lim_theta 와 일치
+    rotational_acc_lim: 1.5   # 주행 acc_lim_theta 와 일치
 
 robot_state_publisher:
   ros__parameters:
@@ -452,4 +584,3 @@ waypoint_follower:
       plugin: "nav2_waypoint_follower::WaitAtWaypoint"
       enabled: True
       waypoint_pause_duration: 200
-

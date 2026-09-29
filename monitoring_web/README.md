@@ -1,37 +1,34 @@
 # 검체 이송 로봇 관제 웹
 
-`robotdb3_sql` Docker 컨테이너의 PostgreSQL 정보를 조회해 localhost에서 보여주는 관제 대시보드입니다.
+`feature/HJ` 의 관제 대시보드를 통합 시스템(DB v5 + 관제 구역 예약)에 맞춘 것. 파이썬 표준 라이브러리만 쓰고
+DB 드라이버 없이 Docker 컨테이너 안의 `psql` / `redis-cli` 로 조회한다.
 
 ## 실행
 
-작업공간 루트에서 다음 명령을 실행합니다.
+작업공간 루트에서 (차선 구역을 그리려면 ROS 워크스페이스를 source 한 셸에서):
 
 ```bash
-python3 monitoring_web/server.py
+source /opt/ros/jazzy/setup.bash && source install/setup.bash
+python3 monitoring_web/server.py            # --host 0.0.0.0 으로 다른 PC 에서도 접속
 ```
 
-브라우저에서 <http://127.0.0.1:8080>으로 접속합니다.
+브라우저에서 <http://127.0.0.1:8080>.
 
-실시간 이동을 확인하려면 별도 터미널에서 더미 위치 생성기를 실행합니다.
+## 보여 주는 것
 
-```bash
-python3 monitoring_web/simulate_realtime.py
-```
+| 화면 | 출처 |
+|---|---|
+| 로봇 위치·방향·단계·작업 번호, 통신(heartbeat) | Redis `robot:{id}:state`, `robot:{id}:heartbeat` (없으면 PostgreSQL `robot_state_history` 최신 행) |
+| 지도 위 차선 구역, 충돌 구역(두 문, 주황 점선) | `hospital_system.lane_graph` (로봇이 따르는 같은 기하) |
+| 로봇별 예약 구역(굵은 색 선), 지금 구간 경로(가는 선) | Redis `fleet:zones`, `robot:{id}:route` (`fleet_manager` 가 기록) |
+| 이송 작업(트레이 수·칸·긴급도), 상태 로그, 로봇 이벤트, 트레이 | PostgreSQL `transport_task`, `tray`, `task_status_log`, `robot_event_log` |
 
-생성기는 1.5초마다 로봇 3대의 새 위치 이력을 기록합니다. `Ctrl+C`로 종료할 수 있으며,
-데이터가 무한히 증가하지 않도록 기본적으로 로봇당 최근 120개 이력만 유지합니다.
+- 긴급도는 **3 = 긴급**, 2 = 우선, 1 = 일반 (랙 ArUco 판독, 미검출 = 1).
+- 지도는 Nav2 가 쓰는 `hospital_integration_human.yaml` — 원점·해상도·크기를 YAML/PNG 에서 읽는다.
+- 브라우저는 `/api/stream`(Server-Sent Events, 1 s)으로 바뀐 내용만 받는다. `/api/dashboard`, `/api/lanes`, `/api/health`.
 
-기본 연결 대상은 다음과 같습니다.
+환경 변수: `ROBOT_DB_CONTAINER`, `ROBOT_DB_NAME`, `ROBOT_DB_USER`, `ROBOT_REDIS_CONTAINER`, `ROBOT_REDIS_USER`,
+`ROBOT_REDIS_PASSWORD`, `ROBOT_MAP_YAML`.
 
-- Docker 컨테이너: `robotdb3_sql`
-- 데이터베이스: `robotdb3_sql`
-- 사용자: `rokey`
-- 지도: `src/nova_carter/carter_navigation/maps/integration_hospital.png`
-
-필요하면 환경 변수 `ROBOT_DB_CONTAINER`, `ROBOT_DB_NAME`, `ROBOT_DB_USER`, `ROBOT_MAP_PATH`로 변경할 수 있습니다.
-
-## 실시간 갱신
-
-브라우저는 `/api/stream`의 Server-Sent Events 스트림에 연결됩니다. 서버는 DB 스냅샷을 약 1.5초마다 확인하고 변경된 내용을 즉시 전송합니다. 연결이 끊기면 브라우저가 자동으로 재연결합니다.
-
-지도 좌표는 ROS 맵 YAML의 해상도 `0.05 m/px`와 원점 `[-49.975, -9.475]`를 사용해 `robot_state_history`의 최신 `(x, y)` 값을 픽셀 위치로 변환합니다.
+`feature/HJ` 의 `simulate_realtime.py` 와 `seed_robotdb3_demo.sql` 은 옛 스키마(`specimen`, 한글 상태) 기준이고
+시드 SQL 은 전 테이블을 TRUNCATE 하므로 가져오지 않았다. 움직이는 화면은 실제 시스템(또는 `robot_agent` 가짜 팔/주행 시험)으로 본다.

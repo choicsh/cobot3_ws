@@ -237,7 +237,7 @@ main { padding: 20px 28px 30px; }
   position: relative;
   margin: 12px 14px 0;
   overflow: hidden;
-  aspect-ratio: 1510 / 660;
+  aspect-ratio: 1480 / 635;   /* app.js 가 지도 YAML 크기로 다시 맞춘다 */
   background: #080c0e;
   border: 1px solid #36434a;
   border-radius: 4px;
@@ -268,6 +268,29 @@ main { padding: 20px 28px 30px; }
 }
 
 .map-overlay { position: absolute; inset: 0; z-index: 2; }
+
+/* 차선 구역(lane_graph) · 예약(fleet:zones) · 구간 경로(robot:{id}:route) — 지도 픽셀 좌표 SVG */
+.lane-layer { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.lane-layer polyline { fill: none; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
+.lane-layer .lane { stroke: #3b4a52; stroke-width: 2px; }
+.lane-layer .lane.shared { stroke: var(--amber); stroke-dasharray: 4 3; stroke-width: 2px; }
+.lane-layer .route { stroke: var(--zone); stroke-width: 1px; opacity: 0.45; }
+.lane-layer .zone-held { stroke: var(--zone); stroke-width: 5px; opacity: 0.85; }
+.zone-label i.zone-shared { background: var(--amber); }
+.robot-marker .marker-heading {
+  position: absolute;
+  inset: -7px;
+  pointer-events: none;
+}
+.robot-marker .marker-heading::after {
+  content: "";
+  position: absolute;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  border: 5px solid transparent;
+  border-left: 7px solid var(--marker);
+}
 
 .map-loading {
   position: absolute;
@@ -462,7 +485,15 @@ main { padding: 20px 28px 30px; }
 .status-chip[data-status="대기"],
 .status-chip[data-status="인계완료"] { color: #91c9ac; background: #1b3027; }
 .status-chip[data-status="취소"],
-.status-chip[data-status="실패"] { color: #e298a1; background: #362329; }
+.status-chip[data-status="실패"],
+.status-chip[data-status="오류"],
+.status-chip[data-status="통신 끊김"] { color: #e298a1; background: #362329; }
+.status-chip[data-status="복귀"],
+.status-chip[data-status="적재"],
+.status-chip[data-status="하역"],
+.status-chip[data-status="도착"] { color: #8ed0d9; background: #173036; }
+.status-chip[data-status="채취실 도킹"],
+.status-chip[data-status="분석실 도킹"] { color: #dbbd7c; background: #33291a; }
 
 .robot-task {
   margin: 10px 0 9px;
@@ -542,8 +573,8 @@ tbody tr:hover td { background: #151e23; }
 .cell-sub { display: block; margin-top: 3px; color: #66747b; font-size: 9px; }
 .priority { display: inline-flex; align-items: center; gap: 5px; font-weight: 650; }
 .priority::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: #718087; }
-.priority.p1 { color: #e5959e; }
-.priority.p1::before { background: var(--red); }
+.priority.p3 { color: #e5959e; }
+.priority.p3::before { background: var(--red); }
 .priority.p2 { color: #dbbd7c; }
 .priority.p2::before { background: var(--amber); }
 .task-route { gap: 5px; white-space: nowrap; }
