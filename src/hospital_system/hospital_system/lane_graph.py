@@ -7,7 +7,7 @@
     방 간선(한 방향): collection_out / collection_in / analysis_out / analysis_in / *_dock_in.
     복도 간선(양방향): upper, upper_reserve, lower, lower_reserve — 방향마다 간선 하나("upper>E", "upper>W")지만
     구역은 물리적으로 하나다(phys id "upper:k"). 같은 복도에 반대 방향 로봇이 동시에 있을 수 없다(방향 잠금).
-    routes() 가 가능한 경로를 짧은 순으로, choose_route() 가 긴급도 순으로 복도를 배정한다.
+    routes() 가 가능한 경로를 짧은 순으로, choose_route() 가 빈 복도 우선·긴급도 순으로 복도를 배정한다.
 구역
     간선을 ZONE_M 이하 길이로 고르게 나눈다 (도킹 직선 2.5 m 는 1구역).
     서로 다른 차선의 구역끼리 중심선이 CONFLICT_M 안으로 가까우면 '충돌' — 동시에 한 로봇만.
@@ -16,7 +16,7 @@
     1. 로봇 차체(뒤 1.38 m, 앞 0.48 m + 여유)가 걸친 구역은 그 로봇 것, 뒤로 벗어난 구역은 푼다.
     2. 우선순위 순서로 앞 구역을 LOOKAHEAD_M 까지 늘린다. 한 구역은
        - 다른 로봇이 잡고 있지 않고, 충돌 구역도 다른 로봇이 잡고 있지 않고,
-       - 그 다음 구역도 다른 로봇 것이 아니어야(차간 1구역) 준다.
+       - 그 다음 구역도 다른 로봇 것이 아니어야(차간 1구역) 준다. 도착 도킹 구역의 '다음'은 나가는 간선 첫 구역.
        충돌 구역 연속 구간은 빠져나간 다음 구역까지 한꺼번에 주거나 안 준다 — 문 안에서 서지 않는다.
     3. 정지점 = 받은 마지막 구역 끝 - (앞 길이 + 여유). 목적지 도킹 구역까지 받았으면 정지점 없음.
     이미 준 구역은 뺏지 않는다(교착 방지 규칙이 우선순위보다 앞선다).
@@ -158,6 +158,14 @@ class LaneGraph:
         """간선 a 끝에서 b 로 방향이 이어진다 (분기점에서 되돌아가는 연결은 경로가 아니다)"""
         ya, yb = self.edges[a].points[-1][2], self.edges[b].points[0][2]
         return abs(math.atan2(math.sin(ya - yb), math.cos(ya - yb))) < math.radians(30)
+
+    def continuation(self, zid):
+        """간선 마지막 구역 zid 다음에 곧게 이어지는 간선의 첫 구역 (없으면 None) — 도킹 구역 -> *_out:0"""
+        e = self.edges[self.zones[zid].edge]
+        if self.edge_zones[e.name][-1] != zid:
+            return None
+        nxt = [n for n in self.edges.values() if n.start == e.end and self._continues(e.name, n.name)]
+        return self.edge_zones[nxt[0].name][0] if nxt else None
 
     def _path_distance(self, a, b, limit):
         """구역 a 끝에서 b 시작까지 간선을 따라간 거리(<= limit 일 때만, 아니면 inf). 같은 간선이면 s 차이."""
@@ -399,6 +407,8 @@ class Reservations:
                     run.append(run[-1] + 1)      # 충돌 구간은 빠져나간 첫 구역까지
                 ids = [offs[k][0] for k in run]
                 after = offs[run[-1] + 1][0] if run[-1] + 1 < len(offs) else None
+                if after is None:   # 도착 도킹: 도킹 자세의 앞 차체가 나가는 간선 첫 구역으로 튀어나온다
+                    after = self.g.continuation(ids[-1])
                 if all(self._free_for(z, r.name, claims) for z in ids) and (
                         after is None or self.owner.get(self.g.phys(after)) in (None, r.name)):
                     for z in ids:
@@ -420,21 +430,27 @@ class Reservations:
 
 
 def choose_route(graph, res, name, leg, score):
-    """구간(leg: to_analysis / to_collection)의 경로 — 짧은 순으로, 복도가 반대 방향으로 잡혀 있지 않은 것.
+    """구간(leg: to_analysis / to_collection)의 경로 — 짧은 순으로, 되도록 아무도 잡지 않은 복도.
 
-    반대 방향으로 잡은 로봇이 모두 이 로봇보다 긴급도가 낮고 아직 그 복도에 안 들어갔으면 그 경로를 가져간다
-    (반환의 두 번째 = 경로를 다시 골라 줘야 할 로봇들). 같은 방향 뒤따르기는 된다.
+    1차: 빈 복도. 잡은 로봇이 모두 반대 방향이고 이 로봇보다 긴급도가 낮고 아직 그 복도에 안 들어갔으면
+    그 복도를 가져간다(반환의 두 번째 = 경로를 다시 골라 줘야 할 로봇들). 2차: 빈 복도가 없을 때만
+    같은 방향 뒤따르기 — 앞차가 서면 뒤차도 줄줄이 서니 조금 멀어도 빈 복도가 낫다.
     반환: (간선 목록, 양보할 로봇 목록)"""
     start, end = LEG_NODES[leg]
     options = graph.routes(start, end)
     claims = res.track_claims(exclude=name)
     for _, edges in options:
         track, direction = graph.track_of(edges)
-        against = [r for r, d in claims.get(track, {}).items() if d != direction]
-        if not against:
+        held = claims.get(track, {})
+        if not held:
             return edges, []
-        if all(tuple(res.robots[r].score) < tuple(score) and not res.entered(r, track) for r in against):
-            return edges, against
+        if all(d != direction and tuple(res.robots[r].score) < tuple(score) and not res.entered(r, track)
+               for r, d in held.items()):
+            return edges, list(held)
+    for _, edges in options:
+        track, direction = graph.track_of(edges)
+        if all(d == direction for d in claims.get(track, {}).values()):
+            return edges, []
     return options[0][1], []      # 모든 복도가 막혔다 (로봇 3대면 생기지 않는다) — 가장 짧은 길 입구에서 기다린다
 
 

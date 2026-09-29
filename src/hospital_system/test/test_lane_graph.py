@@ -163,14 +163,20 @@ def test_loaded_robot_takes_the_east_junction_first(graph):
     assert stop is not None and stop < empty.s + 3.0
 
 
-def test_opposite_robot_gets_the_reserve_track_and_same_direction_follows(graph):
+def test_opposite_robot_gets_the_reserve_track_and_same_direction_takes_a_free_one(graph):
     res = Reservations(graph)
     a = assign_route(graph, res, "a", "to_analysis", score([1, 1, 1]))["a"]
     assert graph.track_of(a) == ("upper", "W")
     b = assign_route(graph, res, "b", "to_collection", (0, 0, 0))["b"]
     assert graph.track_of(b) == ("upper_reserve", "E")           # 반대 방향 -> 예비선
     c = assign_route(graph, res, "c", "to_analysis", (0, 0, 0))["c"]
-    assert graph.track_of(c) == ("upper", "W")                   # 같은 방향 -> 본선 뒤따르기
+    assert graph.track_of(c) == ("lower", "W")                   # 같은 방향도 뒤따르지 않고 빈 복도
+
+
+def test_same_direction_follows_only_when_no_track_is_free(graph):
+    res = Reservations(graph)
+    tracks = [graph.track_of(assign_route(graph, res, n, "to_analysis", (0, 0, 0))[n])[0] for n in "abcde"]
+    assert tracks == ["upper", "upper_reserve", "lower", "lower_reserve", "upper"]
 
 
 def test_urgent_robot_takes_the_short_track_from_a_waiting_low_robot(graph):
