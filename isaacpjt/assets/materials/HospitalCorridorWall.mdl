@@ -1,0 +1,151 @@
+mdl 1.6;
+
+// 병원 벽 머티리얼: 지오메트리를 추가하지 않고 월드 좌표로 손잡이/걸레받이/문틀을 "그림"으로 그린다.
+//  - 손잡이/걸레받이: 복도 쪽 면에만
+//      * hall_dir 방식: hall_dir 방향을 바라보는 옆면 (복도 경계벽용)
+//      * block 방식:   block_min/max 사각형(방 블록)의 바깥 면 중 block_sides 로 고른 면 (가운데 방 블록용)
+//  - 문틀: door0~5 상자(개구부) 둘레 frame_width 폭. 벽 양면과 개구부 안쪽(문설주) 면에 모두 칠해진다.
+//    개구부를 좁히지 않도록 기존 벽 면 위에만 칠한다. 손잡이/걸레받이는 문틀 앞에서 끊긴다.
+//  - 손잡이는 셰이딩 노멀을 기울이고 아래 벽에 그림자를 칠해 입체감을 낸다 (메시/텍스처 없음)
+
+import ::df::*;
+import ::state::*;
+import ::math::*;
+import ::anno::*;
+
+float smooth_band(float z, float lo, float hi, float soft)
+{
+    return math::smoothstep(lo - soft, lo + soft, z) * (1.0 - math::smoothstep(hi - soft, hi + soft, z));
+}
+
+float inside_range(float v, float lo, float hi, float soft)
+{
+    return math::smoothstep(lo - soft, lo + soft, v) * (1.0 - math::smoothstep(hi - soft, hi + soft, v));
+}
+
+// 문 상자를 가로(x,y)로 w, 위로 w 만큼 넓힌 영역 안이면 1. bmin.x > bmax.x 이면 비활성.
+float frame_zone(float3 p, float3 bmin, float3 bmax, float w, float soft)
+{
+    if (bmin.x > bmax.x)
+        return 0.0;
+    return inside_range(p.x, bmin.x - w, bmax.x + w, soft)
+         * inside_range(p.y, bmin.y - w, bmax.y + w, soft)
+         * (1.0 - math::smoothstep(bmax.z + w - soft, bmax.z + w + soft, p.z));
+}
+
+// 문틀 바깥 가장자리까지의 거리 (그림자 선용)
+float frame_edge(float3 p, float3 bmin, float3 bmax, float w)
+{
+    if (bmin.x > bmax.x)
+        return 1.0;
+    float dx = math::min(p.x - (bmin.x - w), (bmax.x + w) - p.x);
+    float dy = math::min(p.y - (bmin.y - w), (bmax.y + w) - p.y);
+    float dz = (bmax.z + w) - p.z;
+    return math::min(math::min(dx, dy), dz);
+}
+
+float block_outer(float3 p, float3 n, float2 bmin, float2 bmax, float4 sides, float tol)
+{
+    float px = sides.x * math::smoothstep(0.6, 0.8, n.x) * (p.x > bmax.x - tol ? 1.0 : 0.0);
+    float nx = sides.y * math::smoothstep(0.6, 0.8, -n.x) * (p.x < bmin.x + tol ? 1.0 : 0.0);
+    float py = sides.z * math::smoothstep(0.6, 0.8, n.y) * (p.y > bmax.y - tol ? 1.0 : 0.0);
+    float ny = sides.w * math::smoothstep(0.6, 0.8, -n.y) * (p.y < bmin.y + tol ? 1.0 : 0.0);
+    return math::max(math::max(px, nx), math::max(py, ny));
+}
+
+// 단색 재질 (걸레받이/문틀 지오메트리 색 통일용). 같은 모듈이라 경로 해석이 벽 재질과 동일하다.
+export material HospitalSolid(
+    color base_color = color(0.5),
+    float roughness = 0.45
+)
+= material(
+    surface: material_surface(scattering: df::fresnel_layer(
+        ior: 1.5,
+        layer: df::simple_glossy_bsdf(roughness_u: roughness * roughness, tint: color(1.0), mode: df::scatter_reflect),
+        base: df::diffuse_reflection_bsdf(tint: base_color)))
+);
+
+export material HospitalCorridorWall(
+    color wall_color = color(0.85, 0.85, 0.82),
+    float wall_roughness = 0.75,
+    float3 hall_dir = float3(0.0, -1.0, 0.0)
+        [[ anno::description("복도 쪽을 향하는 월드 방향. 이 방향을 보는 면에 손잡이/걸레받이. (0,0,0) 이면 사용 안 함") ]],
+    bool use_block = false,
+    float2 block_min = float2(0.0),
+    float2 block_max = float2(0.0),
+    float4 block_sides = float4(1.0) [[ anno::description("블록 바깥 면 선택 (+x, -x, +y, -y)") ]],
+    float block_tol = 0.05,
+    float rail_bottom = 0.81,
+    float rail_top = 1.00,
+    color rail_color = color(0.3125, 0.2715, 0.2145),
+    float rail_roughness = 0.35,
+    float rail_bulge = 0.9 [[ anno::description("둥근 손잡이 느낌의 노멀 기울기 (0 = 평면)") ]],
+    float shadow_depth = 0.07 [[ anno::description("손잡이 아래 벽에 칠하는 그림자 폭 [m]") ]],
+    float shadow_strength = 0.35,
+    float base_height = 0.12 [[ anno::description("걸레받이 높이 [m], 0 이면 없음") ]],
+    color base_color = color(0.17, 0.19, 0.22),
+    float base_roughness = 0.45,
+    color frame_color = color(0.10, 0.11, 0.12),
+    float frame_width = 0.08,
+    float frame_roughness = 0.4,
+    float3 door0_min = float3(1.0), float3 door0_max = float3(0.0),
+    float3 door1_min = float3(1.0), float3 door1_max = float3(0.0),
+    float3 door2_min = float3(1.0), float3 door2_max = float3(0.0),
+    float3 door3_min = float3(1.0), float3 door3_max = float3(0.0),
+    float3 door4_min = float3(1.0), float3 door4_max = float3(0.0),
+    float3 door5_min = float3(1.0), float3 door5_max = float3(0.0)
+)
+= let {
+    float3 pw = state::transform_point(state::coordinate_internal, state::coordinate_world, state::position())
+                * state::meters_per_scene_unit();
+    float3 nw = math::normalize(state::transform_normal(state::coordinate_internal, state::coordinate_world, state::normal()));
+    float z = pw.z;
+
+    // 손잡이/걸레받이를 그릴 면
+    float hl = math::length(hall_dir);
+    float facing_dir = hl > 0.5 ? math::smoothstep(0.6, 0.8, math::dot(nw, hall_dir / hl)) : 0.0;
+    float facing_blk = use_block ? block_outer(pw, nw, block_min, block_max, block_sides, block_tol) : 0.0;
+    float facing = math::max(facing_dir, facing_blk);
+
+    // 문틀
+    float fw = frame_width;
+    float frame = math::max(math::max(math::max(frame_zone(pw, door0_min, door0_max, fw, 0.002),
+                                                frame_zone(pw, door1_min, door1_max, fw, 0.002)),
+                                      math::max(frame_zone(pw, door2_min, door2_max, fw, 0.002),
+                                                frame_zone(pw, door3_min, door3_max, fw, 0.002))),
+                           math::max(frame_zone(pw, door4_min, door4_max, fw, 0.002),
+                                     frame_zone(pw, door5_min, door5_max, fw, 0.002)));
+    float edge = math::min(math::min(math::min(frame_edge(pw, door0_min, door0_max, fw), frame_edge(pw, door1_min, door1_max, fw)),
+                                     math::min(frame_edge(pw, door2_min, door2_max, fw), frame_edge(pw, door3_min, door3_max, fw))),
+                           math::min(frame_edge(pw, door4_min, door4_max, fw), frame_edge(pw, door5_min, door5_max, fw)));
+    // 문틀 바깥 가장자리 그림자 선 + 문틀 바로 바깥 벽에 옅은 그림자 (튀어나온 느낌)
+    float frame_line = frame * (1.0 - math::smoothstep(0.0, 0.012, edge));
+    float frame_cast = (1.0 - frame) * (1.0 - math::smoothstep(0.0, 0.03, -edge)) * (edge < 0.0 && edge > -0.05 ? 1.0 : 0.0);
+
+    float rail = smooth_band(z, rail_bottom, rail_top, 0.004) * facing * (1.0 - frame);
+    float base = (base_height > 0.0 ? (1.0 - math::smoothstep(base_height - 0.004, base_height + 0.004, z)) : 0.0)
+                 * facing * (1.0 - frame);
+    float sh_t = math::clamp((rail_bottom - z) / shadow_depth, 0.0, 1.0);
+    float shadow = (z < rail_bottom ? (1.0 - sh_t) * (1.0 - sh_t) : 0.0) * shadow_strength * facing * (1.0 - rail) * (1.0 - frame);
+    float t = math::clamp((z - rail_bottom) / (rail_top - rail_bottom), 0.0, 1.0);
+    float rail_shade = 0.78 + 0.32 * math::sin(t * 3.14159);
+    float base_lip = smooth_band(z, base_height - 0.012, base_height, 0.002) * (base_height > 0.0 ? 1.0 : 0.0);
+
+    float3 wall_c = float3(wall_color) * (1.0 - shadow) * (1.0 - 0.25 * frame_cast);
+    float3 rail_c = float3(rail_color) * rail_shade;
+    float3 base_c = float3(base_color) * (1.0 + 0.35 * base_lip);
+    float3 frame_c = float3(frame_color) * (1.0 - 0.45 * frame_line);
+    float3 albedo = math::lerp(math::lerp(math::lerp(wall_c, base_c, base), rail_c, rail), frame_c, frame);
+    float rough = math::lerp(math::lerp(math::lerp(wall_roughness, base_roughness, base), rail_roughness, rail), frame_roughness, frame);
+
+    float ang = (t - 0.5) * 3.14159 * 0.5 * rail_bulge;
+    float3 n_rail = math::normalize(nw * math::cos(ang) + float3(0.0, 0.0, 1.0) * math::sin(ang));
+    float3 n_w = math::normalize(math::lerp(nw, n_rail, rail));
+    float3 n_int = math::normalize(state::transform_normal(state::coordinate_world, state::coordinate_internal, n_w));
+
+    bsdf diffuse = df::diffuse_reflection_bsdf(tint: color(albedo));
+    bsdf gloss = df::simple_glossy_bsdf(roughness_u: rough * rough, tint: color(1.0), mode: df::scatter_reflect);
+} in material(
+    surface: material_surface(scattering: df::fresnel_layer(ior: 1.5, layer: gloss, base: diffuse)),
+    geometry: material_geometry(normal: n_int)
+);
