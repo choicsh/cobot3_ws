@@ -80,6 +80,7 @@ simulation_app.update()
 # GoTo 명령에는 속도 인자가 없으므로 캐릭터별 Walk blend 값을 제한한다.
 # Walk blend 상한이다. 실제 m/s 및 기존 대비 속도 비율은 audit으로 측정한다.
 from omni.anim.people.scripts.commands.base_command import Command
+from hospital_people_commands import unstick_goto
 
 _original_people_walk = Command.walk
 
@@ -91,6 +92,7 @@ def _slow_people_walk(command, delta_time):
             "Walk",
             min(command.actual_walk_speed, PEOPLE_WALK_SPEED_SCALE),
         )
+    unstick_goto(command, delta_time)
     return result
 
 

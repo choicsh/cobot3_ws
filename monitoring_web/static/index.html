@@ -59,98 +59,101 @@
           </article>
         </section>
 
-        <section class="primary-grid">
-          <article class="panel map-panel">
-            <div class="panel-header">
-              <div>
-                <p class="panel-kicker">1층 · 실시간 위치 · 차선 구역 예약</p>
-                <h2>로봇 실시간 위치</h2>
-              </div>
-              <div class="map-tools">
-                <span class="live-badge"><i></i> 실시간</span>
-                <button class="icon-button" id="zoomOut" aria-label="축소">−</button>
-                <button class="icon-button" id="zoomReset" aria-label="배율 초기화">1:1</button>
-                <button class="icon-button" id="zoomIn" aria-label="확대">＋</button>
-              </div>
+        <article class="panel map-panel">
+          <div class="panel-header">
+            <div>
+              <p class="panel-kicker">1층 · 실시간 위치 · 차선 구역 예약</p>
+              <h2>로봇 실시간 위치</h2>
             </div>
-            <div class="map-viewport" id="mapViewport">
-              <div class="map-stage" id="mapStage">
-                <img src="/assets/map.png" alt="검체 이송 구역 지도" draggable="false" />
-                <div class="map-overlay" id="mapOverlay"></div>
-              </div>
-              <div class="map-loading" id="mapLoading">
-                <span class="loader"></span>
-                <p>위치 데이터를 불러오는 중입니다</p>
-              </div>
-              <div class="map-scale"><span></span> 5 m</div>
+            <div class="map-tools">
+              <span class="live-badge"><i></i> 실시간</span>
+              <button class="icon-button" id="zoomOut" aria-label="축소">−</button>
+              <button class="icon-button" id="zoomReset" aria-label="배율 초기화">1:1</button>
+              <button class="icon-button" id="zoomIn" aria-label="확대">＋</button>
             </div>
-            <div class="map-footer">
-              <div class="zone-label"><i class="zone-a"></i><span>검체 채취실 (동)</span></div>
-              <div class="route-line" aria-hidden="true"><span></span></div>
-              <div class="zone-label"><i class="zone-b"></i><span>검체 분석실 (서)</span></div>
-              <div class="zone-label"><i class="zone-shared"></i><span>충돌 구역(문)</span></div>
-              <p id="mapUpdated">위치 갱신 대기 중</p>
+          </div>
+          <div class="map-viewport" id="mapViewport">
+            <div class="map-stage" id="mapStage">
+              <img src="/assets/map.png" alt="검체 이송 구역 지도" draggable="false" />
+              <div class="map-overlay" id="mapOverlay"></div>
             </div>
-          </article>
+            <div class="map-loading" id="mapLoading">
+              <span class="loader"></span>
+              <p>위치 데이터를 불러오는 중입니다</p>
+            </div>
+            <div class="map-scale"><span></span> 5 m</div>
+          </div>
+          <div class="map-footer">
+            <div class="zone-label"><i class="zone-a"></i><span>검체 채취실 (동)</span></div>
+            <div class="route-line" aria-hidden="true"><span></span></div>
+            <div class="zone-label"><i class="zone-b"></i><span>검체 분석실 (서)</span></div>
+            <div class="zone-label"><i class="zone-shared"></i><span>충돌 구역(문)</span></div>
+            <p id="mapUpdated">위치 갱신 대기 중</p>
+          </div>
+        </article>
 
-          <aside class="panel fleet-panel">
-            <div class="panel-header">
-              <div>
-                <p class="panel-kicker">장비 운영 현황</p>
-                <h2>로봇 상태</h2>
-              </div>
-              <span class="count-pill" id="robotCount">0대</span>
-            </div>
-            <div class="fleet-list" id="fleetList">
-              <div class="skeleton-card"></div>
-              <div class="skeleton-card"></div>
-              <div class="skeleton-card"></div>
-            </div>
-          </aside>
-        </section>
+        <nav class="dock-tabs" aria-label="상세 패널">
+          <button class="dock-tab" data-dock="fleetPanel" aria-expanded="false">로봇 상태</button>
+          <button class="dock-tab" data-dock="tasksPanel" aria-expanded="false">이송 작업</button>
+          <button class="dock-tab" data-dock="activityPanel" aria-expanded="false">최근 이벤트</button>
+          <button class="dock-tab" data-dock="trayPanel" aria-expanded="false">트레이 현황</button>
+        </nav>
 
-        <section class="data-grid">
-          <article class="panel tasks-panel">
-            <div class="panel-header">
-              <div>
-                <p class="panel-kicker">검체 이송 목록</p>
-                <h2>이송 작업 현황</h2>
-              </div>
-              <div class="segmented" role="group" aria-label="작업 필터">
-                <button class="segment active" data-task-filter="all">전체</button>
-                <button class="segment" data-task-filter="active">진행</button>
-                <button class="segment" data-task-filter="done">종료</button>
-              </div>
+        <aside class="panel fleet-panel" id="fleetPanel" hidden>
+          <div class="panel-header">
+            <div>
+              <p class="panel-kicker">장비 운영 현황</p>
+              <h2>로봇 상태</h2>
             </div>
-            <div class="table-scroll">
-              <table>
-                <thead><tr><th>작업</th><th>트레이</th><th>긴급도</th><th>담당 로봇</th><th>이송 경로</th><th>상태</th></tr></thead>
-                <tbody id="taskTableBody"><tr><td colspan="6"><div class="table-loading">작업 데이터를 불러오는 중입니다</div></td></tr></tbody>
-              </table>
-            </div>
-          </article>
+            <span class="count-pill" id="robotCount">0대</span>
+          </div>
+          <div class="fleet-list" id="fleetList">
+            <div class="skeleton-card"></div>
+            <div class="skeleton-card"></div>
+            <div class="skeleton-card"></div>
+          </div>
+        </aside>
 
-          <article class="panel activity-panel">
-            <div class="panel-header">
-              <div>
-                <p class="panel-kicker">실시간 기록</p>
-                <h2>최근 이벤트</h2>
-              </div>
-              <div class="activity-controls">
-                <div class="segmented" role="group" aria-label="이벤트 유형">
-                  <button class="segment active" data-activity-view="events">로봇</button>
-                  <button class="segment" data-activity-view="logs">작업 로그</button>
-                </div>
-                <span class="count-pill" id="eventCount">0건</span>
-              </div>
+        <article class="panel tasks-panel" id="tasksPanel" hidden>
+          <div class="panel-header">
+            <div>
+              <p class="panel-kicker">검체 이송 목록</p>
+              <h2>이송 작업 현황</h2>
             </div>
-            <div class="timeline" id="eventTimeline">
-              <div class="table-loading">이벤트를 불러오는 중입니다</div>
+            <div class="segmented" role="group" aria-label="작업 필터">
+              <button class="segment active" data-task-filter="all">전체</button>
+              <button class="segment" data-task-filter="active">진행</button>
+              <button class="segment" data-task-filter="done">종료</button>
             </div>
-          </article>
-        </section>
+          </div>
+          <div class="table-scroll">
+            <table>
+              <thead><tr><th>작업</th><th>트레이</th><th>긴급도</th><th>담당 로봇</th><th>이송 경로</th><th>상태</th></tr></thead>
+              <tbody id="taskTableBody"><tr><td colspan="6"><div class="table-loading">작업 데이터를 불러오는 중입니다</div></td></tr></tbody>
+            </table>
+          </div>
+        </article>
 
-        <section class="panel specimen-panel">
+        <article class="panel activity-panel" id="activityPanel" hidden>
+          <div class="panel-header">
+            <div>
+              <p class="panel-kicker">실시간 기록</p>
+              <h2>최근 이벤트</h2>
+            </div>
+            <div class="activity-controls">
+              <div class="segmented" role="group" aria-label="이벤트 유형">
+                <button class="segment active" data-activity-view="events">로봇</button>
+                <button class="segment" data-activity-view="logs">작업 로그</button>
+              </div>
+              <span class="count-pill" id="eventCount">0건</span>
+            </div>
+          </div>
+          <div class="timeline" id="eventTimeline">
+            <div class="table-loading">이벤트를 불러오는 중입니다</div>
+          </div>
+        </article>
+
+        <section class="panel specimen-panel" id="trayPanel" hidden>
           <div class="panel-header">
             <div>
               <p class="panel-kicker">트레이 목록 · ID = TR날짜-작업-칸</p>
