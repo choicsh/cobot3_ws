@@ -29,6 +29,10 @@ ESCAPE_AFTER_S = 4.0
 ESCAPE_NEAR_M = 5.0
 ESCAPE_LIMIT = 2
 ESCAPE_SPEED = .12
+# 양보 예산(15 s)과 ESCAPE_AFTER_S 는 연속 양보가 아니라 '전진 없이 지난 시간'으로 센다. 양보가 0.5 s 만
+# 풀려도 재개(clearance_stable_resume)가 예산을 0 으로 돌리던 탓에, 콘 앞에서 양보 1~3 s <-> 재개를 5분 넘게
+# 되풀이하며 탈출도 실패 판정도 나지 않았다 (2026-09-29 152252 robot2, upper x=-11.8). 차선을 이만큼 전진해야 초기화.
+YIELD_PROGRESS_M = 1.0
 
 
 def path_points(path):
@@ -79,6 +83,7 @@ def follow_stage(navigator, tf_buffer, plan_publisher, stage_name, route,
     in_detour = False
     rejoin_s = math.inf
     wait_since = clear_since = stale_since = None
+    wait_s = None            # 양보 예산을 시작한 차선 위치 (YIELD_PROGRESS_M)
     last_replan = -math.inf
     last_plan_pub = -math.inf
     static_since = None
@@ -335,7 +340,7 @@ def follow_stage(navigator, tf_buffer, plan_publisher, stage_name, route,
                                 return MissionStatus.FAILED
                             in_detour = True
                             rejoin_s = join_s
-                            wait_since = clear_since = None
+                            clear_since = None
                             event('AVOIDING', f'forward_offset side={side} predicted_gap={candidate_gap:.2f}')
                             continue
                 # Bounded NavFn fallback is only for persistent static evidence.
@@ -380,7 +385,7 @@ def follow_stage(navigator, tf_buffer, plan_publisher, stage_name, route,
                                     return MissionStatus.FAILED
                                 in_detour = True
                                 rejoin_s = join_s
-                                wait_since = clear_since = None
+                                clear_since = None
                                 event('AVOIDING', 'validated_static_planner')
                                 continue
                             navigator.get_logger().info(
@@ -394,7 +399,8 @@ def follow_stage(navigator, tf_buffer, plan_publisher, stage_name, route,
                     return MissionStatus.FAILED
                 event('YIELDING', 'no_admissible_forward_candidate')
                 clear_since = None
-                wait_since = now if wait_since is None else wait_since
+                if wait_since is None:
+                    wait_since, wait_s = now, lane.local(pose)[0]
                 ahead = (lane.local((*blockage['map_xy'], 0.))[0]-lane.local(pose)[0]
                          if blockage is not None else math.inf)
                 if (static_ready and escapes < ESCAPE_LIMIT and now-wait_since >= ESCAPE_AFTER_S and
@@ -421,7 +427,7 @@ def follow_stage(navigator, tf_buffer, plan_publisher, stage_name, route,
                         event('FAILED', 'cannot_resume_forward_path')
                         return MissionStatus.FAILED
                     event('AVOIDING' if in_detour else 'TRACKING', 'clearance_stable_resume')
-                    wait_since = clear_since = None
+                    clear_since = None
             else:
                 if in_detour and lane is not None:
                     lateral = abs(lane.local(pose)[1])
@@ -435,6 +441,8 @@ def follow_stage(navigator, tf_buffer, plan_publisher, stage_name, route,
                 if now-last_plan_pub >= 1.0:
                     plan_publisher.publish(rest)
                     last_plan_pub = now
+            if wait_since is not None and lane.local(pose)[0] >= wait_s+YIELD_PROGRESS_M:
+                wait_since = None
             if wait_since is not None and now-wait_since >= 15.0:
                 event('FAILED', 'yield_budget_exceeded_not_proof_of_lane_blockage')
                 return MissionStatus.FAILED
