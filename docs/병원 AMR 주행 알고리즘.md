@@ -219,7 +219,7 @@ sequenceDiagram
     participant ARM as Isaac 팔 (OmniGraph)
     participant MIS as hospital_mission
     FM->>AG: task {seq, cmd: cycle}
-    AG->>ARM: load (트레이 3칸 적재 + ArUco 긴급도)
+    AG->>ARM: load (트레이 3칸 적재 + QR 긴급도)
     ARM-->>AG: done, loaded[], urgency[]
     Note over AG: 트레이 경고가 있으면 주행하지 않고 ERROR
     AG->>FM: agent_status (DELIVERING, leg, cargo)

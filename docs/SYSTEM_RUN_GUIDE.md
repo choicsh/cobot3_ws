@@ -9,7 +9,7 @@
 |---|---|---|---|---|
 | 1 | PostgreSQL `robotdb3_sql`, Redis `robotdb3_nosql` | Docker | | 작업·트레이·이력 / 실시간 상태·예약 |
 | 2 | Isaac Sim `run_fleet_sim.py` | Isaac 번들 3.11 | 한 프로세스에 N대 | 병원 씬, 로봇, 사람, 팔(적재·하역) |
-| 3 | `tray_detector` | `~/yolo-venv` | ○ | 손목 카메라 트레이·ArUco 검출 |
+| 3 | `tray_detector` | `~/yolo-venv` | ○ | 손목 카메라 트레이·QR 검출 |
 | 4 | Nav2 `hospital_navigation.launch.py` (+ RViz) | 시스템 3.12 | ○ | `/robotN` 주행 스택 |
 | 5 | `db_worker` | 시스템 3.12 | | Redis 이벤트 → PostgreSQL |
 | 6 | `fleet_manager` | 시스템 3.12 | | 사이클 지시, 복도 배정, 구역 예약 |

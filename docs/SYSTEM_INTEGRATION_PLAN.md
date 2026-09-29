@@ -8,7 +8,7 @@
 
 | 기능 | 내용 | 출처 브랜치 |
 |---|---|---|
-| 픽 앤 플레이스 | **East Desk = 검체 채취실**: 책상 트레이 → 로봇 랙 적재(YOLO 위치 확인 → 중앙 정렬 → 재검출 파지 → 랙 자동 정렬) → 랙 ArUco로 긴급도 판독. **West Desk = 검체 분석실**: 랙 → 책상 하역 | `feature/hhj-0923` `pick_and_place_detection.py` |
+| 픽 앤 플레이스 | **East Desk = 검체 채취실**: 책상 트레이 → 로봇 랙 적재(YOLO 위치 확인 → 중앙 정렬 → 재검출 파지 → 랙 자동 정렬) → 랙 QR로 긴급도 판독. **West Desk = 검체 분석실**: 랙 → 책상 하역 | `feature/hhj-0923` `pick_and_place_detection.py` |
 | 자율주행 | Nav2 FollowPath 고정 차선 + MPPI + 책상 옆 라이다 도킹 + 사람 회피 | `feature/hospital-dispatch` |
 | 관제 / DB | PostgreSQL(작업·트레이·이력) + Redis(로봇 상태·heartbeat·경로·이벤트 스트림) 기반 배차·경로 결정 | `feature/note` `DB_container/` |
 
@@ -22,7 +22,7 @@
 ### 2.1 픽 앤 플레이스 (`pick_and_place_detection.py`, 2464줄)
 - Isaac standalone 한 파일에 **씬 로드·사람·navmesh·라이다 그래프·팔 IK·상태기계·ROS 핸드셰이크**가 모두 들어 있다.
 - 상태기계는 `main()` 안의 지역 변수 + `nonlocal` 로 구현 → 로봇 2대 인스턴스화 불가.
-- 상태: `scan → descend → settle → center → settle → pick` (×3칸) → `observe_go/settle/home`(ArUco 긴급도) → `wait_unload` → `unload`(×3), 실패 시 `recover`.
+- 상태: `scan → descend → settle → center → settle → pick` (×3칸) → `observe_go/settle/home`(QR 긴급도) → `wait_unload` → `unload`(×3), 실패 시 `recover`.
 - 외부 연동: `/mission_state`(Isaac→주행), `/nav_done`(주행→Isaac), `/tray_detection`, `/aruco_markers` — 전부 전역 토픽, 로봇 1대 전제.
 - 검출은 별도 프로세스 `admin_ws/src/tray_detector/detect_node.py`(yolo-venv, py3.12). Isaac 번들 파이썬(3.11)과 한 프로세스에 합칠 수 없다.
 - 로봇 기준 좌표 상수(`POINT4_TCP`, `RACK_SLOTS`, `DESK_ROW_CENTER`, `DESK_Z_M`, `SCAN_ROTATE_DEG`)는 **옛 씬 기준**이다. 파일 주석에 "hospital_integration_human.usd 에는 트레이/책상을 아직 안 옮겼으므로 `--drive-only` 로만 실행" 이라고 적혀 있다.
@@ -135,7 +135,7 @@ Python 3.12 용이라 Isaac 프로세스 안에서 쓸 수 없다. 따라서
 
 ### 3.3 우선순위
 
-- ArUco 판독 → 긴급도: 상 = **3**, 중 = 2, 하 = 1, 미검출 = 1 (DB `tray.priority` 에 그대로 저장, 3 이 가장 높음).
+- QR 판독 → 긴급도: 상 = **3**, 중 = 2, 하 = 1, 미검출 = 1 (DB `tray.priority` 에 그대로 저장, 3 이 가장 높음).
   스키마의 `priority DEFAULT 3` 은 "가장 긴급" 이 기본값이 되므로 **DEFAULT 1** 로 바꾼다.
 - 작업 점수 = `(3 개수, 2 개수, 1 개수)` 를 사전식으로 내림차순 비교, 같으면 먼저 만든 작업.
   - 예: `[3,1,1]` > `[2,2,2]` (높은 것이 있음), `[3,3,1]` > `[3,2,2]` (높은 것이 많음).
@@ -210,8 +210,8 @@ P1 을 앞에 둔 이유: 2대 부하가 안 되면 P7 설계(카메라·라이�
 | # | 항목 | 결정 |
 |---|---|---|
 | D1 | 로봇 대수 | 2대로 시작, 설계·테스트는 3대 기준, 다중 PC 가능 |
-| D2 | 긴급도 ↔ DB `priority` | ArUco 상(id 2)→**3**, 중(id 1)→2, 하(id 0)→1, 미검출(−1)→1. 3 이 가장 긴급. 점수는 §3.3 |
-| D3 | 트레이 ID | ArUco는 긴급도 3종뿐이라 개체 식별 불가 → `TR{YYYYMMDD}-{task_id}-S{slot}` 로 생성 |
+| D2 | 긴급도 ↔ DB `priority` | QR 상(id 2)→**3**, 중(id 1)→2, 하(id 0)→1, 미검출(−1)→1. 3 이 가장 긴급. 점수는 §3.3 |
+| D3 | 트레이 ID | QR은 긴급도 3종뿐이라 개체 식별 불가 → `TR{YYYYMMDD}-{task_id}-S{slot}` 로 생성 |
 | D4 | 작업(transport_task) 생성 시점 | 적재 후 긴급도 판독이 끝났을 때 트레이 3개로 1건 생성 → 즉시 해당 로봇에 배정 |
 | D5 | 대기 위치 | 책상마다 대기 칸 2개(§3.2). 위치는 P6 에서 지도로 확정 |
 | D6 | 맵 충돌 | `feature/note` 의 `hospital_integration_human` 맵(map_excluded, 원점 변경) 대신 주행을 튜닝한 `hospital-dispatch` 맵 유지 |
@@ -324,7 +324,7 @@ frame id 는 그대로(`base_link`, `odom`) — 로봇마다 tf 토픽이 다르
 | 적재 / 하역 시간 | 69–93 s / 47–56 s | 69–78 s / 48–54 s |
 
 - 로봇 2대 동시(수정 전 코드): robot1 적재/하역과 robot2(트레이 없음 → 재시도·복구 후 `failed`)가 서로 간섭 없음.
-- ArUco 판독은 10프레임 중 칸별 3–10회(다수결 충분). 원본(카메라 15 Hz)보다 누적 프레임이 절반이다.
+- QR 판독은 10프레임 중 칸별 3–10회(다수결 충분). 원본(카메라 15 Hz)보다 누적 프레임이 절반이다.
 - 남은 일: `tray_detector` 의 `demo` 자가 시험이 0923 `RACK_ROI` 변경 뒤로 깨져 있다(이번 변경과 무관, 원본에서도 실패).
 
 ### P3 병원 씬 작업대 배치 (도킹 자세 기준) — 완료 (2026-09-25)
@@ -436,7 +436,7 @@ WAITING → ASSIGNED → IN_TRANSIT → ARRIVED → COMPLETED, departed_at/arriv
   P5 의 '/amcl_pose 가 도킹 전 값으로 남음' 해결(종료 시 20.185, 13.812 = 도킹 자세).
 - `fleet_manager`: 로봇 위치를 구간 경로에 투영(겹치는 차선에서 튀지 않게 직전 위치 근처 + 진행 방향), 5 Hz 로 예약 →
   `zone_hold` 발행, 채취실 IDLE 이면 다음 `task`. Redis `robot:{id}:route`(구간 경로 1 m 간격), `fleet:zones`(구역→로봇).
-- Isaac 재공급(`TrayRegistry.restock`): `load` 때 채취실 책상이 비었으면 하역이 끝난 트레이를 스폰 자리로 옮기고 ArUco
+- Isaac 재공급(`TrayRegistry.restock`): `load` 때 채취실 책상이 비었으면 하역이 끝난 트레이를 스폰 자리로 옮기고 QR
   텍스처를 새로 뽑는다(새 검체가 들어온 것으로 침). 2사이클째 판독 [1,1,2] = 새로 뽑은 마커와 칸별 일치.
 
 **CPU 시험**(`test_lane_graph.py`, 11개): 가상 로봇 3대가 책상에서 40–90 s 머물고, 2% 확률로 사람에게 2–10 s 양보하며
