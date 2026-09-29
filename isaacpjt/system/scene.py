@@ -70,12 +70,16 @@ def configure_people(walk_scale):
     settings.set("/exts/omni.anim.people/navigation_settings/dynamic_avoidance_enabled", False)
 
     from omni.anim.people.scripts.commands.base_command import Command
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "pjt_alpha"))
+    from hospital_people_commands import unstick_goto
     original_walk = Command.walk
 
     def slow_walk(command, delta_time):
         result = original_walk(command, delta_time)
         if command.desired_walk_speed > 0.0:
             command.character.set_variable("Walk", min(command.actual_walk_speed, walk_scale))
+        unstick_goto(command, delta_time)
         return result
 
     Command.walk = slow_walk

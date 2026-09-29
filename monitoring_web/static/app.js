@@ -363,6 +363,17 @@ function setupControls() {
     renderEvents(state.snapshot?.events || [], state.snapshot?.statusLogs || []);
   }));
 
+  // 지도 아래 탭: 누르면 해당 패널만 열고, 열린 탭을 다시 누르면 닫는다
+  $$("[data-dock]").forEach((tab) => tab.addEventListener("click", () => {
+    const open = !tab.classList.contains("active");
+    $$("[data-dock]").forEach((item) => {
+      const on = open && item === tab;
+      item.classList.toggle("active", on);
+      item.setAttribute("aria-expanded", on);
+      $(`#${item.dataset.dock}`).hidden = !on;
+    });
+  }));
+
   const setZoom = (value) => {
     state.zoom = Math.max(1, Math.min(3, value));
     $("#mapStage").style.transform = `scale(${state.zoom})`;

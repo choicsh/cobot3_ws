@@ -38,6 +38,8 @@ def stage_harness(monkeypatch, mode, block_x=4.):
 
     def step(*args, **kwargs):
         clock.t += .05
+        if clock.t > 300.:   # a livelocked stage must fail the test, not hang it
+            raise RuntimeError('stage never ended')
 
     def build(nav, route):
         path = PathMessage()
@@ -133,6 +135,8 @@ def stage_harness(monkeypatch, mode, block_x=4.):
                 tracks = [geometry.MovingBody(1, 6.8, 0, -1.1, 0, .4)]
             elif mode == 'stopped_person':
                 tracks = [geometry.MovingBody(1, 4, 0, 0, 0, .4)]
+            elif mode == 'flicker' and clock.t % 3. < 1.5:
+                tracks = [geometry.MovingBody(1, 2, 0, 0, 0, .4)]
             elif mode == 'escape_person_behind':
                 tracks = [geometry.MovingBody(1, -3.2, 0, 0, 0, .4)]
             return (robot.x, 0, 0), (.6, 0), tracks
@@ -152,7 +156,7 @@ def stage_harness(monkeypatch, mode, block_x=4.):
         String=lambda **kwargs: NS(**kwargs),
         Twist=lambda: NS(linear=NS(x=0.), angular=NS(z=0.)))
     static_modes = ('static', 'stopped_person', 'escape', 'escape_person_behind')
-    if mode in static_modes:
+    if mode in static_modes or mode == 'flicker':
         namespace['choose_candidate'] = lambda *args, **kwargs: None
     source = FilePath(__file__).parents[1]/'nav_to_goal/hospital_stage_runner.py'
     tree = ast.parse(source.read_text())
@@ -226,3 +230,13 @@ def test_no_back_off_toward_a_person_behind(monkeypatch):
     assert not any(line.startswith('[ESCAPE]') for line in nav.events)
     assert robot.x == 0. and 'cmd_vel_nav' not in nav.publishers
     assert result == Status.FAILED
+
+
+def test_flickering_obstacle_without_progress_still_exhausts_yield_budget(monkeypatch):
+    # 2026-09-29 152252 robot2: a cone seen on/off every 1-3 s; each 0.5 s clear resumed
+    # and reset the budget, so the robot sat in front of it for 5+ min without failing.
+    result, nav, _, _, robot = stage_harness(monkeypatch, 'flicker')
+    assert robot.x == 0.
+    assert sum('clearance_stable_resume' in line for line in nav.events) >= 2
+    assert result == Status.FAILED
+    assert any('yield_budget_exceeded_not_proof_of_lane_blockage' in line for line in nav.events)
