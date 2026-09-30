@@ -1,0 +1,28 @@
+{
+  "default_prim": "/CollectionWorkstation",
+  "units": "metres",
+  "up_axis": "Z",
+  "front": "-Y",
+  "size_m": [
+    6.755500067723915,
+    1.47099997010082,
+    2.936000093817711
+  ],
+  "bounds_min": [
+    -3.345500101102516,
+    -1.0229999860748649,
+    -3.774758488866324e-18
+  ],
+  "bounds_max": [
+    3.409999966621399,
+    0.4479999840259552,
+    2.936000093817711
+  ],
+  "workstations": 3,
+  "trolleys": 3,
+  "mesh_count": 604,
+  "triangles_equivalent": 78499,
+  "external_assets": [],
+  "unresolved_assets": [],
+  "physics": false
+}

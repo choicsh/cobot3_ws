@@ -31,6 +31,7 @@ import omni.usd
 from pxr import Usd, UsdGeom, UsdPhysics
 
 from isaacsim.core.api import World
+from isaacsim.core.prims import SingleXFormPrim
 from isaacsim.core.api.objects import VisualCuboid
 from isaacsim.robot.manipulators.grippers import ParallelGripper
 from isaacsim.robot.manipulators.manipulators import SingleManipulator
@@ -46,12 +47,18 @@ from isaacsim.robot_motion.motion_generation import (
 THIS_DIR   = Path(__file__).resolve().parent
 M0609_DIR  = THIS_DIR.parent
 
-SCENE_USD        = str(M0609_DIR.parent / "assets/PnP_test.usd")
+# SCENE_USD        = str(M0609_DIR.parent / "assets/PnP_test.usd")
+SCENE_USD        = str(M0609_DIR.parent / "assets/intergration_nova.usd")
 URDF_PATH        = str(M0609_DIR / "doosan-robot2/urdf/m0609_isaac_sim.urdf")
 DESCRIPTION_PATH = str(M0609_DIR / "descriptor/m0609_description.yaml")
 
-# PnP_test.usd 안에서 로봇이 놓인 위치
-ROBOT_PRIM_PATH = "/World/robot/Robot/m0609_camera/m0609"
+# intergration_nova.usd: 카터와 팔이 하나의 아티큘레이션으로 병합돼 있다.
+#   - 프림 검색(드라이브/EE/카메라)은 팔을 포함하는 nova_carter 기준
+#   - Articulation 등록은 실제 루트인 chassis_link 기준
+#   - IK 기준 프레임은 팔의 base_link (섀시와 전방 -0.85m / 상방 +0.82m / yaw +90도 차이)
+ROBOT_PRIM_PATH = "/World/robot_nova/nova_carter"
+ART_ROOT_PATH   = ROBOT_PRIM_PATH + "/chassis_link"
+ARM_BASE_PATH   = ROBOT_PRIM_PATH + "/Robot/m0609_camera/m0609/base_link"
 EE_LINK_NAME    = "link_6"
 D455_CAMERA_NAME = "RSD455"    # 그리퍼에 달린 손목 카메라. 조그 방향 기준으로 쓴다
 
@@ -287,7 +294,7 @@ def register_robot(world):
     )
     robot = world.scene.add(
         SingleManipulator(
-            prim_path=ROBOT_PRIM_PATH,
+            prim_path=ART_ROOT_PATH,
             name="m0609_robot",
             end_effector_prim_path=ee_path,
             gripper=gripper,
@@ -307,8 +314,11 @@ def init_robot(robot, world):
         set_joint_positions_func=robot.set_joint_positions,
         dof_names=robot.dof_names,
     )
-    q = np.zeros(robot.num_dof)
-    q[:6] = READY_JOINTS_RAD
+    # 카터 관절(바퀴/캐스터)까지 한 아티큘레이션에 섞여 dof 가 19개다.
+    # 앞 6개가 팔이 아니고, zeros 로 덮으면 바퀴까지 리셋돼 로봇이 튄다.
+    q = robot.get_joint_positions()
+    for name, angle in zip(ARM_JOINTS, READY_JOINTS_RAD):
+        q[robot.get_dof_index(name)] = angle
     robot.set_joint_positions(q)
 
 
@@ -347,9 +357,14 @@ def create_ik_solver(robot):
     return lula, ik
 
 
+def arm_base_pose():
+    """IK 기준은 아티큘레이션 루트(카터 섀시)가 아니라 팔의 base_link 다"""
+    return SingleXFormPrim(ARM_BASE_PATH).get_world_pose()
+
+
 def sync_base_pose(lula, robot):
-    """로봇 베이스의 현재 월드 pose 를 솔버에 넘긴다"""
-    base_pos, base_quat = robot.get_world_pose()
+    """팔 base_link 의 현재 월드 pose 를 솔버에 넘긴다"""
+    base_pos, base_quat = arm_base_pose()
     lula.set_robot_base_pose(robot_position=base_pos, robot_orientation=base_quat)
     return base_pos
 
@@ -475,7 +490,7 @@ def print_records(teleop, robot):
     if not teleop.points:
         print("   기록 없음. 1 로 현재 TCP 를 기록한다.")
         return
-    base_pos, base_quat = robot.get_world_pose()
+    base_pos, base_quat = arm_base_pose()
     for i, (world_pos, world_rpy) in enumerate(teleop.points, start=1):
         pos, rpy = world_to_base(world_pos, world_rpy, base_pos, base_quat)
         print(f"   POINT{i}_TCP = np.array([{pos[0]:.4f}, {pos[1]:.4f}, {pos[2]:.4f}])   # base 기준")

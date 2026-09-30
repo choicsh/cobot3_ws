@@ -1,0 +1,46 @@
+호스트 터미널에서 다음 명령어 실행(도커 데스크탑 내부 터미널에서 해도 무관)
+
+# 1. postgresql 이미지 pull / volume 생성 / 컨테이너 생성
+docker pull postgres:16
+
+docker volume create robotdata3_sql
+
+docker run -d --name robotdb3_sql \
+-e POSTGRES_DB=robotdb3_sql \
+-e POSTGRES_USER=rokey \
+-e POSTGRES_PASSWORD=rokey \
+-p 5432:5432 \
+-v robotdata3_sql:/var/lib/postgresql/data \
+postgres:16
+
+
+# 2. redis 이미지 pull / volume 생성 / 컨테이너 생성
+docker pull redis:8.8
+
+docker volume create robotdata3_nosql
+
+docker run -d --name robotdb3_nosql \
+-p 6379:6379 \
+-v robotdata3_nosql:/data \
+redis:8.8 redis-server --appendonly yes \
+--user rokey on ">rokey" ~* +@all
+
+
+# 3. 도커 데스크탑의 volume / container tab 을 통해 정상 구축 확인
+도커_볼륨.png
+도커_컨테이너.png
+
+
+# 4. 도커 컨테이너 DB에 테이블 구축 : 스키마 구축 파일(hospital_amr_db_v5_schema.sql) 을 이용
+cd (구축 파일 경로)
+docker exec -i robotdb3_sql psql -U rokey -d robotdb3_sql < hospital_amr_db_v5_schema.sql
+
+
+# 5. dbeaver (다른 SQL 클라이언트 사용 가능) 을 이용한 구축 DB 확인
+DB : robotdb3_sql
+ID : rokey
+PW : rokey
+
+
+
+

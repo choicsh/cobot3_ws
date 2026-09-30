@@ -1,0 +1,51 @@
+{
+  "dimensions": [
+    1488,
+    645
+  ],
+  "min_bound": [
+    -49.5,
+    -9.100000381469727,
+    0.0
+  ],
+  "max_bound": [
+    24.950000762939453,
+    23.149999618530273,
+    0.05000000074505806
+  ],
+  "counts": {
+    "unknown": 201439,
+    "free": 715490,
+    "occupied": 42831
+  },
+  "region_checks": {
+    "CentralRooms": {
+      "interior_cells": 33611,
+      "counts": {
+        "unknown": 29900,
+        "free": 0,
+        "occupied": 3711
+      }
+    },
+    "ReceptionDesk": {
+      "interior_cells": 6120,
+      "counts": {
+        "unknown": 6120,
+        "free": 0,
+        "occupied": 0
+      }
+    }
+  },
+  "source": "Native Isaac Sim PhysX mapper; static collision extract",
+  "omitted_dynamic_assets": [
+    "/World/robot_nova",
+    "/World/Characters",
+    "/World/tray",
+    "/World/S_TrafficCone"
+  ],
+  "checks_passed": [
+    "source_sha256_unchanged",
+    "no_free_cells_in_exclusion_interiors",
+    "preview_equals_native_mapper_buffer_rotated_180"
+  ]
+}

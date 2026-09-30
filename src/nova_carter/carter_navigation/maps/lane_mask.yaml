@@ -1,0 +1,10 @@
+image: lane_mask.png
+mode: scale
+resolution: 0.05
+origin:
+- -16.975
+- -13.37500057220459
+- 0.0
+negate: 0
+occupied_thresh: 1.0
+free_thresh: 0.0

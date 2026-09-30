@@ -1,0 +1,64 @@
+{
+  "source": "/home/rokey/cobot3_ws/isaacpjt/assets/hospital_integration_human.usd",
+  "source_sha256": "1c96445086861bb430d83a14bad12d93bd68facf4a1094f1fc1507bcd5bb99c2",
+  "output": "/home/rokey/cobot3_ws/isaacpjt/assets/hospital_integration_human_map_excluded.usd",
+  "regions": [
+    {
+      "name": "CentralRooms",
+      "bounds_xy": [
+        -24.8399951171875,
+        5.350853807479156,
+        3.1599990825354918,
+        8.850855255126968
+      ]
+    },
+    {
+      "name": "ReceptionDesk",
+      "bounds_xy": [
+        -24.951040842923497,
+        9.070891055861747,
+        -19.439716177378436,
+        12.50201899995988
+      ]
+    }
+  ],
+  "disabled_prims": [
+    "/World/hospital/ReceptionDesk"
+  ],
+  "floor_prims_unchanged": [
+    "/World/hospital/Geo_M2_Floor8",
+    "/World/hospital/Geo_M2_Floor7",
+    "/World/hospital/Geo_M2_Floor6",
+    "/World/hospital/Geo_M2_Floor5",
+    "/World/hospital/Geo_M2_Floor4",
+    "/World/hospital/Geo_M2_Floor3",
+    "/World/hospital/Geo_M2_Floor2",
+    "/World/hospital/Geo_M2_Floor_582"
+  ],
+  "collision_validation_prims": 350,
+  "validation_omissions": [
+    "/World/robot_nova",
+    "/World/Characters",
+    "/World/tray",
+    "/World/S_TrafficCone"
+  ],
+  "panel": {
+    "origin": [
+      0,
+      0,
+      0
+    ],
+    "lower": [
+      -49.5,
+      -9.1,
+      0.05
+    ],
+    "upper": [
+      24.95,
+      23.15,
+      1.0
+    ],
+    "cell_size": 0.05,
+    "physx_geometry": true
+  }
+}

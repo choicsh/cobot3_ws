@@ -1,0 +1,5 @@
+<library path="hospital_dynamic_layer">
+  <class type="hospital_dynamic_layer::PredictionLayer" base_class_type="nav2_costmap_2d::Layer">
+    <description>Rebuilt every update; no accumulated prediction trails.</description>
+  </class>
+</library>

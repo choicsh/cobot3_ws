@@ -1,0 +1,58 @@
+# YOLO 학습용 tray 합성 데이터셋 생성 설정
+#   실행: ~/isaacsim/python.sh isaacpjt/sdg/object_based_sdg.py --config isaacpjt/sdg/tray_sdg.yaml
+#   tray.usd 실측 크기 = 0.091 x 0.139 x 0.158 m -> 예제 기본값(YCB, 4x4x3 m)보다 작업영역/카메라 거리를 축소함
+
+launch_config:
+  renderer: RaytracedLighting
+  headless: true
+
+env_url: ''
+
+# 0.16 m 물체 4개 + distractor 가 떠다닐 정육면체 공간
+working_area_size: [1.0, 1.0, 1.0]
+
+num_frames: 2000          # 캡처 스텝 수 (총 이미지 = num_frames * num_cameras)
+num_cameras: 2
+rt_subframes: 8          # 텍스처 로딩/고스팅 아티팩트 생기면 올릴 것
+resolution: [640, 640]   # YOLO imgsz 와 맞춤
+disable_render_products_between_captures: true
+simulation_duration_between_captures: 0.15  # 이 시간만큼 굴러간 뒤 다음 캡처 (자세 변화량을 결정)
+
+camera_properties_kwargs:
+  focalLength: 24.0
+  focusDistance: 400
+  fStop: 0.0
+  clippingRange: [0.01, 10000]
+camera_look_at_target_offset: 0.04          # 트레이가 항상 화면 정중앙에 오지 않도록
+camera_distance_to_target_min_max: [0.2, 0.7]
+camera_collider_radius: 0                   # 0 = 카메라 충돌구 비활성
+
+labeled_angular_velocity_max: 180           # deg/s, 무중력 트레이를 계속 회전시켜 전방위 자세 확보
+
+writer_type: BasicWriter
+writer_kwargs:
+  output_dir: /home/rokey/cobot3_ws/isaacpjt/sdg/_out_tray
+  rgb: true
+  bounding_box_2d_tight: true
+
+labeled_assets_and_properties:
+  - url: /home/rokey/cobot3_ws/isaacpjt/assets/tray.usd
+    label: tray
+    count: 4
+    floating: true                          # 중력 off -> 바닥 정착 자세에 치우치지 않고 전방위 자세
+    randomize_scale: [0.9, 1.1]             # 주의: 예제 config 의 'scale_min_max' 키는 코드가 안 읽음
+
+shape_distractors_types: [capsule, cone, cylinder, sphere, cube]
+shape_distractors_scale_min_max: [0.01, 0.08]
+shape_distractors_num: 120
+
+mesh_distractors_urls:
+  - /Isaac/Environments/Simple_Warehouse/Props/SM_CardBoxD_04_1847.usd
+  - /Isaac/Environments/Simple_Warehouse/Props/SM_CardBoxA_01_414.usd
+  - /Isaac/Environments/Simple_Warehouse/Props/S_TrafficCone.usd
+  - /Isaac/Environments/Office/Props/SM_Book_03.usd
+  - /Isaac/Environments/Office/Props/SM_Briefcase.usd
+  - /Isaac/Environments/Hospital/Props/SM_MedicalBag_01a.usd
+  - /Isaac/Environments/Hospital/Props/SM_MedicalBox_01g.usd
+mesh_distractors_scale_min_max: [0.05, 0.3]
+mesh_distractors_num: 25
