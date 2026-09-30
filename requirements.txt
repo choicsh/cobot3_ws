@@ -1,0 +1,12 @@
+# ROS 2 Jazzy(apt)·Isaac Sim 5.1(번들 파이썬) 밖에서 설치하는 파이썬 패키지.
+# rclpy·cv_bridge·nav2·numpy·PyYAML 은 ROS apt 패키지, isaacsim·omni·pxr 은 Isaac Sim 번들에 들어 있다.
+
+# 트레이 검출기(admin_ws/src/tray_detector)·YOLO 학습(isaacpjt/sdg) — ~/yolo-venv
+#   python3 -m venv ~/yolo-venv && ~/yolo-venv/bin/pip install -r requirements.txt
+ultralytics>=8.4
+opencv-python>=4.8        # cv2.aruco (랙 마커 판독)
+
+# robot_agent·fleet_manager·db_worker(src/hospital_system) — 시스템 파이썬 3.12
+#   Ubuntu 24.04 시스템 파이썬은 pip 설치를 막으므로: sudo apt install python3-psycopg2 python3-redis
+psycopg2-binary>=2.9
+redis>=4.3

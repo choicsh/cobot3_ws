@@ -21,12 +21,26 @@ Isaac Sim 5.1 병원 씬에서 로봇 팔(Doosan M0609)을 얹은 Nova Carter �
 | 관제 웹 `server.py` | `monitoring_web/` | 브라우저 대시보드 (http://127.0.0.1:8080) |
 | PostgreSQL / Redis | Docker (`DB_container/`) | 작업·트레이·이력 / 실시간 상태·예약 |
 
+![시스템 아키텍처](docs/images/system_architecture.png)
+
+## 동작 흐름
+
+### 로봇 PC — 운송 사이클
+
+![로봇 PC 플로우차트](docs/images/robot_pc_flow.png)
+
+### 관제 PC — 작업 지시·복도 배정·구역 예약
+
+![관제 PC 플로우차트](docs/images/control_pc_flow.png)
+
 ## 환경
 
 - Ubuntu + ROS 2 Jazzy
 - Isaac Sim 5.1 (`~/isaacsim`)
 - Docker (PostgreSQL 16, Redis 8.8)
-- 검출기용 파이썬 venv (`~/yolo-venv`, ultralytics)
+- 파이썬 패키지 [requirements.txt](requirements.txt)
+  - 검출기 venv: `python3 -m venv ~/yolo-venv && ~/yolo-venv/bin/pip install -r requirements.txt`
+  - 시스템 파이썬(관제·에이전트): `sudo apt install python3-psycopg2 python3-redis`
 
 ## 빠른 시작
 
